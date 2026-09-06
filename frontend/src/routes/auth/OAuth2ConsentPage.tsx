@@ -1,9 +1,6 @@
-import { createContextValues } from "@connectrpc/connect";
 import { Building2, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { workspaceServiceClientConnect } from "@/api";
-import { silentContextKey } from "@/api/context-key";
 import { router } from "@/app/router";
 import { AUTH_SIGNIN_MODULE } from "@/app/router/handles";
 import { BytebaseLogo } from "@/components/BytebaseLogo";
@@ -18,8 +15,11 @@ import {
 } from "@/components/ui/select";
 import { useWorkspace } from "@/hooks/useAppState";
 import { useAppStore } from "@/stores/app";
-import { MCPSetting_Capability } from "@/types/proto-es/v1/setting_service_pb";
-import type { MCPInfo } from "@/types/proto-es/v1/workspace_service_pb";
+import {
+  type MCPSetting,
+  MCPSetting_Capability,
+} from "@/types/proto-es/v1/setting_service_pb";
+import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
 import { MCPConsentCeiling } from "./MCPConsentCeiling";
 import { MCPConsentDisabled } from "./MCPConsentDisabled";
 import type { UndisclosedReason } from "./MCPConsentUndisclosed";
@@ -39,12 +39,18 @@ export function OAuth2ConsentPage() {
   //
   // Undefined is not "no policy": it is this page not holding one, which is
   // the state Allow is withheld under.
-  const [mcpInfo, setMcpInfo] = useState<MCPInfo | undefined>(undefined);
+  const [mcpSetting, setMcpSetting] = useState<MCPSetting | undefined>(
+    undefined
+  );
+  const [dataMaskingAvailable, setDataMaskingAvailable] = useState(false);
   const [retrying, setRetrying] = useState(false);
 
   const loadWorkspace = useAppStore((state) => state.loadWorkspace);
   const loadWorkspaceList = useAppStore((state) => state.loadWorkspaceList);
+  const refreshSubscription = useAppStore((state) => state.refreshSubscription);
+  const refreshServerInfo = useAppStore((state) => state.refreshServerInfo);
   const switchWorkspace = useAppStore((state) => state.switchWorkspace);
+  const hasFeature = useAppStore((state) => state.hasFeature);
 
   const isLoggedIn = useAppStore((s) => s.isLoggedIn());
   // Workspace context shown on the consent card. On SaaS, every Bytebase
@@ -75,25 +81,33 @@ export function OAuth2ConsentPage() {
 
   // Silent: the interceptor's toast names a status code, not a fix, and the
   // card this feeds says the same thing in words the person can act on.
-  const readCeiling = useCallback(async (): Promise<MCPInfo | undefined> => {
+  const readCeiling = useCallback(async (): Promise<MCPSetting | undefined> => {
     try {
-      return await workspaceServiceClientConnect.getMCPInfo(
-        {},
-        {
-          contextValues: createContextValues().set(silentContextKey, true),
-          // The shared transport has no deadline. Without one a stalled read
-          // leaves the page on its spinner with no way forward and no way out.
-          timeoutMs: 10_000,
-        }
-      );
+      const info = await refreshServerInfo();
+      return info?.mcpSetting;
     } catch {
       return undefined;
     }
-  }, []);
+  }, [refreshServerInfo]);
+
+  const readConsentDisclosure = useCallback(async () => {
+    const [mcpSetting, subscription] = await Promise.all([
+      readCeiling(),
+      refreshSubscription(),
+    ]);
+    return {
+      mcpSetting,
+      dataMaskingAvailable:
+        subscription !== undefined &&
+        hasFeature(PlanFeature.FEATURE_DATA_MASKING),
+    };
+  }, [hasFeature, readCeiling, refreshSubscription]);
 
   const retryCeiling = async () => {
     setRetrying(true);
-    setMcpInfo(await readCeiling());
+    const disclosure = await readConsentDisclosure();
+    setMcpSetting(disclosure.mcpSetting);
+    setDataMaskingAvailable(disclosure.dataMaskingAvailable);
     setRetrying(false);
   };
 
@@ -115,11 +129,6 @@ export function OAuth2ConsentPage() {
       setLoading(false);
       return;
     }
-
-    // This page renders outside any shell, so the workspace bootstrap hasn't
-    // populated the app store — load server info so `isSaaSMode()` resolves
-    // and the SaaS workspace picker can render.
-    void useAppStore.getState().loadServerInfo();
 
     (async () => {
       try {
@@ -145,10 +154,12 @@ export function OAuth2ConsentPage() {
         setLoading(false);
         return;
       }
-      setMcpInfo(await readCeiling());
+      const disclosure = await readConsentDisclosure();
+      setMcpSetting(disclosure.mcpSetting);
+      setDataMaskingAvailable(disclosure.dataMaskingAvailable);
       setLoading(false);
     })();
-  }, [readCeiling]);
+  }, [readConsentDisclosure]);
 
   // Prefetch workspace list on SaaS so the picker can render. This runs in
   // its own effect keyed on `isSaaSMode` because actuator's serverInfo may
@@ -294,7 +305,7 @@ export function OAuth2ConsentPage() {
     }
     // Allow renders only below this line, and only where the page holds a
     // ceiling this bundle can name (BOT-106).
-    const ceiling = readConsentCeiling(mcpInfo);
+    const ceiling = readConsentCeiling(mcpSetting);
     if (ceiling.kind !== "mode") {
       return (
         <MCPConsentUndisclosed
@@ -310,7 +321,7 @@ export function OAuth2ConsentPage() {
         />
       );
     }
-    if (ceiling.info.capability === MCPSetting_Capability.DISABLED) {
+    if (ceiling.setting.capability === MCPSetting_Capability.DISABLED) {
       return (
         <MCPConsentDisabled
           workspaceTitle={
@@ -333,7 +344,10 @@ export function OAuth2ConsentPage() {
           </p>
         </div>
         {workspaceCard}
-        <MCPConsentCeiling info={ceiling.info} />
+        <MCPConsentCeiling
+          setting={ceiling.setting}
+          dataMaskingAvailable={dataMaskingAvailable}
+        />
         <form method="POST" action={AUTHORIZE_URL}>
           <input type="hidden" name="client_id" value={clientId} />
           <input type="hidden" name="redirect_uri" value={redirectUri} />
