@@ -132,11 +132,16 @@ The standing order, by what is left rather than by number:
 
 | | Effort | Worth |
 | --- | --- | --- |
-| 1 | 5, drop the duplicated MySQL bodies | ~320 s of work, ~2 min of suite wall |
-| 2 | `TestWebhookIntegration` | 148 s in one test, now `backend/tests`'s floor |
-| 3 | 7, engine conformance to omni | 164 s, behind a large ownership blocker |
-| 4 | 6, seams instead of containers | seconds; do it for the tests, not the clock |
-| 5 | 4, isolate per project | a memory ceiling, not a speed play |
+| 1 | 7, engine conformance to omni | 164 s, behind a large ownership blocker |
+| 2 | 6, seams instead of containers | seconds; do it for the tests, not the clock |
+| 3 | 4, isolate per project | a memory ceiling, not a speed play |
+
+Two entries have left this list. Effort 5 is done — and was worth less than the
+~320 s it was sized at, because a third of that number was
+`TestSQLReviewForMySQL`, which was not the duplicate the sizing assumed; see its
+section. `TestWebhookIntegration` was second at 148 s until #21355 fixed the
+scheduler stall underneath it and took it to 45 s, which is the largest single
+saving on this page and came from a production bug rather than a test change.
 
 ### [✓] 1. Close idle connections before shutting the server down
 
@@ -291,11 +296,11 @@ subtests in order, which is `backend/tests`'s existing
 `//nolint:tparallel // Subtests share one server lifecycle.` case; each now
 carries that directive with its own reason. Note what this does not cost:
 the parent stays parallel with the rest of the package either way, and that is
-where the entire saving came from. Making `TestTransactionMode`'s four engine
-subtests parallel would buy nothing, because the package floor is
-`TestWebhookIntegration`, not the sum of everything else.
+where the entire saving came from.
 
-**`TestWebhookIntegration` is now the package floor.** At 148 s it is most of the
+**`TestWebhookIntegration` was the package floor at 148 s.** #21355 then took it
+to 45 s by fixing the task run scheduler stall, so it no longer dominates; the
+paragraph below described the state before that landed. At 148 s it was most of the
 173 s, and the rest of the package finishes around it. It is the one place left
 in `backend/tests` where a single test is worth attacking on its own.
 
@@ -342,11 +347,63 @@ each test grants to its own principal.
 `TestWebhookIntegration` needs separate attention: 144 s, the slowest test in
 the repo, 24 subtests behind one boot with several fixed sleeps.
 
-### 5. Postgres only for `backend/store` and `backend/tests`
+### [✓] 5. Postgres only for `backend/store` and `backend/tests`
 
-**Up to 320 s inside `backend/tests`**, of which 115 s is container starts and
-the rest is the duplicated test bodies. `TestSQLReviewForMySQL` costs 52.7 s
-where `TestSQLReviewForPostgreSQL` costs 17.9 s for the same assertion.
+**Done, and the headline example in the original sizing was wrong.** This section
+said `TestSQLReviewForMySQL` cost 52.7 s where `TestSQLReviewForPostgreSQL` cost
+17.9 s "for the same assertion". They were not the same assertion:
+`sql_review_mysql.yaml` held 21 cases against `sql_review_pg.yaml`'s 9. Deleting
+it as a duplicate would have dropped real rule coverage.
+
+The principle that resolved it is sharper than the one written here.
+**`backend/tests` tests workflows; engines belong to the layer that owns them.**
+Sorting the expensive tests by that rule gave four outcomes rather than one:
+
+- **Same workflow run twice.** Five tests had literally mirrored cases —
+  "MySQL - Second statement fails" beside "PostgreSQL - Second statement fails" —
+  for behavior that is ours, not a dialect's. MySQL arm dropped, one unique case
+  ported: **127.9 s → 59.9 s**.
+- **MySQL-only, engine incidental.** Three tests about data source resolution and
+  masking, ported to Postgres. The translation was not mechanical — Postgres
+  grants are per object, `BIN_TO_UUID` became a `uuid` cast, and the catalog
+  needed a `public` schema.
+- **Engine wearing workflow clothing.** `TestSQLReviewForMySQL` was rule coverage
+  in the wrong place: of the 41 rules its fixture asserts, 39 have a file under
+  `plugin/advisor/mysql/test` carrying real `want:` expectations, and
+  `TestMySQLRules` drives ~60 rules through them with no container, in 2.3 s.
+  **Two did not, and checking that the file merely exists would have missed it.**
+  `RunSQLReviewRuleTest` builds its context with `Driver: nil`, so the two rules
+  that need a live `EXPLAIN` — `STATEMENT_AFFECTED_ROW_LIMIT` and
+  `STATEMENT_DML_DRY_RUN` — have yaml files holding statements and no
+  expectations at all. The first is covered anyway by two driver-backed tests
+  against a fake `database/sql` EXPLAIN driver; the second was not, so deleting
+  the workflow test would have dropped its only coverage, and
+  `TestMySQLDMLDryRunAdvisor` was written against that same fake driver to
+  replace it. Deleted, with
+  `TestSyncerForMySQL` (its Postgres twin sits in the same file) and
+  `TestGetLatestSchema`'s MySQL arm (it asserted a literal dump, including MySQL's
+  `SET @OLD_UNIQUE_CHECKS` preamble). `TestTransactionMode` is deleted, 41 s. It had
+  four engine cases whose expectations were identical — `expectRollbackOn` was `true`
+  in all four and `skipTransaction` was never set, so both fields that existed to
+  express engine variation were dead, along with two unreachable branches.
+
+  **This leaves a known gap, recorded here rather than left silent.** Nothing now
+  covers the execution half of the `-- txn-mode` directive:
+  `executeInTransactionMode` and `executeInAutoCommitMode` appear in no test, so
+  `txn-mode = on` could stop wrapping and every test would stay green. Parsing is
+  still covered by `plugin/parser/base`. Anyone reintroducing coverage should
+  guard the mode switch on one engine, and the case actually worth an engine
+  matrix is DDL inside `txn-mode = on`, where MySQL and Oracle implicitly commit
+  and defeat it — which is the reason the directive exists, and which no version
+  of the deleted test ever covered.
+
+- **Engine is the workflow.** `TestGhostSchemaUpdate` and
+  `TestGitOpsRolloutGhostDirective` keep MySQL, and now say why in a comment:
+  gh-ost is MySQL-only. `TestActionCheckCommand`'s database-group subtest keeps it
+  too — the port was tried and reverted, because the declarative check returns
+  three errors against the same schema on Postgres. Worth chasing separately.
+
+MySQL in `backend/tests` is now those three tests and nothing else.
 
 Unlike effort 4, this one did not deflate. Deleting a test removes work rather
 than moving it, and the run is now bound by the sum term, so the 320 s converts
@@ -362,30 +419,16 @@ packages that keep one, the engine is Postgres: engine dialects and DDL fidelity
 belong in omni. The root `AGENTS.md` carries that second half of the rule today,
 in the words "test API and workflow behavior against Postgres only".
 
-`docker events` recorded 11 MySQL containers from `backend/tests`. The
-candidates, one container each:
+`docker events` recorded 11 MySQL containers from `backend/tests` when this was
+written. Each of those twelve candidate tests is accounted for above; the one
+that is not is `TestActionCheckCommand`, which keeps its container.
 
-```
-TestSQLReviewForMySQL              TestSyncerForMySQL
-TestSQLExport                      TestSQLAdminQuery
-TestSensitiveData                  TestAdminQueryAffectedRows
-TestSQLQueryStopOnError            TestSQLAdminExecuteStopOnError
-TestSQLExportDataSourceResolution  TestSQLQueryDataSourceResolution
-TestActionCheckCommand             TestGetLatestSchema   (MySQL arm of an engine switch)
-```
-
-Where a Postgres equivalent proves the same workflow, delete the MySQL copy and
-save the whole test. Where the MySQL path is the only coverage, port it to
-Postgres and save only the container difference — which is why the payoff is a
-ceiling, not a promise.
-
-Three keep their engine. Each needs a comment saying why:
-
-- `TestGhostSchemaUpdate` and `TestGitOpsRolloutGhostDirective` — gh-ost is
-  MySQL-only.
-- `TestTransactionMode` — per-engine transaction semantics are the behavior
-  under test. It covers MySQL, Postgres, Oracle and MSSQL in one table, and
-  boots no server.
+The original plan here said "where a Postgres equivalent proves the same
+workflow, delete the MySQL copy". That held for `TestSyncerForMySQL`, whose twin
+was already in the same file. It did not hold for `TestSQLReviewForMySQL`: the
+copy was not equivalent, and the thing that made it deletable was finding the
+coverage a layer down rather than a layer across. **Check the layer below before
+calling a test a duplicate.**
 
 ### 6. Seams instead of containers
 
