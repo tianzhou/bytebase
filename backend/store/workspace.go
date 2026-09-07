@@ -4,8 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"time"
 
-	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	colorpb "google.golang.org/genproto/googleapis/type/color"
 	"google.golang.org/genproto/googleapis/type/expr"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/bytebase/bytebase/backend/common"
+	"github.com/bytebase/bytebase/backend/common/log"
 	"github.com/bytebase/bytebase/backend/common/qb"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 )
@@ -131,12 +133,18 @@ func (s *Store) CreateWorkspace(ctx context.Context, create *WorkspaceMessage, a
 				},
 			},
 		}},
+		// No directory sync token is minted here on purpose. It is a bearer
+		// credential, and generating one for every workspace left a live secret
+		// sitting on workspaces that never enable SCIM. Admins mint one on demand
+		// via WorkspaceService.RotateDirectorySyncToken.
 		{storepb.SettingName_WORKSPACE_PROFILE, &storepb.WorkspaceProfileSetting{
 			EnableMetricCollection: true,
-			DirectorySyncToken:     uuid.New().String(),
 			DisallowSignup:         false,
 			DisallowPasswordSignin: false,
 			PasswordRestriction:    &storepb.WorkspaceProfileSetting_PasswordRestriction{MinLength: 8},
+		}},
+		{storepb.SettingName_MCP, &storepb.MCPSetting{
+			Capability: storepb.MCPSetting_READ_ONLY,
 		}},
 		{storepb.SettingName_ENVIRONMENT, &storepb.EnvironmentSetting{
 			Environments: []*storepb.EnvironmentSetting_Environment{
@@ -275,7 +283,7 @@ func (s *Store) FindWorkspace(ctx context.Context, find *FindWorkspaceMessage) (
 }
 
 // ListWorkspacesByEmail finds all workspaces where the given email is a member
-// in the workspace IAM policy bindings, either directly or via a group.
+// in a currently valid workspace IAM policy binding, directly or via a group.
 // Returns workspaces sorted by name.
 func (s *Store) ListWorkspacesByEmail(ctx context.Context, find *FindWorkspaceMessage) ([]*WorkspaceMessage, error) {
 	memberName := common.FormatUserEmail(find.Email)
@@ -299,16 +307,16 @@ func (s *Store) ListWorkspacesByEmail(ctx context.Context, find *FindWorkspaceMe
 	}
 
 	q := qb.Q().Space(`
-		SELECT DISTINCT w.resource_id, w.payload, w.created_at
+		SELECT DISTINCT w.resource_id, w.payload, w.created_at, binding
 		FROM workspace w
 		JOIN policy p ON p.workspace = w.resource_id
+		CROSS JOIN LATERAL jsonb_array_elements(p.payload->'bindings') AS binding
 		WHERE p.resource_type = ?
 		  AND p.type = ?
 		  AND w.deleted = FALSE
 		  AND EXISTS (
 			SELECT 1
-			FROM jsonb_array_elements(p.payload->'bindings') AS binding,
-			     jsonb_array_elements_text(binding->'members') AS member
+			FROM jsonb_array_elements_text(binding->'members') AS member
 			WHERE ?
 		  )
 	`, storepb.Policy_WORKSPACE.String(), storepb.Policy_IAM.String(), memberFilter)
@@ -328,19 +336,35 @@ func (s *Store) ListWorkspacesByEmail(ctx context.Context, find *FindWorkspaceMe
 	}
 	defer rows.Close()
 
+	requestTime := time.Now()
+	seen := map[string]bool{}
 	var workspaces []*WorkspaceMessage
 	for rows.Next() {
 		var ws WorkspaceMessage
 		var payloadBytes []byte
+		var bindingBytes []byte
 		var createdAt any
-		if err := rows.Scan(&ws.ResourceID, &payloadBytes, &createdAt); err != nil {
+		if err := rows.Scan(&ws.ResourceID, &payloadBytes, &createdAt, &bindingBytes); err != nil {
 			return nil, errors.Wrap(err, "failed to scan workspace")
+		}
+		binding := &storepb.Binding{}
+		if err := common.ProtojsonUnmarshaler.Unmarshal(bindingBytes, binding); err != nil {
+			return nil, errors.Wrap(err, "failed to unmarshal workspace IAM binding")
+		}
+		valid, err := common.EvalBindingCondition(binding.Condition.GetExpression(), requestTime)
+		if err != nil {
+			slog.Error("failed to eval workspace IAM binding condition", slog.String("expression", binding.Condition.GetExpression()), log.BBError(err))
+			continue
+		}
+		if !valid || seen[ws.ResourceID] {
+			continue
 		}
 		payload := &storepb.WorkspacePayload{}
 		if err := common.ProtojsonUnmarshaler.Unmarshal(payloadBytes, payload); err != nil {
 			return nil, errors.Wrap(err, "failed to unmarshal workspace payload")
 		}
 		ws.Payload = payload
+		seen[ws.ResourceID] = true
 		workspaces = append(workspaces, &ws)
 	}
 	if err := rows.Err(); err != nil {

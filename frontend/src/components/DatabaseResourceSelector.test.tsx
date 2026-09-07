@@ -53,25 +53,45 @@ vi.mock("@/components/AdvancedSearch", () => ({
   AdvancedSearch: ({
     params,
     onParamsChange,
+    scopeOptions,
   }: {
     params: { query: string; scopes: { id: string; value: string }[] };
     onParamsChange: (params: {
       query: string;
       scopes: { id: string; value: string }[];
     }) => void;
+    scopeOptions: {
+      id: string;
+      onSearch?: (keyword: string) => Promise<unknown>;
+    }[];
   }) => (
-    <button
-      type="button"
-      onClick={() =>
-        onParamsChange({
-          query: "salary",
-          scopes: [{ id: "table", value: "employee" }],
-        })
-      }
-    >
-      <span>advanced-search:{params.query}</span>
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={() =>
+          onParamsChange({
+            query: "salary",
+            scopes: [{ id: "table", value: "employee" }],
+          })
+        }
+      >
+        <span>advanced-search:{params.query}</span>
+      </button>
+      <button
+        type="button"
+        data-testid="search-instances"
+        onClick={() => {
+          void scopeOptions.find((option) => option.id === "instance")?.onSearch?.("");
+        }}
+      >
+        search instances
+      </button>
+    </>
   ),
+}));
+
+vi.mock("@/types/v1/project", () => ({
+  isDefaultProject: (name: string) => name === "projects/default",
 }));
 
 vi.mock("@/stores/app", () => {
@@ -80,6 +100,10 @@ vi.mock("@/stores/app", () => {
     fetchInstanceList: mocks.fetchInstanceList,
     fetchDatabases: mocks.fetchDatabases,
     environmentList: mocks.environmentStore.environmentList,
+    projectsByName: {
+      "projects/project": { name: "projects/project" },
+      "projects/default": { name: "projects/default" },
+    },
   });
   return {
     useAppStore: Object.assign(
@@ -95,11 +119,32 @@ vi.mock("@/components/EnvironmentLabel", () => ({
   ),
 }));
 
+vi.mock("@/components/DatabaseTargetDisplay", () => ({
+  DatabaseTargetDisplay: ({
+    database,
+    keyword,
+    target,
+  }: {
+    database?: { name: string };
+    keyword?: string;
+    target?: string;
+  }) => {
+    const name = database?.name ?? target ?? "";
+    return (
+      <span data-keyword={keyword}>
+        {name.split("/databases/").at(-1) ?? name}
+      </span>
+    );
+  },
+}));
+
 vi.mock("@/utils", () => ({
   engineNameV1: (engine: number) => `engine-${engine}`,
   extractDatabaseResourceName: mocks.extractDatabaseResourceName,
   extractInstanceResourceName: mocks.extractInstanceResourceName,
   getDefaultPagination: () => 100,
+  hasWorkspacePermissionV2: () => true,
+  hasProjectPermissionV2: () => true,
   supportedEngineV1List: () => [],
 }));
 
@@ -137,18 +182,23 @@ function Harness({
   includeColumns,
   initialValue = [],
   onValueChange,
+  readonly,
+  projectName = "projects/project",
 }: {
   includeColumns?: boolean;
   initialValue?: DatabaseResource[];
   onValueChange?: (value: DatabaseResource[]) => void;
+  readonly?: boolean;
+  projectName?: string;
 }) {
   const [value, setValue] = useState<DatabaseResource[]>(initialValue);
 
   return (
     <DatabaseResourceSelector
-      projectName="projects/project"
+      projectName={projectName}
       value={value}
       includeColumns={includeColumns}
+      readonly={readonly}
       onChange={(next) => {
         setValue(next);
         onValueChange?.(next);
@@ -259,6 +309,38 @@ beforeEach(async () => {
 });
 
 describe("DatabaseResourceSelector", () => {
+  test("only searches workspace instances for the default project", async () => {
+    mocks.fetchInstanceList.mockImplementation(async (params) => {
+      if (params?.parent) {
+        throw new Error("the default project cannot own instances");
+      }
+      return {
+        instances: [{ name: "instances/prod", title: "Prod" }],
+        nextPageToken: "",
+      };
+    });
+    const { container, unmount } = renderIntoContainer(
+      <Harness projectName="projects/default" />
+    );
+    await flushPromises();
+
+    const button = container.querySelector(
+      '[data-testid="search-instances"]'
+    ) as HTMLButtonElement;
+    act(() => {
+      button.click();
+    });
+    await flushPromises();
+
+    expect(mocks.fetchInstanceList).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchInstanceList).toHaveBeenCalledWith({
+      pageSize: 1000,
+      filter: undefined,
+      silent: true,
+    });
+    unmount();
+  });
+
   test("passes AdvancedSearch query and table scope to database fetch", async () => {
     const { container, unmount } = renderIntoContainer(<Harness />);
     await flushPromises();
@@ -277,6 +359,21 @@ describe("DatabaseResourceSelector", () => {
       })
     );
 
+    unmount();
+  });
+
+  test("passes the free-text query to database result highlighting", async () => {
+    const { container, unmount } = renderIntoContainer(<Harness />);
+    await flushPromises();
+    await waitForText(container, "advanced-search:");
+
+    clickFirstButtonInRow(container, "advanced-search:");
+    await flushPromises();
+
+    const databaseLabel = Array.from(
+      container.querySelectorAll("[data-keyword]")
+    ).find((element) => element.textContent === "hr") as HTMLElement;
+    expect(databaseLabel.dataset.keyword).toBe("salary");
     unmount();
   });
 
@@ -551,6 +648,44 @@ describe("DatabaseResourceSelector", () => {
         table: "employee",
       },
     ]);
+
+    unmount();
+  });
+
+  test("prevents resource changes when readonly", async () => {
+    const onValueChange = vi.fn();
+    const { container, unmount } = renderIntoContainer(
+      <Harness
+        includeColumns
+        readonly
+        initialValue={[
+          {
+            databaseFullName: databaseName,
+            schema: "public",
+            table: "employee",
+            columns: ["salary"],
+          },
+        ]}
+        onValueChange={onValueChange}
+      />
+    );
+    await flushPromises();
+    await expandDatabase(container);
+    clickFirstButtonInRow(container, "public");
+    clickFirstButtonInRow(container, "employee");
+
+    const salaryRow = rowForText(container, "salary");
+    const salaryCheckbox = salaryRow.querySelector('[role="checkbox"]');
+    expect(salaryCheckbox?.getAttribute("aria-disabled")).toBe("true");
+
+    clickCheckboxInRow(container, "id");
+
+    const selectedResource = rowForText(
+      container,
+      "hr.public.employee: salary"
+    );
+    expect(selectedResource.querySelector("button")).toBeNull();
+    expect(onValueChange).not.toHaveBeenCalled();
 
     unmount();
   });

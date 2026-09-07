@@ -25,10 +25,13 @@ const mocks = vi.hoisted(() => ({
     openTabList: SQLEditorTab[];
     setCurrentTabId?: (id: string) => void;
     closeTab?: (id: string) => void;
+    addTab?: () => void;
   },
   closeTab: vi.fn(),
   setCurrentTabId: vi.fn(),
-  createWorksheet: vi.fn().mockResolvedValue(undefined),
+  createSavedQuery: vi.fn().mockResolvedValue(undefined),
+  addTab: vi.fn(),
+  canCreateSavedQueryInProject: vi.fn(() => true),
   tabListEventsOn:
     vi.fn<(event: string, h: (p: unknown) => void) => () => void>(),
 }));
@@ -48,11 +51,20 @@ vi.mock("@/modules/sql-editor/store/tab", () => ({
 
 vi.mock("@/modules/sql-editor/store", () => ({
   useSQLEditorStore: (
-    selector: (s: { createWorksheet: typeof mocks.createWorksheet }) => unknown
+    selector: (s: { createSavedQuery: typeof mocks.createSavedQuery }) => unknown
   ) =>
     selector({
-      createWorksheet: mocks.createWorksheet,
+      createSavedQuery: mocks.createSavedQuery,
     }),
+}));
+
+vi.mock("@/modules/sql-editor/store/editor", () => ({
+  useSQLEditorEditorState: (selector: (s: { project: string }) => unknown) =>
+    selector({ project: "projects/proj1" }),
+}));
+
+vi.mock("@/utils", () => ({
+  canCreateSavedQueryInProject: mocks.canCreateSavedQueryInProject,
 }));
 
 vi.mock("@/modules/sql-editor/model/TabList/events", () => ({
@@ -209,7 +221,7 @@ const makeTab = (
   ({
     id,
     title: `t-${id}`,
-    mode: "WORKSHEET",
+    mode: "SAVED_QUERY",
     status: "CLEAN",
     ...overrides,
   }) as unknown as SQLEditorTab;
@@ -220,6 +232,7 @@ const setup = (tabs: SQLEditorTab[], currentTabId = tabs[0]?.id ?? "") => {
     currentTabId,
     setCurrentTabId: mocks.setCurrentTabId,
     closeTab: mocks.closeTab,
+    addTab: mocks.addTab,
   });
   mocks.tabListEventsOn.mockReturnValue(() => {});
   return { tabStore: mocks.tabState };
@@ -228,6 +241,7 @@ const setup = (tabs: SQLEditorTab[], currentTabId = tabs[0]?.id ?? "") => {
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.useTranslation.mockReturnValue({ t: (key: string) => key });
+  mocks.canCreateSavedQueryInProject.mockReturnValue(true);
   ({ TabList } = await import("./TabList"));
 });
 
@@ -269,7 +283,7 @@ describe("TabList", () => {
     unmount();
   });
 
-  test("closing a DIRTY worksheet opens the confirm dialog", () => {
+  test("closing a DIRTY saved query opens the confirm dialog", () => {
     setup([makeTab("a", { status: "DIRTY" })]);
     const { container, render, unmount } = renderIntoContainer(<TabList />);
     render();
@@ -284,7 +298,7 @@ describe("TabList", () => {
     unmount();
   });
 
-  test("+ button calls worksheetStore.createWorksheet", () => {
+  test("+ button calls savedQueryStore.createSavedQuery", () => {
     setup([makeTab("a")]);
     const { container, render, unmount } = renderIntoContainer(<TabList />);
     render();
@@ -295,7 +309,26 @@ describe("TabList", () => {
     act(() => {
       addButton?.click();
     });
-    expect(mocks.createWorksheet).toHaveBeenCalled();
+    expect(mocks.createSavedQuery).toHaveBeenCalled();
+    expect(mocks.addTab).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("+ button opens a local tab without the create permission", () => {
+    // A role can grant SQL Editor access without bb.savedQueries.create.
+    // Persisting would 403, so the tab stays local instead of failing.
+    mocks.canCreateSavedQueryInProject.mockReturnValue(false);
+    setup([makeTab("a")]);
+    const { container, render, unmount } = renderIntoContainer(<TabList />);
+    render();
+    const addButton = container.querySelector(
+      "[aria-label='common.add']"
+    ) as HTMLButtonElement | null;
+    act(() => {
+      addButton?.click();
+    });
+    expect(mocks.createSavedQuery).not.toHaveBeenCalled();
+    expect(mocks.addTab).toHaveBeenCalled();
     unmount();
   });
 

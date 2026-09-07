@@ -24,9 +24,7 @@ func TestGetDatabaseMetadataWithTestcontainer(t *testing.T) {
 	ctx := context.Background()
 
 	// Start shared MySQL container for all subtests
-	container, err := testcontainer.GetTestMySQLContainer(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedMySQLContainer(t)
 
 	// Test cases with various MySQL features
 	testCases := []struct {

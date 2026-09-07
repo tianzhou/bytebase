@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,6 +19,19 @@ import (
 )
 
 var testMySQLAdvisorExplainRows [][]driver.Value
+
+// testMySQLAdvisorExplainJSON is returned for `EXPLAIN FORMAT=JSON` queries; when
+// empty, the JSON query returns no rows and the advisor falls back to the tabular rows.
+var testMySQLAdvisorExplainJSON string
+
+// testMySQLAdvisorExplainErr, when set, fails every query, standing in for a
+// statement the server refuses to EXPLAIN.
+var testMySQLAdvisorExplainErr error
+
+// testMySQLAdvisorQueries records every statement the fake driver is asked to
+// run, so a rule that sent raw DML instead of EXPLAIN is caught rather than
+// silently succeeding.
+var testMySQLAdvisorQueries []string
 
 func init() {
 	sql.Register("test_mysql_advisor_explain", testMySQLAdvisorExplainDriver{})
@@ -42,8 +57,22 @@ func (testMySQLAdvisorExplainConn) Begin() (driver.Tx, error) {
 	return testMySQLAdvisorExplainTx{}, nil
 }
 
-func (testMySQLAdvisorExplainConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
-	return &testMySQLAdvisorExplainResultRows{rows: testMySQLAdvisorExplainRows}, nil
+func (testMySQLAdvisorExplainConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	testMySQLAdvisorQueries = append(testMySQLAdvisorQueries, query)
+	if testMySQLAdvisorExplainErr != nil {
+		return nil, testMySQLAdvisorExplainErr
+	}
+	if strings.HasPrefix(query, "EXPLAIN FORMAT=JSON") {
+		var rows [][]driver.Value
+		if testMySQLAdvisorExplainJSON != "" {
+			rows = [][]driver.Value{{testMySQLAdvisorExplainJSON}}
+		}
+		return &testMySQLAdvisorExplainResultRows{columns: []string{"EXPLAIN"}, rows: rows}, nil
+	}
+	return &testMySQLAdvisorExplainResultRows{
+		columns: []string{"id", "select_type", "table", "type", "rows", "filtered"},
+		rows:    testMySQLAdvisorExplainRows,
+	}, nil
 }
 
 type testMySQLAdvisorExplainTx struct{}
@@ -57,12 +86,13 @@ func (testMySQLAdvisorExplainTx) Rollback() error {
 }
 
 type testMySQLAdvisorExplainResultRows struct {
-	rows [][]driver.Value
-	idx  int
+	columns []string
+	rows    [][]driver.Value
+	idx     int
 }
 
-func (*testMySQLAdvisorExplainResultRows) Columns() []string {
-	return []string{"id", "select_type", "table", "type", "rows", "filtered"}
+func (r *testMySQLAdvisorExplainResultRows) Columns() []string {
+	return r.columns
 }
 
 func (*testMySQLAdvisorExplainResultRows) Close() error {
@@ -156,7 +186,48 @@ func TestMySQLRules(t *testing.T) {
 	}
 }
 
+func TestMySQLAffectedRowLimitAdvisorUsesJSONPlanTargetNode(t *testing.T) {
+	// The tabular EXPLAIN's first row is a 100232-row driving-table scan; the JSON
+	// plan flags the update target whose cumulative estimate is 1144 (BYT-9858).
+	testMySQLAdvisorExplainJSON = `{"query_block":{"select_id":1,"nested_loop":[
+		{"table":{"table_name":"t","access_type":"ALL","rows_examined_per_scan":100232,"rows_produced_per_join":3006,"filtered":"3.00"}},
+		{"table":{"update":true,"table_name":"o","access_type":"ref","rows_examined_per_scan":3,"rows_produced_per_join":1144,"filtered":"10.00"}}
+	]}}`
+	testMySQLAdvisorExplainRows = [][]driver.Value{
+		{int64(1), "SIMPLE", "t", "ALL", int64(100232), "3.00"},
+		{int64(1), "UPDATE", "o", "ref", int64(3), "10.00"},
+	}
+	defer func() { testMySQLAdvisorExplainJSON = "" }()
+
+	db, err := sql.Open("test_mysql_advisor_explain", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	sm := sheet.NewManager()
+	adviceList, err := advisor.SQLReviewCheck(context.Background(), sm, "UPDATE o SET c = 1 WHERE c IS NULL AND EXISTS (SELECT 1 FROM t WHERE t.k = o.k);", []*storepb.SQLReviewRule{
+		{
+			Type:   storepb.SQLReviewRule_STATEMENT_AFFECTED_ROW_LIMIT,
+			Level:  storepb.SQLReviewRule_WARNING,
+			Engine: storepb.Engine_MYSQL,
+			Payload: &storepb.SQLReviewRule_NumberPayload{
+				NumberPayload: &storepb.SQLReviewRule_NumberRulePayload{
+					Number: 2000,
+				},
+			},
+		},
+	}, advisor.Context{
+		DBType:          storepb.Engine_MYSQL,
+		Driver:          db,
+		NoAppendBuiltin: true,
+	})
+	require.NoError(t, err)
+	// 1144 is below the 2000 limit; the legacy first-"rows" heuristic would have
+	// reported 100232 and produced advice.
+	require.Empty(t, adviceList)
+}
+
 func TestMySQLRowLimitAdvisorsCapExplainEstimateByLimit(t *testing.T) {
+	testMySQLAdvisorExplainJSON = ""
 	testMySQLAdvisorExplainRows = [][]driver.Value{
 		{int64(1), "SIMPLE", "td", "ALL", int64(1000), "100.00"},
 	}
@@ -253,4 +324,57 @@ func TestMySQLBuiltinWalkThroughCheckTableExists(t *testing.T) {
 	require.Equal(t, storepb.Advice_WARNING, adviceList[0].Status)
 	require.Equal(t, code.TableExists.Int32(), adviceList[0].Code)
 	require.Equal(t, "Table `user` already exists", adviceList[0].Content)
+}
+
+// TestMySQLDMLDryRunAdvisor covers STATEMENT_DML_DRY_RUN, which the yaml harness
+// cannot: RunSQLReviewRuleTest builds its context with Driver: nil and this rule
+// does nothing without one, which is why test/statement_dml_dry_run.yaml carries
+// statements and no `want:` at all.
+func TestMySQLDMLDryRunAdvisor(t *testing.T) {
+	const stmt = "UPDATE tech_book SET name = 'xz' WHERE id = 1;"
+	rules := []*storepb.SQLReviewRule{{
+		Type:   storepb.SQLReviewRule_STATEMENT_DML_DRY_RUN,
+		Level:  storepb.SQLReviewRule_WARNING,
+		Engine: storepb.Engine_MYSQL,
+	}}
+	sm := sheet.NewManager()
+
+	db, err := sql.Open("test_mysql_advisor_explain", "")
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Sequential: the second case arms a package-level failure hook.
+	t.Run("a statement whose EXPLAIN succeeds raises nothing, and the DML never runs", func(t *testing.T) {
+		testMySQLAdvisorQueries = nil
+		adviceList, err := advisor.SQLReviewCheck(context.Background(), sm, stmt, rules, advisor.Context{
+			DBType:          storepb.Engine_MYSQL,
+			Driver:          db,
+			NoAppendBuiltin: true,
+		})
+		require.NoError(t, err)
+		require.Empty(t, adviceList)
+
+		// The driver is the only way out of the rule, so assert nothing left it but
+		// an EXPLAIN: a dry run that sent the raw UPDATE would pass otherwise.
+		require.NotEmpty(t, testMySQLAdvisorQueries, "the rule must actually reach the driver")
+		for _, q := range testMySQLAdvisorQueries {
+			require.True(t, strings.HasPrefix(q, "EXPLAIN "),
+				"the dry run must only ever EXPLAIN, got %q", q)
+		}
+	})
+
+	t.Run("a statement whose EXPLAIN fails is reported", func(t *testing.T) {
+		testMySQLAdvisorExplainErr = errors.New("Table 'test.tech_book' doesn't exist")
+		defer func() { testMySQLAdvisorExplainErr = nil }()
+
+		adviceList, err := advisor.SQLReviewCheck(context.Background(), sm, stmt, rules, advisor.Context{
+			DBType:          storepb.Engine_MYSQL,
+			Driver:          db,
+			NoAppendBuiltin: true,
+		})
+		require.NoError(t, err)
+		require.Len(t, adviceList, 1)
+		require.Equal(t, code.StatementDMLDryRunFailed.Int32(), adviceList[0].Code)
+		require.Contains(t, adviceList[0].Content, "dry runs failed")
+	})
 }

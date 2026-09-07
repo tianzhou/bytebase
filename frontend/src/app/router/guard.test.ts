@@ -1,5 +1,6 @@
 import { matchRoutes, RouterContextProvider } from "react-router";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { DatabaseChangeMode } from "@/types/proto-es/v1/setting_service_pb";
 
 // Configurable fake session, controlled per test.
 const session = {
@@ -9,13 +10,22 @@ const session = {
   requireMfa: false,
   hasTwoFa: false,
   isSaaSMode: false,
+  disallowSignup: false,
+  enableOnboarding: false,
   currentUser: undefined as { mfaEnabled: boolean } | undefined,
+  // Mirrors the store default: PIPELINE until the workspace profile loads.
+  databaseChangeMode: DatabaseChangeMode.PIPELINE,
 };
 
 const resets = {
   resetDatabases: vi.fn(),
   resetInstances: vi.fn(),
   resetProjects: vi.fn(),
+};
+
+const workspaceSetup = {
+  fetchServerInfo: vi.fn<() => Promise<unknown>>(),
+  fetchWorkspaceIamPolicy: vi.fn<() => Promise<unknown>>(),
 };
 
 vi.mock("@/stores/app", () => ({
@@ -27,7 +37,16 @@ vi.mock("@/stores/app", () => ({
       getWorkspaceProfile: () => ({ requireMfa: session.requireMfa }),
       hasFeature: () => session.hasTwoFa,
       isSaaSMode: () => session.isSaaSMode,
+      enableOnboarding: () => session.enableOnboarding,
+      fetchServerInfo: workspaceSetup.fetchServerInfo,
+      fetchWorkspaceIamPolicy: workspaceSetup.fetchWorkspaceIamPolicy,
+      authenticationInfo: {
+        restriction: { disallowSignup: session.disallowSignup },
+      },
       currentUser: session.currentUser,
+      appFeatures: {
+        "bb.feature.database-change-mode": session.databaseChangeMode,
+      },
       ...resets,
     }),
   },
@@ -40,13 +59,18 @@ vi.mock("@/modules/ai/store", () => ({
 
 import { buildSigninRedirectQuery, rootGuard } from "./guard";
 import {
+  ACCOUNT_ROUTE,
+  ACCOUNT_ROUTE_TWO_FACTOR,
   AUTH_2FA_SETUP_MODULE,
   AUTH_OAUTH_CALLBACK_MODULE,
   AUTH_PASSWORD_RESET_MODULE,
   AUTH_SIGNIN_MODULE,
   AUTH_SIGNUP_MODULE,
   PROJECT_V1_ROUTE_DASHBOARD,
+  SQL_EDITOR_HOME_MODULE,
+  WORKSPACE_ROOT_MODULE,
   WORKSPACE_ROUTE_404,
+  WORKSPACE_ROUTE_LANDING,
 } from "./handles";
 import { setRouteNameIndex } from "./navigation";
 import { routes } from "./routes";
@@ -58,14 +82,21 @@ beforeEach(() => {
   session.requireMfa = false;
   session.hasTwoFa = false;
   session.isSaaSMode = false;
+  session.disallowSignup = false;
+  session.enableOnboarding = false;
   session.currentUser = undefined;
+  session.databaseChangeMode = DatabaseChangeMode.PIPELINE;
   vi.clearAllMocks();
+  workspaceSetup.fetchServerInfo.mockResolvedValue({});
+  workspaceSetup.fetchWorkspaceIamPolicy.mockResolvedValue({});
   setRouteNameIndex(
     new Map<string, string>([
       [AUTH_SIGNIN_MODULE, "/auth"],
       [AUTH_2FA_SETUP_MODULE, "/auth/2fa-setup"],
       [AUTH_PASSWORD_RESET_MODULE, "/auth/password-reset"],
       [WORKSPACE_ROUTE_404, "/404"],
+      [SQL_EDITOR_HOME_MODULE, "/sql-editor"],
+      [WORKSPACE_ROUTE_LANDING, "/landing"],
     ])
   );
 });
@@ -97,9 +128,45 @@ async function runCatchAllLoader(path: string): Promise<Response> {
   }) as Response | Promise<Response>;
 }
 
+async function runWorkspaceSetupLoader(
+  path = "/auth/setup"
+): Promise<Response | null> {
+  const matched = matchRoutes(routes, path);
+  const leafRoute = matched?.at(-1)?.route;
+  if (typeof leafRoute?.loader !== "function") {
+    return null;
+  }
+  const url = new URL(`https://app.example.com${path}`);
+  return leafRoute.loader({
+    request: new Request(url),
+    url,
+    pattern: "/auth/setup",
+    params: {},
+    context: new RouterContextProvider(),
+  }) as Response | null | Promise<Response | null>;
+}
+
 describe("rootGuard", () => {
   test("error page is allowed directly", () => {
     expect(run(WORKSPACE_ROUTE_404, "/404")).toBeNull();
+  });
+
+  test("root sends an EDITOR workspace to the SQL Editor", () => {
+    session.isLoggedIn = true;
+    session.databaseChangeMode = DatabaseChangeMode.EDITOR;
+
+    expect(location(run(WORKSPACE_ROOT_MODULE, "/"))).toBe("/sql-editor");
+  });
+
+  // Documents why `login()` must load the workspace profile before it
+  // navigates: this guard cannot tell "not loaded" from "PIPELINE", and the
+  // last-visit fallback ignores /sql-editor, so an EDITOR workspace whose
+  // profile is still unloaded lands here instead of the editor.
+  test("root falls back to landing while the workspace profile is unloaded", () => {
+    session.isLoggedIn = true;
+    session.databaseChangeMode = DatabaseChangeMode.PIPELINE;
+
+    expect(location(run(WORKSPACE_ROOT_MODULE, "/"))).toBe("/landing");
   });
 
   test("logged-out user on an unknown URL matched by the 404 catch-all is redirected to signin", () => {
@@ -118,6 +185,115 @@ describe("rootGuard", () => {
     session.isLoggedIn = true;
     const response = await runCatchAllLoader("/ioewjfiwoejf");
     expect(response.headers.get("Location")).toBe("/404");
+  });
+
+  test("/auth/admin matches the catch-all route", () => {
+    const matched = matchRoutes(routes, "/auth/admin");
+    const leafRoute = matched?.at(-1)?.route;
+    const handle = leafRoute?.handle as { name?: string } | undefined;
+    expect(handle?.name).toBe(WORKSPACE_ROUTE_404);
+  });
+
+  test("the legacy /setup path is no longer a setup route", () => {
+    const matched = matchRoutes(routes, "/setup");
+    const leafRoute = matched?.at(-1)?.route;
+    const handle = leafRoute?.handle as { name?: string } | undefined;
+
+    expect(handle?.name).toBe(WORKSPACE_ROUTE_404);
+  });
+
+  test("matches the unified workspace setup route under /auth", () => {
+    const matched = matchRoutes(routes, "/auth/setup");
+
+    expect(matched?.at(-1)?.route.handle).toEqual({ name: "auth.setup" });
+  });
+
+  test("allows the sole workspace admin to enter workspace setup", async () => {
+    session.isLoggedIn = true;
+    session.enableOnboarding = true;
+
+    expect(await runWorkspaceSetupLoader()).toBeNull();
+  });
+
+  test("redirects an ineligible user away from workspace setup", async () => {
+    session.isLoggedIn = true;
+
+    expect(location(await runWorkspaceSetupLoader())).toBe("/landing");
+  });
+
+  test("refreshes the member count before checking setup eligibility", async () => {
+    session.isLoggedIn = true;
+    session.enableOnboarding = true;
+    workspaceSetup.fetchServerInfo.mockImplementation(async () => {
+      session.enableOnboarding = false;
+      return {};
+    });
+
+    expect(location(await runWorkspaceSetupLoader())).toBe("/landing");
+  });
+
+  test("preserves a valid setup redirect for an ineligible user", async () => {
+    session.isLoggedIn = true;
+
+    expect(
+      location(
+        await runWorkspaceSetupLoader(
+          "/auth/setup?redirect=%2Fprojects%2Fexample"
+        )
+      )
+    ).toBe("/projects/example");
+  });
+
+  test("rejects an external setup redirect for an ineligible user", async () => {
+    session.isLoggedIn = true;
+
+    expect(
+      location(
+        await runWorkspaceSetupLoader(
+          "/auth/setup?redirect=https%3A%2F%2Fexample.com"
+        )
+      )
+    ).toBe("/landing");
+  });
+
+  test("rejects a same-origin full URL setup redirect", async () => {
+    session.isLoggedIn = true;
+
+    expect(
+      location(
+        await runWorkspaceSetupLoader(
+          "/auth/setup?redirect=https%3A%2F%2Fapp.example.com%2Fprojects%2Fexample"
+        )
+      )
+    ).toBe("/landing");
+  });
+
+  test("rejects a backslash-normalized external setup redirect", async () => {
+    session.isLoggedIn = true;
+
+    expect(
+      location(
+        await runWorkspaceSetupLoader("/auth/setup?redirect=%2F%5Cevil.example")
+      )
+    ).toBe("/landing");
+  });
+
+  test("rejects a malformed setup redirect", async () => {
+    session.isLoggedIn = true;
+
+    expect(
+      location(await runWorkspaceSetupLoader("/auth/setup?redirect=%2F%5C"))
+    ).toBe("/landing");
+  });
+
+  test("redirects away from workspace setup when IAM loading fails", async () => {
+    session.isLoggedIn = true;
+    session.enableOnboarding = true;
+    workspaceSetup.fetchWorkspaceIamPolicy.mockRejectedValue(
+      new Error("policy unavailable")
+    );
+
+    expect(location(await runWorkspaceSetupLoader())).toBe("/landing");
   });
 
   test("oauth callback is allowed directly", () => {
@@ -148,8 +324,8 @@ describe("rootGuard", () => {
     expect(resets.resetProjects).toHaveBeenCalled();
   });
 
-  test("redirects SaaS signup route to signin", () => {
-    session.isSaaSMode = true;
+  test("redirects to signin when signup is disallowed", () => {
+    session.disallowSignup = true;
 
     expect(
       location(
@@ -202,6 +378,15 @@ describe("rootGuard", () => {
   test("allows an authenticated user on an allowed route", () => {
     session.isLoggedIn = true;
     expect(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1")).toBeNull();
+  });
+
+  // Personal account routes live outside the /setting tree, so they need
+  // their own entry in the allowlist. Without it a full page load of /account
+  // lands on 404 while in-app navigation still appears to work.
+  test("allows an authenticated user on their account page", () => {
+    session.isLoggedIn = true;
+    expect(run(ACCOUNT_ROUTE, "/account")).toBeNull();
+    expect(run(ACCOUNT_ROUTE_TWO_FACTOR, "/account/two-factor")).toBeNull();
   });
 
   test("unknown named route falls back to 404", () => {

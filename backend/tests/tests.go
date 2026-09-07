@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -102,6 +101,7 @@ type controller struct {
 	databaseServiceClient         v1connect.DatabaseServiceClient
 	databaseCatalogServiceClient  v1connect.DatabaseCatalogServiceClient
 	sheetServiceClient            v1connect.SheetServiceClient
+	savedQueryServiceClient       v1connect.SavedQueryServiceClient
 	sqlServiceClient              v1connect.SQLServiceClient
 	queryHistoryServiceClient     v1connect.QueryHistoryServiceClient
 	subscriptionServiceClient     v1connect.SubscriptionServiceClient
@@ -114,7 +114,8 @@ type controller struct {
 	serviceAccountServiceClient   v1connect.ServiceAccountServiceClient
 	workloadIdentityServiceClient v1connect.WorkloadIdentityServiceClient
 	accessGrantServiceClient      v1connect.AccessGrantServiceClient
-	worksheetServiceClient        v1connect.WorksheetServiceClient
+	identityProviderServiceClient v1connect.IdentityProviderServiceClient
+	instanceRoleServiceClient     v1connect.InstanceRoleServiceClient
 
 	project *v1pb.Project
 
@@ -289,6 +290,8 @@ func (ctl *controller) start(ctx context.Context, port int) (context.Context, er
 	ctl.projectServiceClient = v1connect.NewProjectServiceClient(ctl.client, baseURL, interceptors)
 	ctl.databaseGroupServiceClient = v1connect.NewDatabaseGroupServiceClient(ctl.client, baseURL, interceptors)
 	ctl.authServiceClient = v1connect.NewAuthServiceClient(ctl.client, baseURL, interceptors)
+	ctl.identityProviderServiceClient = v1connect.NewIdentityProviderServiceClient(ctl.client, baseURL, interceptors)
+	ctl.instanceRoleServiceClient = v1connect.NewInstanceRoleServiceClient(ctl.client, baseURL, interceptors)
 	ctl.userServiceClient = v1connect.NewUserServiceClient(ctl.client, baseURL, interceptors)
 	ctl.settingServiceClient = v1connect.NewSettingServiceClient(ctl.client, baseURL, interceptors)
 	ctl.instanceServiceClient = v1connect.NewInstanceServiceClient(ctl.client, baseURL, interceptors)
@@ -296,6 +299,7 @@ func (ctl *controller) start(ctx context.Context, port int) (context.Context, er
 	ctl.databaseServiceClient = v1connect.NewDatabaseServiceClient(ctl.client, baseURL, interceptors)
 	ctl.databaseCatalogServiceClient = v1connect.NewDatabaseCatalogServiceClient(ctl.client, baseURL, interceptors)
 	ctl.sheetServiceClient = v1connect.NewSheetServiceClient(ctl.client, baseURL, interceptors)
+	ctl.savedQueryServiceClient = v1connect.NewSavedQueryServiceClient(ctl.client, baseURL, interceptors)
 	ctl.sqlServiceClient = v1connect.NewSQLServiceClient(ctl.client, baseURL, interceptors)
 	ctl.queryHistoryServiceClient = v1connect.NewQueryHistoryServiceClient(ctl.client, baseURL, interceptors)
 	ctl.subscriptionServiceClient = v1connect.NewSubscriptionServiceClient(ctl.client, baseURL, interceptors)
@@ -308,7 +312,6 @@ func (ctl *controller) start(ctx context.Context, port int) (context.Context, er
 	ctl.serviceAccountServiceClient = v1connect.NewServiceAccountServiceClient(ctl.client, baseURL, interceptors)
 	ctl.workloadIdentityServiceClient = v1connect.NewWorkloadIdentityServiceClient(ctl.client, baseURL, interceptors)
 	ctl.accessGrantServiceClient = v1connect.NewAccessGrantServiceClient(ctl.client, baseURL, interceptors)
-	ctl.worksheetServiceClient = v1connect.NewWorksheetServiceClient(ctl.client, baseURL, interceptors)
 
 	if err := ctl.waitForHealthz(ctx); err != nil {
 		return nil, errors.Wrap(err, "failed to wait for healthz")
@@ -331,7 +334,7 @@ func (ctl *controller) waitForHealthz(ctx context.Context) error {
 	for {
 		select {
 		case <-ticker.C:
-			_, err := ctl.actuatorServiceClient.GetActuatorInfo(ctx, &connect.Request[v1pb.GetActuatorInfoRequest]{})
+			_, err := ctl.authServiceClient.GetAuthenticationInfo(ctx, &connect.Request[v1pb.GetAuthenticationInfoRequest]{})
 			if err != nil && status.Code(err) == codes.Unavailable {
 				continue
 			}
@@ -348,6 +351,11 @@ func (ctl *controller) waitForHealthz(ctx context.Context) error {
 // Close closes long running resources.
 func (ctl *controller) Close(ctx context.Context) error {
 	var e error
+	// Drop the client's idle HTTP/2 connection before shutting the server down.
+	// Otherwise httpServer.Shutdown waits out the idle connection, ~1s per test.
+	if ctl.client != nil {
+		ctl.client.CloseIdleConnections()
+	}
 	if ctl.server != nil {
 		if err := ctl.server.Shutdown(ctx); err != nil {
 			e = multierr.Append(e, err)
@@ -399,7 +407,7 @@ func (ctl *controller) signupAndLogin(ctx context.Context) (string, error) {
 		Email:    "demo@example.com",
 		Password: "1024bytebase",
 		Title:    "demo",
-	})); err != nil && !strings.Contains(err.Error(), "already registered") {
+	})); err != nil && connect.CodeOf(err) != connect.CodeAlreadyExists {
 		return "", err
 	}
 	loginResp, err := ctl.authServiceClient.Login(ctx, connect.NewRequest(&v1pb.LoginRequest{

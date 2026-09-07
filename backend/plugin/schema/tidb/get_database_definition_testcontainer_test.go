@@ -26,8 +26,7 @@ func TestGetDatabaseDefinition(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	container := testcontainer.GetTestTiDBContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedTiDBContainer(t)
 
 	type testCase struct {
 		description string
@@ -244,8 +243,7 @@ func TestGetDatabaseDefinitionWithConnectedDeps(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	container := testcontainer.GetTestTiDBContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedTiDBContainer(t)
 
 	// Create unique test database using UUID
 	testDB := fmt.Sprintf("test_%s", strings.ReplaceAll(uuid.New().String(), "-", "_"))

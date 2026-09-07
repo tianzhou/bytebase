@@ -157,6 +157,8 @@ describe("AuthGate", () => {
 
     expect(container.querySelector("[data-testid='page']")).not.toBeNull();
     expect(container.querySelector("[role='status']")).toBeNull();
+    expect(mocks.fetchWorkspaceIamPolicy).toHaveBeenCalledWith(true);
+    expect(mocks.listRoles).toHaveBeenCalledWith(true);
 
     act(() => {
       const currentUser = useAppStore.getState().currentUser;
@@ -284,8 +286,11 @@ describe("AuthGate", () => {
     });
 
     expect(mocks.fetchCurrentUser).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchCurrentUser).toHaveBeenCalledWith(true);
     expect(mocks.fetchWorkspaceIamPolicy).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchWorkspaceIamPolicy).toHaveBeenCalledWith(true);
     expect(mocks.listRoles).toHaveBeenCalledTimes(1);
+    expect(mocks.listRoles).toHaveBeenCalledWith(true);
     expect(container.querySelector("[data-testid='page']")).not.toBeNull();
     expect(container.querySelector("[role='status']")).toBeNull();
   });

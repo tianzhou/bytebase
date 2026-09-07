@@ -178,6 +178,14 @@ const mocks = vi.hoisted(() => {
     routeNames: {
       databaseDetail: "workspace.project.database.detail",
     },
+    serverInfo: {} as {
+      sample?: {
+        instances: {
+          instance: string;
+          expireTime?: { seconds: bigint; nanos: number };
+        }[];
+      };
+    },
   };
 });
 
@@ -280,7 +288,8 @@ vi.mock("@/stores", () => ({
 // working unchanged.
 vi.mock("@/stores/app", () => ({
   useAppStore: Object.assign(
-    (selector: (s: unknown) => unknown) => selector(mocks.dbSchemaStore()),
+    (selector: (s: unknown) => unknown) =>
+      selector({ ...mocks.dbSchemaStore(), serverInfo: mocks.serverInfo }),
     {
       getState: () => ({
         ...mocks.dbSchemaStore(),
@@ -411,19 +420,6 @@ vi.mock(
   () => ({})
 );
 
-vi.mock("pouchdb", () => {
-  class MockPouchDB {
-    static plugin = vi.fn();
-  }
-  return {
-    default: MockPouchDB,
-  };
-});
-
-vi.mock("pouchdb-find", () => ({
-  default: {},
-}));
-
 const renderIntoContainer = (element: ReturnType<typeof createElement>) => {
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -467,6 +463,7 @@ beforeEach(() => {
     fullPath: "/sql-editor/projects/proj1",
   });
   mocks.useProjectDatabaseDetail.mockReset();
+  mocks.serverInfo = {};
   mocks.LoaderCircle.mockClear();
   mocks.TabsList.mockClear();
   mocks.TabsTrigger.mockClear();
@@ -542,6 +539,93 @@ beforeEach(() => {
 });
 
 describe("ProjectDatabaseDetailPage", () => {
+  test("shows project binding attention for a project instance database", async () => {
+    mocks.useProjectDatabaseDetail.mockReturnValue({
+      database: {
+        name: "projects/proj1/instances/inst1/databases/db1",
+        project: "projects/proj1",
+        effectiveEnvironment: "environments/prod",
+        instanceResource: {
+          name: "projects/proj1/instances/inst1",
+          title: "Project instance",
+        },
+      },
+      databaseName: "projects/proj1/instances/inst1/databases/db1",
+      loading: false,
+      ready: true,
+      allowAlterSchema: true,
+      isDefaultProject: false,
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      createElement(ProjectDatabaseDetailPage, {
+        projectId: "proj1",
+        instanceId: "inst1",
+        databaseName: "db1",
+        routeQuery: { parent: "projects/proj1/instances/inst1" },
+      })
+    );
+
+    render();
+
+    expect(container.textContent).toContain("instance.project-bound-title");
+    expect(container.textContent).toContain(
+      "instance.project-bound-description"
+    );
+
+    unmount();
+  });
+
+  test("shows the sample expiration warning for a sample database", async () => {
+    mocks.serverInfo = {
+      sample: {
+        instances: [
+          {
+            instance: "projects/proj1/instances/inst1",
+            expireTime: {
+              seconds: BigInt(
+                Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60
+              ),
+              nanos: 0,
+            },
+          },
+        ],
+      },
+    };
+    mocks.useProjectDatabaseDetail.mockReturnValue({
+      database: {
+        name: "instances/inst1/databases/db1",
+        project: "projects/proj1",
+        effectiveEnvironment: "environments/prod",
+        instanceResource: {
+          name: "projects/proj1/instances/inst1",
+          title: "Sample instance",
+        },
+      },
+      databaseName: "instances/inst1/databases/db1",
+      loading: false,
+      ready: true,
+      allowAlterSchema: true,
+      isDefaultProject: false,
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      createElement(ProjectDatabaseDetailPage, {
+        projectId: "proj1",
+        instanceId: "inst1",
+        databaseName: "db1",
+      })
+    );
+
+    render();
+
+    expect(container.textContent).toContain(
+      "instance.sample-expiration-future"
+    );
+
+    unmount();
+  });
+
   test("shows a spinner while the shared database hook is loading", async () => {
     mocks.useProjectDatabaseDetail.mockReturnValue({
       database: undefined,
@@ -610,8 +694,8 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
-        query: { foo: "bar", page: "2" },
+        routeHash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
+        routeQuery: { foo: "bar", page: "2" },
       })
     );
 
@@ -623,11 +707,10 @@ describe("ProjectDatabaseDetailPage", () => {
     });
 
     expect(mocks.useProjectDatabaseDetail).toHaveBeenCalledWith({
+      parent: "instances/inst1",
       projectId: "proj1",
       instanceId: "inst1",
       databaseName: "db1",
-      hash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
-      query: { foo: "bar", page: "2" },
     });
     expect(container.querySelector('[data-testid="tabs"]')).not.toBeNull();
     expect(
@@ -668,7 +751,7 @@ describe("ProjectDatabaseDetailPage", () => {
         databaseName: "db1",
       },
       hash: "#changelog",
-      query: { foo: "bar", page: "2" },
+      query: { foo: "bar", page: "2", parent: "instances/inst1" },
     });
     expect(
       container
@@ -705,7 +788,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: "#not-a-real-tab",
+        routeHash: "#not-a-real-tab",
       })
     );
 
@@ -755,7 +838,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        query: { foo: "bar" },
+        routeQuery: { foo: "bar" },
       })
     );
 
@@ -793,7 +876,7 @@ describe("ProjectDatabaseDetailPage", () => {
         databaseName: "db1",
       },
       hash: `#${PROJECT_DATABASE_DETAIL_TAB_SETTING}`,
-      query: { foo: "bar" },
+      query: { foo: "bar", parent: "instances/inst1" },
     });
 
     unmount();
@@ -891,7 +974,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: "#changelog",
+        routeHash: "#changelog",
       })
     );
 
@@ -931,7 +1014,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: "#changelog",
+        routeHash: "#changelog",
       })
     );
 
@@ -971,7 +1054,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: "#revision",
+        routeHash: "#revision",
       })
     );
 
@@ -1011,7 +1094,7 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: "#catalog",
+        routeHash: "#catalog",
       })
     );
 
@@ -1146,8 +1229,8 @@ describe("ProjectDatabaseDetailPage", () => {
         projectId: "proj1",
         instanceId: "inst1",
         databaseName: "db1",
-        hash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
-        query: { foo: "bar", page: "2" },
+        routeHash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
+        routeQuery: { foo: "bar", page: "2" },
       })
     );
 
@@ -1197,7 +1280,7 @@ describe("ProjectDatabaseDetailPage", () => {
         databaseName: "db1",
       },
       hash: `#${PROJECT_DATABASE_DETAIL_TAB_REVISION}`,
-      query: { foo: "bar", page: "2" },
+      query: { foo: "bar", page: "2", parent: "instances/inst1" },
     });
 
     unmount();

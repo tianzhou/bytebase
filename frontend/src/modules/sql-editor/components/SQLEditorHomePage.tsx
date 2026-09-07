@@ -10,7 +10,6 @@ import {
 import { useNavigate } from "@/app/router";
 import { buildPlanCreateRoute } from "@/app/router/routeHelpers";
 import { IAMRemindDialog } from "@/components/IAMRemindDialog";
-import { Quickstart } from "@/components/Quickstart";
 import {
   getLayerRoot,
   LAYER_BACKDROP_CLASS,
@@ -37,6 +36,7 @@ import {
   useCurrentSQLEditorTab,
   useIsDisconnected,
 } from "@/modules/sql-editor/store/tab";
+import { WorkspaceSetupGuide } from "@/modules/workspace-setup-guide/WorkspaceSetupGuide";
 import { useAppStore } from "@/stores/app";
 import { unknownProject } from "@/types";
 import {
@@ -245,7 +245,7 @@ export function SQLEditorHomePage() {
         </Panel>
       </PanelGroup>
 
-      <Quickstart />
+      <WorkspaceSetupGuide />
       {projectContextReady && project && <IAMRemindDialog project={project} />}
 
       <ConnectionPanel />

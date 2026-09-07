@@ -1,5 +1,6 @@
 import type { RouteObject } from "react-router";
 import { SplashLayout } from "@/app/layouts/SplashLayout";
+import { workspaceSetupGuard } from "@/app/router/guard";
 import {
   AUTH_2FA_SETUP_MODULE,
   AUTH_MFA_MODULE,
@@ -7,12 +8,10 @@ import {
   AUTH_OIDC_CALLBACK_MODULE,
   AUTH_PASSWORD_FORGOT_MODULE,
   AUTH_PASSWORD_RESET_MODULE,
-  AUTH_PROFILE_SETUP_MODULE,
-  AUTH_SIGNIN_ADMIN_MODULE,
+  AUTH_SETUP_MODULE,
   AUTH_SIGNIN_MODULE,
   AUTH_SIGNUP_MODULE,
   OAUTH2_CONSENT_MODULE,
-  SETUP_MODULE,
 } from "@/app/router/handles";
 import { lazyPage } from "@/app/router/lazyPage";
 
@@ -57,14 +56,6 @@ export const authRoutes: RouteObject[] = [
         ),
       },
       {
-        path: "admin",
-        handle: { name: AUTH_SIGNIN_ADMIN_MODULE },
-        lazy: lazyPage(
-          () => import("@/routes/auth/SigninAdminPage"),
-          (m) => m.SigninAdminPage
-        ),
-      },
-      {
         path: "signup",
         handle: { name: AUTH_SIGNUP_MODULE },
         lazy: lazyPage(
@@ -97,11 +88,12 @@ export const authRoutes: RouteObject[] = [
         ),
       },
       {
-        path: "profile-setup",
-        handle: { name: AUTH_PROFILE_SETUP_MODULE },
+        path: "setup",
+        handle: { name: AUTH_SETUP_MODULE },
+        loader: ({ request }) => workspaceSetupGuard(new URL(request.url)),
         lazy: lazyPage(
-          () => import("@/routes/auth/ProfileSetupPage"),
-          (m) => m.ProfileSetupPage
+          () => import("@/routes/auth/WorkspaceSetupPage"),
+          (m) => m.WorkspaceSetupPage
         ),
       },
     ],
@@ -129,19 +121,5 @@ export const authRoutes: RouteObject[] = [
       () => import("@/routes/auth/TwoFactorRequiredPage"),
       (m) => m.TwoFactorRequiredPage
     ),
-  },
-  {
-    path: "/setup",
-    element: <SplashLayout />,
-    children: [
-      {
-        index: true,
-        handle: { name: SETUP_MODULE },
-        lazy: lazyPage(
-          () => import("@/routes/auth/SetupPage"),
-          (m) => m.SetupPage
-        ),
-      },
-    ],
   },
 ];

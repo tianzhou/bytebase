@@ -26,12 +26,14 @@ import (
 
 const (
 	clientIDPrefix     = "bb_oauth_"
-	clientSecretPrefix = "bb_secret_"
 	refreshTokenPrefix = "bb_refresh_"
 	authCodePrefix     = "bb_code_"
 
-	authCodeExpiry       = 10 * time.Minute
-	accessTokenExpiry    = 1 * time.Hour
+	authCodeExpiry = 10 * time.Minute
+	// accessTokenExpiry aliases the shared constant so the /mcp middleware's
+	// legacy-audience migration window (one access-token lifetime from process
+	// start) stays exactly as long as the tokens it exists for.
+	accessTokenExpiry    = auth.OAuth2AccessTokenDuration
 	refreshTokenExpiry   = 30 * 24 * time.Hour
 	clientInactiveExpiry = 30 * 24 * time.Hour
 
@@ -47,13 +49,17 @@ type Service struct {
 	store   *store.Store
 	profile *config.Profile
 	secret  string
+
+	// mcpCeiling is narrowed to an interface so a test can make the read fail.
+	mcpCeiling mcpCeilingReader
 }
 
-func NewService(store *store.Store, profile *config.Profile, secret string) *Service {
+func NewService(stores *store.Store, profile *config.Profile, secret string) *Service {
 	return &Service{
-		store:   store,
-		profile: profile,
-		secret:  secret,
+		store:      stores,
+		profile:    profile,
+		secret:     secret,
+		mcpCeiling: stores,
 	}
 }
 
@@ -118,14 +124,6 @@ func generateClientID() (string, error) {
 	return clientIDPrefix + base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
-func generateClientSecret() (string, error) {
-	token, err := auth.GenerateOpaqueToken()
-	if err != nil {
-		return "", err
-	}
-	return clientSecretPrefix + token, nil
-}
-
 func generateAuthCode() (string, error) {
 	token, err := auth.GenerateOpaqueToken()
 	if err != nil {
@@ -140,14 +138,6 @@ func generateRefreshToken() (string, error) {
 		return "", err
 	}
 	return refreshTokenPrefix + token, nil
-}
-
-func hashSecret(secret string) (string, error) {
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	return string(hash), nil
 }
 
 func verifySecret(hash, secret string) bool {
@@ -258,10 +248,23 @@ func oauth2Error(c *echo.Context, statusCode int, errorCode, description string)
 }
 
 func oauth2ErrorRedirect(c *echo.Context, redirectURI, state, errorCode, description string) error {
-	u, err := url.Parse(redirectURI)
+	target, err := oauth2ErrorRedirectURL(redirectURI, state, errorCode, description)
 	if err != nil {
 		slog.Error("failed to parse redirect URI for OAuth2 error redirect", slog.String("redirectURI", redirectURI), log.BBError(err))
 		return oauth2Error(c, http.StatusInternalServerError, errorCode, description)
+	}
+	// Return HTML page that redirects to callback URL
+	// This avoids CSP form-action restrictions
+	return c.HTML(http.StatusOK, buildRedirectHTML(target))
+}
+
+// oauth2ErrorRedirectURL builds the client callback carrying an RFC 6749 error.
+// Split out so a refusal that renders its own page can still offer the link
+// back, rather than deciding between telling the user and telling the client.
+func oauth2ErrorRedirectURL(redirectURI, state, errorCode, description string) (string, error) {
+	u, err := url.Parse(redirectURI)
+	if err != nil {
+		return "", err
 	}
 	q := u.Query()
 	q.Set("error", errorCode)
@@ -270,9 +273,7 @@ func oauth2ErrorRedirect(c *echo.Context, redirectURI, state, errorCode, descrip
 		q.Set("state", state)
 	}
 	u.RawQuery = q.Encode()
-	// Return HTML page that redirects to callback URL
-	// This avoids CSP form-action restrictions
-	return c.HTML(http.StatusOK, buildRedirectHTML(u.String()))
+	return u.String(), nil
 }
 
 // buildRedirectHTML creates an HTML page that redirects to the given URL.

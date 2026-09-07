@@ -14,6 +14,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
+import type { Permission } from "@/types";
 import { Engine, State } from "@/types/proto-es/v1/common_pb";
 import type {
   DataSource,
@@ -27,11 +28,11 @@ import {
   DataSourceType,
   InstanceSchema,
 } from "@/types/proto-es/v1/instance_service_pb";
+import type { Project } from "@/types/proto-es/v1/project_service_pb";
 import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
 import {
   convertKVListToLabels,
   convertLabelsToKVList,
-  hasWorkspacePermissionV2,
   isValidBigQueryDataSource,
   isValidSpannerDataSource,
 } from "@/utils";
@@ -47,8 +48,11 @@ import {
   calcDataSourceUpdateMask,
   extractBasicInfo,
   extractDataSourceEditState,
+  krbConfigOf,
+  movesKeytabToNewDestination,
 } from "./common";
 import { effectivePortForEngine } from "./constants";
+import { hasInstancePermission } from "./permission";
 import { type InstanceSpecs, useInstanceSpecs } from "./specs";
 
 export type LocalState = {
@@ -56,6 +60,17 @@ export type LocalState = {
   isTestingConnection: boolean;
   isRequesting: boolean;
 };
+
+const localConnectionHosts = new Set([
+  "localhost",
+  "0.0.0.0",
+  "::1",
+  "[::1]",
+  "host.docker.internal",
+]);
+
+const isLocalConnectionHost = (host: string) =>
+  localConnectionHosts.has(host) || host.startsWith("127.");
 
 type TestConnectionResult = {
   success: boolean;
@@ -65,6 +80,8 @@ type TestConnectionResult = {
 
 export interface InstanceFormContextValue {
   instance: Instance | undefined;
+  parent: string | undefined;
+  project: Project | undefined;
   hideAdvancedFeatures: boolean;
   state: LocalState;
   setState: React.Dispatch<React.SetStateAction<LocalState>>;
@@ -72,6 +89,7 @@ export interface InstanceFormContextValue {
   isCreating: boolean;
   allowEdit: boolean;
   allowCreate: boolean;
+  hasPermission: (permission: Permission) => boolean;
   environment: ReturnType<
     ReturnType<typeof useAppStore.getState>["getEnvironmentByName"]
   >;
@@ -99,6 +117,7 @@ export interface InstanceFormContextValue {
   labelErrors: string[];
   setLabelErrors: React.Dispatch<React.SetStateAction<string[]>>;
   checkDataSource: (dataSources: EditDataSource[]) => boolean;
+  needsKeytabResupply: (dataSource: EditDataSource) => boolean;
   resetDataSource: () => void;
   extractDataSourceFromEdit: (
     engine: Engine,
@@ -130,17 +149,22 @@ export const useInstanceFormContext = () => {
 
 export function InstanceFormProvider({
   instance,
+  parent,
+  project,
   hideAdvancedFeatures = false,
   onDismiss,
   children,
 }: {
   instance?: Instance;
+  parent?: string;
+  project?: Project;
   hideAdvancedFeatures?: boolean;
   onDismiss?: () => void;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
   const environmentList = useAppStore((s) => s.environmentList);
+  const isSaaSMode = useAppStore((s) => s.isSaaSMode());
 
   const [state, setState] = useState<LocalState>(() => ({
     editingDataSourceId: instance?.dataSources.find(
@@ -150,9 +174,13 @@ export function InstanceFormProvider({
     isRequesting: false,
   }));
 
-  const [basicInfo, setBasicInfo] = useState<BasicInfo>(() =>
-    extractBasicInfo(instance)
-  );
+  const [basicInfo, setBasicInfo] = useState<BasicInfo>(() => {
+    const info = extractBasicInfo(instance);
+    if (!instance && parent) {
+      info.name = `${parent}/${info.name}`;
+    }
+    return info;
+  });
   const [dataSourceEditState, setDataSourceEditState] =
     useState<DataSourceEditState>(() => extractDataSourceEditState(instance));
   const [labelKVList, setLabelKVList] = useState(() =>
@@ -214,10 +242,15 @@ export function InstanceFormProvider({
     setShowConnectionOptionsEvent((prev) => prev + 1);
   }, []);
 
+  const hasPermission = useCallback(
+    (permission: Permission) => hasInstancePermission(project, permission),
+    [project]
+  );
+
   const allowEdit = isCreating
     ? true
     : (instance?.state || State.STATE_UNSPECIFIED) === State.ACTIVE &&
-      hasWorkspacePermissionV2("bb.instances.update");
+      hasPermission("bb.instances.update");
 
   const adminDataSource = useMemo(
     () =>
@@ -259,120 +292,6 @@ export function InstanceFormProvider({
     // selected environment changes.
     [basicInfo.environment, environmentList]
   );
-
-  const checkDataSource = useCallback(
-    (dataSources: EditDataSource[]) => {
-      return dataSources.every((ds) => {
-        if (
-          ds.authenticationType ===
-          DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM
-        ) {
-          return /.+:.+:.+/.test(ds.host);
-        }
-        if (
-          ds.authenticationType === DataSource_AuthenticationType.AWS_RDS_IAM
-        ) {
-          return !!ds.region;
-        }
-        if (basicInfo.engine === Engine.ORACLE) {
-          if (!ds.sid && !ds.serviceName) return false;
-        } else if (basicInfo.engine === Engine.DATABRICKS) {
-          if (!ds.warehouseId) return false;
-          // Token is INPUT_ONLY: backend never returns it. Require it only on
-          // create; on edit, an empty updatedToken means "keep existing token".
-          if (ds.pendingCreate && !ds.updatedToken) return false;
-        }
-        if (ds.saslConfig?.mechanism?.case === "krbConfig") {
-          const krbConfig = ds.saslConfig.mechanism.value;
-          if (
-            !krbConfig.primary ||
-            !krbConfig.realm ||
-            !krbConfig.kdcHost ||
-            !krbConfig.keytab
-          )
-            return false;
-        }
-        if (!ds.externalSecret) return true;
-        switch (ds.externalSecret.secretType) {
-          case DataSourceExternalSecret_SecretType.VAULT_KV_V2:
-            if (
-              !ds.externalSecret.url ||
-              !ds.externalSecret.engineName ||
-              !ds.externalSecret.secretName ||
-              !ds.externalSecret.passwordKeyName
-            )
-              return false;
-            break;
-          case DataSourceExternalSecret_SecretType.AWS_SECRETS_MANAGER:
-            if (
-              !ds.externalSecret.secretName ||
-              !ds.externalSecret.passwordKeyName
-            )
-              return false;
-            break;
-          case DataSourceExternalSecret_SecretType.GCP_SECRET_MANAGER:
-            if (!ds.externalSecret.secretName) return false;
-            break;
-        }
-        switch (ds.externalSecret.authType) {
-          case DataSourceExternalSecret_AuthType.TOKEN:
-            return !!(
-              ds.externalSecret.authOption?.case === "token" &&
-              ds.externalSecret.authOption.value
-            );
-          case DataSourceExternalSecret_AuthType.VAULT_APP_ROLE:
-            return !!(
-              ds.externalSecret.authOption?.case === "appRole" &&
-              ds.externalSecret.authOption.value.roleId &&
-              ds.externalSecret.authOption.value.secretId
-            );
-        }
-        return true;
-      });
-    },
-    [basicInfo.engine]
-  );
-
-  const allowCreate = useMemo(() => {
-    if (!hasWorkspacePermissionV2("bb.instances.create")) return false;
-    if (basicInfo.engine === Engine.SPANNER) {
-      return (
-        !!basicInfo.title.trim() && isValidSpannerDataSource(adminDataSource)
-      );
-    }
-    if (basicInfo.engine === Engine.BIGQUERY) {
-      return (
-        !!basicInfo.title.trim() && isValidBigQueryDataSource(adminDataSource)
-      );
-    }
-    if (basicInfo.engine !== Engine.DYNAMODB) {
-      if (adminDataSource.host === "") return false;
-    }
-    if (basicInfo.engine === Engine.REDIS) {
-      if (
-        adminDataSource.redisType === DataSource_RedisType.SENTINEL &&
-        adminDataSource.masterName === ""
-      )
-        return false;
-    }
-    const hasLabelErrs = labelErrors.length > 0;
-    return (
-      !!basicInfo.title.trim() &&
-      resourceIdValidated &&
-      checkDataSource([adminDataSource]) &&
-      !hasLabelErrs
-    );
-  }, [
-    basicInfo,
-    adminDataSource,
-    resourceIdValidated,
-    labelErrors,
-    checkDataSource,
-  ]);
-
-  const resetDataSource = useCallback(() => {
-    setDataSourceEditState(extractDataSourceEditState(instance));
-  }, [instance]);
 
   const extractDataSourceFromEdit = useCallback(
     (engine: Engine, edit: EditDataSource): DataSource => {
@@ -420,6 +339,148 @@ export function InstanceFormProvider({
     },
     [specs]
   );
+
+  // Asks movesKeytabToNewDestination about one data source of the form,
+  // resolving both sides it compares: the stored data source by ID, and the
+  // value this edit would send. The Kerberos filter comes first so that an
+  // ordinary data source never pays for that extraction.
+  const needsKeytabResupply = useCallback(
+    (ds: EditDataSource): boolean => {
+      if (!krbConfigOf(ds)) return false;
+      return movesKeytabToNewDestination(
+        extractDataSourceFromEdit(basicInfo.engine, ds),
+        instance?.dataSources.find((d) => d.id === ds.id)
+      );
+    },
+    [basicInfo.engine, extractDataSourceFromEdit, instance]
+  );
+
+  const checkDataSource = useCallback(
+    (dataSources: EditDataSource[]) => {
+      return dataSources.every((ds) => {
+        if (
+          ds.authenticationType ===
+          DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM
+        ) {
+          return /.+:.+:.+/.test(ds.host);
+        }
+        if (
+          ds.authenticationType === DataSource_AuthenticationType.AWS_RDS_IAM
+        ) {
+          // DynamoDB can run on the deployment's default credential chain,
+          // where the region may also come from the environment. A specific
+          // credential must pin its region.
+          if (basicInfo.engine === Engine.DYNAMODB) {
+            return ds.iamExtension?.case !== "awsCredential" || !!ds.region;
+          }
+          return !!ds.region;
+        }
+        if (basicInfo.engine === Engine.ORACLE) {
+          if (!ds.sid && !ds.serviceName) return false;
+        } else if (basicInfo.engine === Engine.DATABRICKS) {
+          if (!ds.warehouseId) return false;
+          // Token is INPUT_ONLY: backend never returns it. Require it only on
+          // create; on edit, an empty updatedToken means "keep existing token".
+          if (ds.pendingCreate && !ds.updatedToken) return false;
+        }
+        const krbConfig = krbConfigOf(ds);
+        if (krbConfig) {
+          if (!krbConfig.primary || !krbConfig.realm || !krbConfig.kdcHost) {
+            return false;
+          }
+          // Keytab is INPUT_ONLY: the backend never returns it. Require it
+          // only on create; on edit, an empty keytab keeps the existing one.
+          if (ds.pendingCreate && krbConfig.keytab.length === 0) {
+            return false;
+          }
+          // Unless the edit moves where the data source connects, which the
+          // backend refuses to let the stored keytab follow.
+          if (needsKeytabResupply(ds)) {
+            return false;
+          }
+        }
+        if (!ds.externalSecret) return true;
+        switch (ds.externalSecret.secretType) {
+          case DataSourceExternalSecret_SecretType.VAULT_KV_V2:
+            if (
+              !ds.externalSecret.url ||
+              !ds.externalSecret.engineName ||
+              !ds.externalSecret.secretName ||
+              !ds.externalSecret.passwordKeyName
+            )
+              return false;
+            break;
+          case DataSourceExternalSecret_SecretType.AWS_SECRETS_MANAGER:
+            if (
+              !ds.externalSecret.secretName ||
+              !ds.externalSecret.passwordKeyName
+            )
+              return false;
+            break;
+          case DataSourceExternalSecret_SecretType.GCP_SECRET_MANAGER:
+            if (!ds.externalSecret.secretName) return false;
+            break;
+        }
+        switch (ds.externalSecret.authType) {
+          case DataSourceExternalSecret_AuthType.TOKEN:
+            return !!(
+              ds.externalSecret.authOption?.case === "token" &&
+              ds.externalSecret.authOption.value
+            );
+          case DataSourceExternalSecret_AuthType.VAULT_APP_ROLE:
+            return !!(
+              ds.externalSecret.authOption?.case === "appRole" &&
+              ds.externalSecret.authOption.value.roleId &&
+              ds.externalSecret.authOption.value.secretId
+            );
+        }
+        return true;
+      });
+    },
+    [basicInfo.engine, needsKeytabResupply]
+  );
+
+  const allowCreate = useMemo(() => {
+    if (!hasPermission("bb.instances.create")) return false;
+    if (basicInfo.engine === Engine.SPANNER) {
+      return (
+        !!basicInfo.title.trim() && isValidSpannerDataSource(adminDataSource)
+      );
+    }
+    if (basicInfo.engine === Engine.BIGQUERY) {
+      return (
+        !!basicInfo.title.trim() && isValidBigQueryDataSource(adminDataSource)
+      );
+    }
+    if (basicInfo.engine !== Engine.DYNAMODB) {
+      if (adminDataSource.host === "") return false;
+    }
+    if (basicInfo.engine === Engine.REDIS) {
+      if (
+        adminDataSource.redisType === DataSource_RedisType.SENTINEL &&
+        adminDataSource.masterName === ""
+      )
+        return false;
+    }
+    const hasLabelErrs = labelErrors.length > 0;
+    return (
+      !!basicInfo.title.trim() &&
+      resourceIdValidated &&
+      checkDataSource([adminDataSource]) &&
+      !hasLabelErrs
+    );
+  }, [
+    basicInfo,
+    adminDataSource,
+    resourceIdValidated,
+    labelErrors,
+    checkDataSource,
+    hasPermission,
+  ]);
+
+  const resetDataSource = useCallback(() => {
+    setDataSourceEditState(extractDataSourceEditState(instance));
+  }, [instance]);
 
   // Debounced to avoid expensive cloneDeep + extraction on every keystroke.
   const [pendingCreateInstance, setPendingCreateInstance] = useState<Instance>(
@@ -480,9 +541,21 @@ export function InstanceFormProvider({
             ? err.metadata.get(connectionFailureCategoryHeader)
             : undefined
         );
-        let error = extractGrpcErrorMessage(err);
+        let error =
+          err instanceof ConnectError
+            ? err.rawMessage
+            : extractGrpcErrorMessage(err);
         if (!silent) {
-          if (host === "localhost" || host === "127.0.0.1") {
+          const normalizedHost = host.trim().toLowerCase();
+          if (isSaaSMode && isLocalConnectionHost(normalizedHost)) {
+            error = `${error}\n\n${t(
+              "instance.failed-to-connect-instance-saas-local-host",
+              { host }
+            )}`;
+          } else if (
+            isLocalConnectionHost(normalizedHost) &&
+            normalizedHost !== "host.docker.internal"
+          ) {
             error = `${error}\n\n${t("instance.failed-to-connect-instance-localhost")}`;
           }
           pushNotification({
@@ -511,7 +584,9 @@ export function InstanceFormProvider({
         );
         inst.dataSources = [dataSourceCreate];
         try {
-          await useAppStore.getState().createInstance(inst, true);
+          await useAppStore
+            .getState()
+            .createInstance(inst, true, parent ? { parent } : undefined);
           return ok();
         } catch (err) {
           return fail(dataSourceCreate.host, err);
@@ -553,7 +628,15 @@ export function InstanceFormProvider({
         }
       }
     },
-    [isCreating, basicInfo, instance, extractDataSourceFromEdit, t]
+    [
+      isCreating,
+      basicInfo,
+      instance,
+      extractDataSourceFromEdit,
+      parent,
+      isSaaSMode,
+      t,
+    ]
   );
 
   // Debounced valueChanged to avoid expensive deep comparison on every keystroke.
@@ -585,6 +668,8 @@ export function InstanceFormProvider({
   const value: InstanceFormContextValue = useMemo(
     () => ({
       instance,
+      parent,
+      project,
       hideAdvancedFeatures,
       state,
       setState,
@@ -592,6 +677,7 @@ export function InstanceFormProvider({
       isCreating,
       allowEdit,
       allowCreate,
+      hasPermission,
       environment,
       basicInfo,
       setBasicInfo,
@@ -611,6 +697,7 @@ export function InstanceFormProvider({
       labelErrors,
       setLabelErrors,
       checkDataSource,
+      needsKeytabResupply,
       resetDataSource,
       extractDataSourceFromEdit,
       testConnection,
@@ -623,12 +710,15 @@ export function InstanceFormProvider({
     }),
     [
       instance,
+      parent,
+      project,
       hideAdvancedFeatures,
       state,
       specs,
       isCreating,
       allowEdit,
       allowCreate,
+      hasPermission,
       environment,
       basicInfo,
       labelKVList,
@@ -642,6 +732,7 @@ export function InstanceFormProvider({
       resourceIdValidated,
       labelErrors,
       checkDataSource,
+      needsKeytabResupply,
       resetDataSource,
       extractDataSourceFromEdit,
       testConnection,

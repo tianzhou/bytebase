@@ -12,15 +12,16 @@ import { RouterLink } from "@/components/RouterLink";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsPanel, TabsTrigger } from "@/components/ui/tabs";
-import { useIdentityProviderList } from "@/hooks/useAppState";
 import { resolveWorkspaceName } from "@/lib/workspace";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { idpNamePrefix } from "@/stores/modules/v1/common";
-import type { LoginRequest } from "@/types/proto-es/v1/auth_service_pb";
-import type { IdentityProvider } from "@/types/proto-es/v1/idp_service_pb";
+import type {
+  LoginIdentityProvider,
+  LoginRequest,
+} from "@/types/proto-es/v1/auth_service_pb";
 import { IdentityProviderType } from "@/types/proto-es/v1/idp_service_pb";
-import { openWindowForSSO } from "@/utils";
+import { openWindowForSSO, SsoConfigError } from "@/utils";
 
 export type SigninPageProps = {
   readonly redirect?: boolean;
@@ -42,16 +43,18 @@ export function SigninPage(props: SigninPageProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [initialized, setInitialized] = useState(false);
 
-  const serverInfo = useAppStore((s) => s.serverInfo);
-  const isSaaSMode = useAppStore((s) => s.isSaaSMode());
-  const activeUserCount = useAppStore((s) => s.activeUserCount());
-  const identityProviders = useIdentityProviderList();
+  const authenticationInfo = useAppStore((s) => s.authenticationInfo);
+  const identityProviders = authenticationInfo?.identityProviders ?? [];
 
   const query = router.currentRoute.value.query;
   const invitedEmail = (query.email as string | undefined) ?? "";
 
   const disallowSignup =
-    !allowSignupProp || !!serverInfo?.restriction?.disallowSignup;
+    !allowSignupProp || !!authenticationInfo?.restriction?.disallowSignup;
+  const needsInitialSetup = authenticationInfo
+    ? !authenticationInfo.workspace &&
+      !authenticationInfo.restriction?.disallowSignup
+    : false;
 
   const separatedIdps = identityProviders.filter(
     (idp) => idp.type !== IdentityProviderType.LDAP
@@ -61,21 +64,23 @@ export function SigninPage(props: SigninPageProps) {
   );
 
   const defaultTab = (() => {
-    if (serverInfo?.restriction?.allowEmailCodeSignin) return "email-code";
-    if (!serverInfo?.restriction?.disallowPasswordSignin) return "standard";
+    if (authenticationInfo?.restriction?.allowEmailCodeSignin)
+      return "email-code";
+    if (!authenticationInfo?.restriction?.disallowPasswordSignin)
+      return "standard";
     if (groupedIdps.length > 0) return groupedIdps[0].name;
     return "standard";
   })();
 
-  // Redirect to signup when an admin setup is needed.
+  // A self-hosted server without a workspace needs its initial administrator.
   useEffect(() => {
     if (!initialized) return;
-    if (activeUserCount === 0 && !disallowSignup && !isSaaSMode) {
+    if (needsInitialSetup && !disallowSignup) {
       router.replace({ name: AUTH_SIGNUP_MODULE });
     }
-  }, [initialized, activeUserCount, disallowSignup, isSaaSMode]);
+  }, [initialized, needsInitialSetup, disallowSignup]);
 
-  const trySigninWithIdp = async (idp: IdentityProvider) => {
+  const trySigninWithIdp = async (idp: LoginIdentityProvider) => {
     try {
       await openWindowForSSO(idp, false, query.redirect as string);
     } catch (error) {
@@ -83,7 +88,10 @@ export function SigninPage(props: SigninPageProps) {
         module: "bytebase",
         style: "CRITICAL",
         title: "Request error occurred",
-        description: (error as Error).message,
+        description:
+          error instanceof SsoConfigError
+            ? t(error.i18nKey)
+            : (error as Error).message,
       });
     }
   };
@@ -102,40 +110,30 @@ export function SigninPage(props: SigninPageProps) {
     }
   };
 
-  // Initial load: fetch server info + IDPs + handle `idp` query param.
-  // Ref guard is critical — the `?idp=<name>` path triggers an SSO redirect
-  // via `trySigninWithIdp`, which must not fire twice under StrictMode.
+  // Initial load: fetch authentication info, which carries the providers this
+  // page renders, then handle the `idp` query param. Ref guard is critical —
+  // the `?idp=<name>` path triggers an SSO redirect via `trySigninWithIdp`,
+  // which must not fire twice under StrictMode.
   const initRef = useRef(false);
   useEffect(() => {
     if (initRef.current) return;
     initRef.current = true;
     (async () => {
-      const workspaceName = resolveWorkspaceName();
-      const listIdentityProviders =
-        useAppStore.getState().listIdentityProviders;
-      try {
-        const [idpList] = await Promise.all([
-          listIdentityProviders(workspaceName),
-          useAppStore.getState().fetchServerInfo(workspaceName),
-        ]);
-        if (idpList.length === 0 && workspaceName) {
-          await listIdentityProviders();
-        }
-      } catch (error) {
+      const info = await useAppStore
+        .getState()
+        .fetchAuthenticationInfo(resolveWorkspaceName());
+      if (!info) {
         pushNotification({
           module: "bytebase",
           style: "CRITICAL",
           title: "Request error occurred",
-          description: (error as Error).message,
+          description: t("auth.sign-in.load-failed"),
         });
       }
       const idpQuery = query.idp;
       if (idpQuery) {
         const name = `${idpNamePrefix}${idpQuery}`;
-        const idp = useAppStore
-          .getState()
-          .identityProviderList()
-          .find((i: IdentityProvider) => i.name === name);
+        const idp = info?.identityProviders.find((i) => i.name === name);
         if (idp) {
           // On success this navigates away; on failure `trySigninWithIdp`
           // pushes a notification and we still need to show the form so the
@@ -160,7 +158,7 @@ export function SigninPage(props: SigninPageProps) {
     label: string;
     panel: React.ReactNode;
   }[] = [];
-  if (!serverInfo?.restriction?.disallowPasswordSignin) {
+  if (!authenticationInfo?.restriction?.disallowPasswordSignin) {
     methods.push({
       value: "standard",
       label: t("auth.sign-in.standard-tab"),
@@ -185,7 +183,7 @@ export function SigninPage(props: SigninPageProps) {
       ),
     });
   }
-  if (serverInfo?.restriction?.allowEmailCodeSignin) {
+  if (authenticationInfo?.restriction?.allowEmailCodeSignin) {
     methods.push({
       value: "email-code",
       label: t("auth.sign-in.email-code-tab"),
@@ -210,15 +208,13 @@ export function SigninPage(props: SigninPageProps) {
     });
   }
 
-  // The email-code flow signs an unknown email up on the spot, so the page
-  // doubles as the signup surface — the copy and the terms line reflect that.
-  // On SaaS the restriction reports disallowSignup=true, but that flag only
-  // gates the password Signup RPC, not email-code onboarding.
+  const emailCodeEnabled = methods.some(({ value }) => value === "email-code");
   const combinedSignupSurface =
     methods.length === 1 &&
     methods[0].value === "email-code" &&
     allowSignupProp &&
-    (isSaaSMode || !serverInfo?.restriction?.disallowSignup);
+    !authenticationInfo?.restriction?.disallowSignup;
+  const showTerms = allowSignupProp && emailCodeEnabled;
 
   return (
     <>
@@ -287,7 +283,7 @@ export function SigninPage(props: SigninPageProps) {
           </div>
         )}
 
-        {isSaaSMode && combinedSignupSurface && (
+        {showTerms && (
           <p className="mt-6 text-center text-xs text-control-light leading-5">
             <Trans
               i18nKey="auth.sign-in.tos"

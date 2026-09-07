@@ -4,11 +4,69 @@ import (
 	"context"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/store"
 )
+
+func TestSQLIAMDatabaseResourceUsesCanonicalInstanceScope(t *testing.T) {
+	t.Parallel()
+	projectID := "project-a"
+	projectInstance := &store.InstanceMessage{ResourceID: "instance-a", ProjectID: &projectID}
+	workspaceInstance := &store.InstanceMessage{ResourceID: "instance-b"}
+	database := &store.DatabaseMessage{DatabaseName: "app"}
+	projectDatabaseName := formatDatabaseResourceName(projectInstance, &store.DatabaseMessage{
+		InstanceID:   projectInstance.ResourceID,
+		DatabaseName: database.DatabaseName,
+	})
+
+	require.Equal(t,
+		"projects/project-a/instances/instance-a/databases/app",
+		projectDatabaseName,
+	)
+	require.Equal(t,
+		"instances/instance-b/databases/app",
+		formatDatabaseResourceName(workspaceInstance, &store.DatabaseMessage{
+			InstanceID:   workspaceInstance.ResourceID,
+			DatabaseName: database.DatabaseName,
+		}),
+	)
+
+	attributes := map[string]any{common.CELAttributeResourceDatabase: projectDatabaseName}
+	allowed, err := evaluateQueryExportPolicyCondition(
+		`resource.database == "projects/project-a/instances/instance-a/databases/app"`, attributes)
+	require.NoError(t, err)
+	require.True(t, allowed)
+
+	allowed, err = evaluateQueryExportPolicyCondition(
+		`resource.database == "instances/instance-a/databases/app"`, attributes)
+	require.NoError(t, err)
+	require.False(t, allowed)
+	require.Equal(t,
+		"projects/project-a/instances/instance-a/databases/app/schemas/public/tables/users",
+		formatWriteTargetResource(projectDatabaseName, "public", "users"),
+	)
+}
+
+// TestExportRejectsRetiredRolloutNames pins the retired export-data routes:
+// rollout/stage names must fail name parsing with InvalidArgument, not fall
+// through as 500s.
+func TestExportRejectsRetiredRolloutNames(t *testing.T) {
+	t.Parallel()
+	ctx := context.WithValue(context.Background(), common.UserContextKey, &store.UserMessage{Email: "u@example.com"})
+	s := &SQLService{}
+	for _, name := range []string{
+		"projects/p/plans/1/rollout",
+		"projects/p/plans/1/rollout/stages/dev",
+	} {
+		_, err := s.Export(ctx, connect.NewRequest(&v1pb.ExportRequest{Name: name, Statement: "SELECT 1"}))
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "name %q", name)
+	}
+}
 
 // TestSelectBestAccessGrantPrefersUnmask covers the Unmask-only ranking:
 // Export plays no role (Export callers already filtered the pool via the
@@ -87,12 +145,12 @@ func TestBuildExportQueryContextPropagatesSkipMasking(t *testing.T) {
 	}
 
 	t.Run("grant with unmask=true sets SkipMasking", func(t *testing.T) {
-		qc := buildExportQueryContext(restriction, "alice@example.com", nil, true)
+		qc := buildExportQueryContext(restriction, "alice@example.com", nil, "", true)
 		require.True(t, qc.SkipMasking, "SkipMasking must propagate so driver-level masking is bypassed")
 	})
 
 	t.Run("grant with unmask=false keeps SkipMasking false", func(t *testing.T) {
-		qc := buildExportQueryContext(restriction, "alice@example.com", nil, false)
+		qc := buildExportQueryContext(restriction, "alice@example.com", nil, "", false)
 		require.False(t, qc.SkipMasking, "SkipMasking must stay false so masking still applies")
 	})
 }
@@ -100,6 +158,7 @@ func TestBuildExportQueryContextPropagatesSkipMasking(t *testing.T) {
 // TestBuildExportQueryContextPropagatesOtherFields guards against accidental
 // drops of the surrounding fields if buildExportQueryContext is edited.
 func TestBuildExportQueryContextPropagatesOtherFields(t *testing.T) {
+	t.Parallel()
 	schema := "public"
 	restriction := &store.EffectiveQueryDataPolicy{
 		MaximumResultRows:        500,
@@ -107,12 +166,13 @@ func TestBuildExportQueryContextPropagatesOtherFields(t *testing.T) {
 		MaxQueryTimeoutInSeconds: 30,
 	}
 
-	qc := buildExportQueryContext(restriction, "alice@example.com", &schema, false)
+	qc := buildExportQueryContext(restriction, "alice@example.com", &schema, "customers", false)
 
 	require.Equal(t, 500, qc.Limit)
 	require.Equal(t, "alice@example.com", qc.OperatorEmail)
 	require.Equal(t, int64(2<<20), qc.MaximumSQLResultSize)
 	require.Equal(t, "public", qc.Schema)
+	require.Equal(t, "customers", qc.Container)
 	require.NotNil(t, qc.Timeout)
 	require.Equal(t, int64(30), qc.Timeout.Seconds)
 }
@@ -121,17 +181,19 @@ func TestBuildExportQueryContextPropagatesOtherFields(t *testing.T) {
 // MaxQueryTimeoutInSeconds doesn't leak a zero-Duration timeout into the
 // query context (which the driver layer treats differently from "no timeout").
 func TestBuildExportQueryContextOmitsTimeoutWhenZero(t *testing.T) {
+	t.Parallel()
 	restriction := &store.EffectiveQueryDataPolicy{
 		MaximumResultRows: 100,
 		MaximumResultSize: 1 << 20,
 	}
 
-	qc := buildExportQueryContext(restriction, "alice@example.com", nil, false)
+	qc := buildExportQueryContext(restriction, "alice@example.com", nil, "", false)
 	require.Nil(t, qc.Timeout)
 	require.Equal(t, "", qc.Schema)
 }
 
 func TestResolveDataSourceIDUsesAdminForNonReadOnlyAutomaticQueryWhenAllowed(t *testing.T) {
+	t.Parallel()
 	instance := &store.InstanceMessage{
 		Metadata: &storepb.Instance{
 			Engine: storepb.Engine_MYSQL,
@@ -148,6 +210,7 @@ func TestResolveDataSourceIDUsesAdminForNonReadOnlyAutomaticQueryWhenAllowed(t *
 }
 
 func TestResolveDataSourceIDKeepsReadOnlyForReadOnlyAutomaticQueryWhenAllowed(t *testing.T) {
+	t.Parallel()
 	instance := &store.InstanceMessage{
 		Metadata: &storepb.Instance{
 			Engine: storepb.Engine_MYSQL,
@@ -164,6 +227,7 @@ func TestResolveDataSourceIDKeepsReadOnlyForReadOnlyAutomaticQueryWhenAllowed(t 
 }
 
 func TestResolveDataSourceIDKeepsReadOnlyForNonReadOnlyAutomaticQueryWhenAdminDisallowed(t *testing.T) {
+	t.Parallel()
 	instance := &store.InstanceMessage{
 		Metadata: &storepb.Instance{
 			Engine: storepb.Engine_MYSQL,
@@ -180,6 +244,7 @@ func TestResolveDataSourceIDKeepsReadOnlyForNonReadOnlyAutomaticQueryWhenAdminDi
 }
 
 func TestResolveDataSourceIDUsesAdminForDocumentEngineAutomaticWriteQueryWhenAllowed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		engine    storepb.Engine
@@ -209,6 +274,7 @@ func TestResolveDataSourceIDUsesAdminForDocumentEngineAutomaticWriteQueryWhenAll
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			instance := &store.InstanceMessage{
 				Metadata: &storepb.Instance{
 					Engine: tc.engine,
@@ -227,6 +293,7 @@ func TestResolveDataSourceIDUsesAdminForDocumentEngineAutomaticWriteQueryWhenAll
 }
 
 func TestResolveDataSourceIDKeepsReadOnlyForDocumentEngineAutomaticReadQueryWhenAllowed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		engine    storepb.Engine
@@ -246,6 +313,7 @@ func TestResolveDataSourceIDKeepsReadOnlyForDocumentEngineAutomaticReadQueryWhen
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			instance := &store.InstanceMessage{
 				Metadata: &storepb.Instance{
 					Engine: tc.engine,

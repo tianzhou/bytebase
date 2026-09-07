@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { WorksheetFolderNode } from "@/modules/sql-editor/model/Sheet";
+import type { SavedQueryFolderNode } from "@/modules/sql-editor/model/Sheet";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   useSheetContextByView: vi.fn(),
   useClickOutside: vi.fn(),
   onSelectCallback: vi.fn(),
+  treeProps: undefined as { expandedIds?: string[] } | undefined,
 }));
 
 vi.mock("react-i18next", () => ({
@@ -38,7 +39,7 @@ vi.mock("@/hooks/useClickOutside", () => ({
 
 type TreeDataNodeLike = {
   id: string;
-  data: WorksheetFolderNode;
+  data: SavedQueryFolderNode;
   children?: TreeDataNodeLike[];
 };
 
@@ -47,8 +48,10 @@ vi.mock("@/components/ui/tree", () => ({
   Tree: ({
     data,
     renderNode,
+    expandedIds,
   }: {
     data: TreeDataNodeLike[];
+    expandedIds?: string[];
     renderNode: (args: {
       node: {
         id: string;
@@ -58,20 +61,23 @@ vi.mock("@/components/ui/tree", () => ({
       style: React.CSSProperties;
     }) => React.ReactNode;
     onSelect?: (ids: string[]) => void;
-  }) => (
-    <div data-testid="tree">
-      {data.map((item) =>
-        renderNode({
-          node: {
-            id: item.id,
-            data: item,
-            isSelected: false,
-          },
-          style: {},
-        })
-      )}
-    </div>
-  ),
+  }) => {
+    mocks.treeProps = { expandedIds };
+    return (
+      <div data-testid="tree">
+        {data.map((item) =>
+          renderNode({
+            node: {
+              id: item.id,
+              data: item,
+              isSelected: false,
+            },
+            style: {},
+          })
+        )}
+      </div>
+    );
+  },
 }));
 
 // Mock Popover — render children inline, track open state
@@ -149,13 +155,22 @@ vi.mock("./TreeNodePrefix", () => ({
 
 const makeFolderNode = (
   key: string,
-  children: WorksheetFolderNode[] = []
-): WorksheetFolderNode => ({
+  children: SavedQueryFolderNode[] = []
+): SavedQueryFolderNode => ({
   key,
   label: key.split("/").slice(-1)[0],
   editable: true,
   children,
   empty: children.length === 0,
+});
+
+const makeLoadMoreNode = (key: string): SavedQueryFolderNode => ({
+  key,
+  label: "Load more",
+  editable: false,
+  isLeaf: true,
+  loadMore: true,
+  children: [],
 });
 
 const setupDefaultMocks = () => {
@@ -168,7 +183,7 @@ const setupDefaultMocks = () => {
   ]);
 
   // The migrated `useSheetContextByView` returns plain values:
-  // `folderTree` is a WorksheetFolderNode (not a Vue ref) and
+  // `folderTree` is a SavedQueryFolderNode (not a Vue ref) and
   // `folderContext.rootPath` is a plain string.
   const viewContext = {
     folderTree: rootNode,
@@ -270,6 +285,67 @@ describe("FolderForm", () => {
 
     // Tree now rendered via portal to overlay layer
     expect(document.body.querySelector("[data-testid='tree']")).not.toBeNull();
+
+    unmount();
+  });
+
+  test("does not show load-more nodes in the folder picker", () => {
+    const rootNode = makeFolderNode("/my", [
+      makeFolderNode("/my/foo"),
+      makeLoadMoreNode("/my/__load-more"),
+    ]);
+    mocks.useSheetContextByView.mockReturnValue({
+      folderTree: rootNode,
+      folderContext: {
+        rootPath: "/my",
+      },
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <FolderForm folder="/my" onFolderChange={vi.fn()} />
+    );
+    render();
+
+    const input = container.querySelector(
+      "[data-testid='folder-input']"
+    ) as HTMLInputElement;
+    act(() => {
+      input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("foo");
+    expect(document.body.textContent).not.toContain("Load more");
+
+    unmount();
+  });
+
+  test("can include the root folder in the picker", async () => {
+    const onFolderChange = vi.fn();
+    const { container, render, unmount } = renderIntoContainer(
+      <FolderForm folder="/my/foo" onFolderChange={onFolderChange} includeRoot />
+    );
+    render();
+
+    const input = container.querySelector(
+      "[data-testid='folder-input']"
+    ) as HTMLInputElement;
+    act(() => {
+      input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    });
+
+    const treeNodes = document.body.querySelectorAll(
+      "[data-testid='tree'] > div"
+    );
+    expect(treeNodes.length).toBeGreaterThan(0);
+    expect(document.body.textContent).toContain("my");
+    expect(mocks.treeProps?.expandedIds).toEqual(["/my"]);
+
+    await act(async () => {
+      (treeNodes[0] as HTMLElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(onFolderChange).toHaveBeenCalledWith("/my");
 
     unmount();
   });

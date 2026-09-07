@@ -101,7 +101,22 @@ describe("workspace list page layout", () => {
         )
       ) {
         expect(source, file).toContain('padding="flush"');
-        expect(source, file).toContain('<WorkspacePageToolbar className="px-4');
+        const layoutSource =
+          file === "InstancesPage.tsx"
+            ? readFileSync(
+                join(componentsDir, "instance/InstanceDashboard.tsx"),
+                "utf8"
+              )
+            : source;
+        if (file === "InstancesPage.tsx") {
+          expect(layoutSource, file).toContain(
+            'layout === "workspace" && "px-4"'
+          );
+        } else {
+          expect(layoutSource, file).toContain(
+            '<WorkspacePageToolbar className="px-4'
+          );
+        }
       }
       expect(source, file).not.toContain(
         'className="w-full px-4 overflow-x-hidden flex flex-col pt-2 pb-4"'
@@ -110,6 +125,39 @@ describe("workspace list page layout", () => {
       expect(source, file).not.toContain(
         'className="py-4 flex flex-col relative"'
       );
+    }
+  });
+
+  test("keeps machine identity toolbars action-only", () => {
+    for (const file of [
+      "ServiceAccountsPage.tsx",
+      "WorkloadIdentitiesPage.tsx",
+    ] as const) {
+      const source = readSettingsPage(file);
+
+      expect(source, file).toContain('<PageToolbar align="end">');
+      expect(source, file).not.toContain(
+        't("settings.members.service-accounts")'
+      );
+      expect(source, file).not.toContain(
+        't("settings.members.workload-identities")'
+      );
+    }
+  });
+
+  test("limits inactive account toggles to their checkbox and label", () => {
+    for (const file of [
+      "UsersPage.tsx",
+      "ServiceAccountsPage.tsx",
+      "WorkloadIdentitiesPage.tsx",
+    ] as const) {
+      const source = readSettingsPage(file);
+
+      expect(source, file).not.toContain(
+        '<label className="flex items-center gap-x-2 text-sm cursor-pointer">'
+      );
+      expect(source, file).toContain('htmlFor="show-inactive-');
+      expect(source, file).toContain('id="show-inactive-');
     }
   });
 
@@ -132,7 +180,10 @@ describe("workspace list page layout", () => {
   });
 
   test("labels the instances page create action as connect instance", () => {
-    const source = readSettingsPage("InstancesPage.tsx");
+    const source = readFileSync(
+      join(componentsDir, "instance/InstanceDashboard.tsx"),
+      "utf8"
+    );
 
     expect(source).toContain('t("instance.connect-instance")');
     expect(source).not.toContain('{t("common.create")}');

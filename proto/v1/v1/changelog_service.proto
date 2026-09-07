@@ -16,19 +16,27 @@ service ChangelogService {
   // Lists migration history for a database.
   // Permissions required: bb.changelogs.list
   rpc ListChangelogs(ListChangelogsRequest) returns (ListChangelogsResponse) {
-    option (google.api.http) = {get: "/v1/{parent=instances/*/databases/*}/changelogs"};
+    option (google.api.http) = {
+      get: "/v1/{parent=instances/*/databases/*}/changelogs"
+      additional_bindings: {get: "/v1/{parent=projects/*/instances/*/databases/*}/changelogs"}
+    };
     option (google.api.method_signature) = "parent";
     option (bytebase.v1.permission) = "bb.changelogs.list";
     option (bytebase.v1.auth_method) = IAM;
+    option (bytebase.v1.mcp_method_class) = READ;
   }
 
   // Retrieves a specific changelog entry.
   // Permissions required: bb.changelogs.get
   rpc GetChangelog(GetChangelogRequest) returns (Changelog) {
-    option (google.api.http) = {get: "/v1/{name=instances/*/databases/*/changelogs/*}"};
+    option (google.api.http) = {
+      get: "/v1/{name=instances/*/databases/*/changelogs/*}"
+      additional_bindings: {get: "/v1/{name=projects/*/instances/*/databases/*/changelogs/*}"}
+    };
     option (google.api.method_signature) = "name";
     option (bytebase.v1.permission) = "bb.changelogs.get";
     option (bytebase.v1.auth_method) = IAM;
+    option (bytebase.v1.mcp_method_class) = READ;
   }
 }
 
@@ -42,7 +50,7 @@ enum ChangelogView {
 
 message ListChangelogsRequest {
   // The parent of the changelogs.
-  // Format: instances/{instance}/databases/{database}
+  // Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
   string parent = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {type: "bytebase.com/Database"}
@@ -67,12 +75,13 @@ message ListChangelogsRequest {
   //
   // Supported filter:
   // - status: the changelog status, support "==" operation. check Changelog.Status for available values.
-  // - create_time: the changelog create time in "2006-01-02T15:04:05Z07:00" format, support ">=" or "<=" operator.
+  // - has_schema_snapshot: filters to changelogs with a schema snapshot; only "has_schema_snapshot == true" is supported.
+  // - create_time: the changelog create time in RFC 3339 format, supports ">=", "<=", or "<" operator.
   //
   // Example:
   // status == "DONE"
-  // status == "FAILED" && type == "SDL"
-  // create_time >= "2024-01-01T00:00:00Z" && create_time <= "2024-01-02T00:00:00Z"
+  // status == "FAILED"
+  // has_schema_snapshot == true && create_time < "2024-01-02T00:00:00Z"
   string filter = 5;
 }
 
@@ -87,7 +96,7 @@ message ListChangelogsResponse {
 
 message GetChangelogRequest {
   // The name of the changelog to retrieve.
-  // Format: instances/{instance}/databases/{database}/changelogs/{changelog}
+  // Format: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
   string name = 1 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.resource_reference) = {type: "bytebase.com/DatabaseChangelog"}
@@ -97,12 +106,14 @@ message GetChangelogRequest {
 }
 
 message Changelog {
+  reserved 4 to 6, 9 to 10, 12 to 14;
   option (google.api.resource) = {
     type: "bytebase.com/DatabaseChangelog"
     pattern: "instances/{instance}/databases/{database}/changelogs/{changelog}"
+    pattern: "projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}"
   };
 
-  // Format: instances/{instance}/databases/{database}/changelogs/{changelog}
+  // Format: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
   string name = 1;
 
   google.protobuf.Timestamp create_time = 2;

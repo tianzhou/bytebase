@@ -1,19 +1,30 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { storageKeySqlEditorTabs } from "@/utils";
+import {
+  storageKeySqlEditorCurrentTab,
+  storageKeySqlEditorTabs,
+} from "@/utils";
 import {
   __resetTabStoreProjectCursor,
   getSQLEditorTabsState,
+  isSQLEditorTabClosable,
   subscribeSQLEditorTabsState,
   useSQLEditorTabsStore,
 } from "./tab";
 
 const mocks = vi.hoisted(() => ({
+  project: "projects/aaa",
   loadCurrentUser: vi.fn(async () => undefined),
-  getOrFetchWorksheetByName: vi.fn(),
+  getOrFetchSavedQueryByName: vi.fn(),
+  getOrFetchDatabaseByName: vi.fn(),
+}));
+
+vi.mock("./editor", () => ({
+  getSQLEditorEditorState: () => ({ project: mocks.project }),
+  subscribeSQLEditorEditorState: vi.fn(() => vi.fn()),
 }));
 
 vi.mock("@/lib/sqlEditorConnection", () => ({
-  extractWorksheetConnection: vi.fn(async () => ({
+  extractSavedQueryConnection: vi.fn(async () => ({
     instance: "instances/mysql-instance",
     database: "instances/mysql-instance/databases/bytebase",
   })),
@@ -29,7 +40,8 @@ vi.mock("@/stores/app", () => ({
       },
       isSaaSMode: () => false,
       loadCurrentUser: mocks.loadCurrentUser,
-      getOrFetchWorksheetByName: mocks.getOrFetchWorksheetByName,
+      getOrFetchSavedQueryByName: mocks.getOrFetchSavedQueryByName,
+      getOrFetchDatabaseByName: mocks.getOrFetchDatabaseByName,
     }),
   },
 }));
@@ -69,7 +81,7 @@ beforeEach(() => {
   getSQLEditorTabsState().reset();
   __resetTabStoreProjectCursor();
   mocks.loadCurrentUser.mockClear();
-  mocks.getOrFetchWorksheetByName.mockImplementation(async (name: string) => ({
+  mocks.getOrFetchSavedQueryByName.mockImplementation(async (name: string) => ({
     name,
     project: name.startsWith("projects/project-sample/")
       ? "projects/project-sample"
@@ -77,6 +89,10 @@ beforeEach(() => {
     database: "instances/mysql-instance/databases/bytebase",
     content: new TextEncoder().encode("SELECT 1"),
     contentSize: BigInt(new TextEncoder().encode("SELECT 1").length),
+  }));
+  mocks.getOrFetchDatabaseByName.mockImplementation(async (name: string) => ({
+    name,
+    project: "projects/aaa",
   }));
 });
 
@@ -152,19 +168,84 @@ describe("useSQLEditorTabsStore", () => {
     expect(state.currentTabId).toBe("");
   });
 
-  test("setOpenTabListOrder rewrites the persisted order without losing tabs", () => {
-    const a = getSQLEditorTabsState().addTab({ title: "a" });
-    const b = getSQLEditorTabsState().addTab({ title: "b" });
+  test("the only data explorer tab is closable", () => {
+    const tab = getSQLEditorTabsState().addTab({ mode: "DATA_EXPLORER" });
 
-    const reordered = [
-      ...useSQLEditorTabsStore.getState().openTmpTabList,
-    ].reverse();
-    getSQLEditorTabsState().setOpenTabListOrder(reordered);
+    expect(isSQLEditorTabClosable(tab)).toBe(true);
+  });
+
+  test("persists the data explorer target and filter without runtime state", () => {
+    const tab = getSQLEditorTabsState().addTab({
+      id: "explorer",
+      title: "users",
+      mode: "DATA_EXPLORER",
+      connection: {
+        instance: "instances/mysql-instance",
+        database: "instances/mysql-instance/databases/bytebase",
+        schema: "public",
+        table: "users",
+      },
+      dataExplorer: {
+        filter: "",
+        initialized: false,
+      },
+    });
+    getSQLEditorTabsState().updateTab(tab.id, {
+      dataExplorer: {
+        filter: "WHERE active = true",
+        initialized: true,
+        selectedRowKey: 7,
+      },
+    });
+
+    const persisted = JSON.parse(
+      storage.get(
+        storageKeySqlEditorTabs("", "projects/aaa", "ed@bytebase.com")
+      ) ?? "[]"
+    );
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        id: "explorer",
+        mode: "DATA_EXPLORER",
+        connection: {
+          instance: "instances/mysql-instance",
+          database: "instances/mysql-instance/databases/bytebase",
+          schema: "public",
+          table: "users",
+        },
+        dataExplorer: { filter: "WHERE active = true" },
+      }),
+    ]);
+  });
+
+  test("setOpenTabListOrder preserves data explorer metadata", () => {
+    const a = getSQLEditorTabsState().addTab({ title: "a" });
+    const b = getSQLEditorTabsState().addTab({
+      title: "users",
+      mode: "DATA_EXPLORER",
+      connection: {
+        instance: "instances/mysql-instance",
+        database: "instances/mysql-instance/databases/bytebase",
+        table: "users",
+      },
+      dataExplorer: {
+        filter: "WHERE active = true",
+        initialized: false,
+      },
+    });
+
+    getSQLEditorTabsState().setOpenTabListOrder([b.id, a.id]);
 
     const order = useSQLEditorTabsStore
       .getState()
       .openTmpTabList.map((t) => t.id);
     expect(order).toEqual([b.id, a.id]);
+    expect(useSQLEditorTabsStore.getState().openTmpTabList[0]).toEqual(
+      expect.objectContaining({
+        connection: b.connection,
+        dataExplorer: { filter: "WHERE active = true" },
+      })
+    );
     // Live tab map unchanged.
     expect(useSQLEditorTabsStore.getState().tabsById.size).toBe(2);
   });
@@ -267,19 +348,19 @@ describe("useSQLEditorTabsStore", () => {
     unsubscribe();
   });
 
-  test("initProject ignores persisted worksheets from other projects", async () => {
+  test("initProject ignores persisted saved queries from other projects", async () => {
     storage.set(
       storageKeySqlEditorTabs("", "projects/aaa", "ed@bytebase.com"),
       JSON.stringify([
         {
           id: "cross-project-tab",
-          worksheet: "projects/project-sample/worksheets/sample-sheet",
-          mode: "WORKSHEET",
+          savedQuery: "projects/project-sample/savedQueries/sample-sheet",
+          mode: "SAVED_QUERY",
         },
         {
           id: "same-project-tab",
-          worksheet: "projects/aaa/worksheets/aaa-sheet",
-          mode: "WORKSHEET",
+          savedQuery: "projects/aaa/savedQueries/aaa-sheet",
+          mode: "SAVED_QUERY",
         },
       ])
     );
@@ -293,5 +374,124 @@ describe("useSQLEditorTabsStore", () => {
       "same-project-tab",
     ]);
     expect(state.currentTabId).toBe("same-project-tab");
+  });
+
+  test("initProject normalizes tabs persisted before the saved query rename", async () => {
+    // Backstop for storage-migrate's v2 rewrite: a tab stored with the
+    // legacy `worksheet` field, old name format, and "WORKSHEET" mode
+    // must still hydrate into a saved-query-linked tab.
+    storage.set(
+      storageKeySqlEditorTabs("", "projects/aaa", "ed@bytebase.com"),
+      JSON.stringify([
+        {
+          id: "legacy-tab",
+          worksheet: "projects/aaa/worksheets/legacy-sheet",
+          mode: "WORKSHEET",
+        },
+      ])
+    );
+
+    await getSQLEditorTabsState().initProject("projects/aaa");
+
+    expect(mocks.getOrFetchSavedQueryByName).toHaveBeenCalledWith(
+      "projects/aaa/savedQueries/legacy-sheet",
+      true
+    );
+    const state = useSQLEditorTabsStore.getState();
+    const tab = state.tabsById.get("legacy-tab");
+    expect(tab?.savedQuery).toBe("projects/aaa/savedQueries/legacy-sheet");
+    expect(tab?.mode).toBe("SAVED_QUERY");
+    expect(
+      state.openTmpTabList.find((t) => t.id === "legacy-tab")
+    ).not.toHaveProperty("worksheet");
+  });
+
+  test("initProject restores the current data explorer tab and its filter", async () => {
+    const tabsKey = storageKeySqlEditorTabs(
+      "",
+      "projects/aaa",
+      "ed@bytebase.com"
+    );
+    storage.set(
+      tabsKey,
+      JSON.stringify([
+        {
+          id: "saved-query",
+          savedQuery: "projects/aaa/savedQueries/aaa-sheet",
+          mode: "SAVED_QUERY",
+        },
+        {
+          id: "explorer",
+          savedQuery: "",
+          mode: "DATA_EXPLORER",
+          connection: {
+            instance: "instances/mysql-instance",
+            database: "instances/mysql-instance/databases/bytebase",
+            schema: "public",
+            table: "users",
+          },
+          dataExplorer: { filter: "WHERE active = true" },
+        },
+      ])
+    );
+    storage.set(
+      storageKeySqlEditorCurrentTab("", "projects/aaa", "ed@bytebase.com"),
+      JSON.stringify("explorer")
+    );
+
+    await getSQLEditorTabsState().initProject("projects/aaa");
+
+    const state = useSQLEditorTabsStore.getState();
+    expect(state.currentTabId).toBe("explorer");
+    expect(state.openTmpTabList.map((tab) => tab.id)).toEqual([
+      "saved-query",
+      "explorer",
+    ]);
+    expect(state.tabsById.get("explorer")).toEqual(
+      expect.objectContaining({
+        title: "users",
+        mode: "DATA_EXPLORER",
+        connection: {
+          instance: "instances/mysql-instance",
+          database: "instances/mysql-instance/databases/bytebase",
+          schema: "public",
+          table: "users",
+        },
+        dataExplorer: {
+          filter: "WHERE active = true",
+          initialized: false,
+        },
+        databaseQueryContexts: undefined,
+      })
+    );
+  });
+
+  test("initProject drops data explorer tabs from another project", async () => {
+    storage.set(
+      storageKeySqlEditorTabs("", "projects/aaa", "ed@bytebase.com"),
+      JSON.stringify([
+        {
+          id: "explorer",
+          savedQuery: "",
+          mode: "DATA_EXPLORER",
+          connection: {
+            instance: "instances/mysql-instance",
+            database: "instances/mysql-instance/databases/bytebase",
+            table: "users",
+          },
+          dataExplorer: { filter: "" },
+        },
+      ])
+    );
+    mocks.getOrFetchDatabaseByName.mockResolvedValueOnce({
+      name: "instances/mysql-instance/databases/bytebase",
+      project: "projects/other",
+    });
+
+    await getSQLEditorTabsState().initProject("projects/aaa");
+
+    const state = useSQLEditorTabsStore.getState();
+    expect(state.tabsById.has("explorer")).toBe(false);
+    expect(state.openTmpTabList).toEqual([]);
   });
 });

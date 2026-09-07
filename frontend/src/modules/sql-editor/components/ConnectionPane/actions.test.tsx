@@ -12,6 +12,12 @@ const mocks = vi.hoisted(() => ({
   sqlEditorEventsEmit: vi.fn().mockResolvedValue(undefined),
   setShowConnectionPanel: vi.fn(),
   setAsidePanelTab: vi.fn(),
+  createSavedQuery: vi.fn().mockResolvedValue(undefined),
+  maybeUpdateSavedQuery: vi.fn().mockResolvedValue(undefined),
+  canCreateSavedQueryInProject: vi.fn(() => true),
+  addTab: vi.fn(() => ({ id: "local-tab" })),
+  tabsById: new Map<string, { id: string; mode: string }>(),
+  currentTabId: "",
 }));
 
 vi.mock("react-i18next", () => ({
@@ -46,8 +52,8 @@ vi.mock("@/modules/sql-editor/store", () => ({
     {
       getState: () => ({
         setAsidePanelTab: mocks.setAsidePanelTab,
-        createWorksheet: vi.fn().mockResolvedValue(undefined),
-        maybeUpdateWorksheet: vi.fn().mockResolvedValue(undefined),
+        createSavedQuery: mocks.createSavedQuery,
+        maybeUpdateSavedQuery: mocks.maybeUpdateSavedQuery,
       }),
     }
   ),
@@ -62,7 +68,17 @@ vi.mock("@/modules/sql-editor/model/events", () => ({
   sqlEditorEvents: { emit: mocks.sqlEditorEventsEmit },
 }));
 
+vi.mock("@/modules/sql-editor/store/tab", () => ({
+  getSQLEditorTabsState: () => ({
+    tabsById: mocks.tabsById,
+    currentTabId: mocks.currentTabId,
+    addTab: mocks.addTab,
+    updateTab: vi.fn(),
+  }),
+}));
+
 vi.mock("@/utils", () => ({
+  canCreateSavedQueryInProject: mocks.canCreateSavedQueryInProject,
   extractDatabaseResourceName: (name: string) => ({
     instance: "instances/prod",
     databaseName: name.split("/").pop() ?? "",
@@ -81,7 +97,7 @@ vi.mock("@/types", async () => {
   };
 });
 
-// The SQL-editor tab/worksheet stores now transitively load the Zustand
+// The SQL-editor tab/saved query stores now transitively load the Zustand
 // app store (eagerly created). Stub it so the real `createAppStore()`
 // (which reads `@/types` exports this test doesn't mock) never runs.
 vi.mock("@/stores/app", () => {
@@ -151,7 +167,69 @@ const makeDatabaseNode = (
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.allowAdmin = false;
+  mocks.canCreateSavedQueryInProject.mockReturnValue(true);
+  mocks.addTab.mockReturnValue({ id: "local-tab" });
+  mocks.createSavedQuery.mockResolvedValue(undefined);
+  mocks.tabsById.clear();
+  mocks.currentTabId = "";
   ({ useConnectionMenu } = await import("./actions"));
+});
+
+describe("setConnection", () => {
+  test("opens a local tab instead of creating without the permission", async () => {
+    // "Connect in new tab" would otherwise POST a saved query and 403 for a
+    // role that can query but not create, leaving no connected tab at all.
+    mocks.canCreateSavedQueryInProject.mockReturnValue(false);
+    const { setConnection } = await import("./actions");
+
+    await act(async () => {
+      setConnection({
+        database: { name: "instances/prod/databases/db1" } as never,
+        newTab: true,
+      });
+      await Promise.resolve();
+    });
+
+    expect(mocks.createSavedQuery).not.toHaveBeenCalled();
+    expect(mocks.addTab).toHaveBeenCalled();
+  });
+
+  test("creates a saved query when the caller may", async () => {
+    mocks.canCreateSavedQueryInProject.mockReturnValue(true);
+    const { setConnection } = await import("./actions");
+
+    await act(async () => {
+      setConnection({
+        database: { name: "instances/prod/databases/db1" } as never,
+        newTab: true,
+      });
+      await Promise.resolve();
+    });
+
+    expect(mocks.createSavedQuery).toHaveBeenCalled();
+    expect(mocks.addTab).not.toHaveBeenCalled();
+  });
+
+  test("does not replace a data explorer tab", async () => {
+    mocks.currentTabId = "data-explorer";
+    mocks.tabsById.set("data-explorer", {
+      id: "data-explorer",
+      mode: "DATA_EXPLORER",
+    });
+    const { setConnection } = await import("./actions");
+
+    await act(async () => {
+      setConnection({
+        database: { name: "instances/prod/databases/db1" } as never,
+        mode: "DATA_EXPLORER",
+        newTab: false,
+      });
+      await Promise.resolve();
+    });
+
+    expect(mocks.maybeUpdateSavedQuery).not.toHaveBeenCalled();
+    expect(mocks.createSavedQuery).toHaveBeenCalled();
+  });
 });
 
 describe("useConnectionMenu", () => {

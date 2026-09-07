@@ -16,6 +16,19 @@ const mocks = vi.hoisted(() => ({
   getAccessGrantStatusTagType: vi.fn(),
 }));
 
+vi.mock("@/components/DatabaseTargetDisplay", () => ({
+  DatabaseTargetDisplay: (props: {
+    target: string;
+    showEnvironment?: boolean;
+  }) => (
+    <span
+      data-testid="database-target-display"
+      data-target={props.target}
+      data-show-environment={String(props.showEnvironment)}
+    />
+  ),
+}));
+
 vi.mock("react-i18next", () => ({
   useTranslation: mocks.useTranslation,
 }));
@@ -142,6 +155,43 @@ afterEach(() => {
 });
 
 describe("AccessGrantItem", () => {
+  test("renders database targets with the unified display", () => {
+    const grant = makeGrant({
+      targets: [
+        "instances/inst1/databases/db1",
+        "instances/inst2/databases/db2",
+        "instances/inst3/databases/db3",
+      ],
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={grant as never}
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    const targets = Array.from(
+      container.querySelectorAll("[data-testid='database-target-display']")
+    );
+    expect(targets).toHaveLength(2);
+    expect(targets[0]?.getAttribute("data-target")).toBe(
+      "instances/inst1/databases/db1"
+    );
+    expect(targets[1]?.getAttribute("data-target")).toBe(
+      "instances/inst2/databases/db2"
+    );
+    expect(
+      targets.every(
+        (target) => target.getAttribute("data-show-environment") === "true"
+      )
+    ).toBe(true);
+    expect(container.textContent).toContain("sql-editor.and-n-more-databases");
+    unmount();
+  });
+
   test("renders status badge with correct label for ACTIVE status", () => {
     mocks.getAccessGrantDisplayStatus.mockReturnValue("ACTIVE");
     mocks.getAccessGrantDisplayStatusText.mockReturnValue("Active");
@@ -164,6 +214,25 @@ describe("AccessGrantItem", () => {
     expect(badge).not.toBeNull();
     expect(badge!.textContent).toContain("Active");
     expect(badge!.getAttribute("data-variant")).toBe("success");
+    unmount();
+  });
+
+  test("constrains an unbroken long query within the panel", () => {
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={makeGrant({ query: "x".repeat(100_000) }) as never}
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    expect(container.firstElementChild?.className).toContain("min-w-0");
+    const query = container.querySelector("p");
+    expect(query?.className).toContain("w-full");
+    expect(query?.className).toContain("min-w-0");
+    expect(query?.className).toContain("wrap-anywhere");
+    expect(query?.className).toContain("line-clamp-2");
     unmount();
   });
 

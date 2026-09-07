@@ -1,6 +1,7 @@
 import { Check, ChevronDown, KeyRound, Shield, Users, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { HighlightLabelText } from "@/components/HighlightLabelText";
 import { LAYER_SURFACE_CLASS } from "@/components/ui/layer";
 import { SearchInput } from "@/components/ui/search-input";
 import { useCurrentUser } from "@/hooks/useAppState";
@@ -8,109 +9,95 @@ import { useClickOutside } from "@/hooks/useClickOutside";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app";
 import {
+  extractServiceAccountId,
   extractUserEmail,
+  extractWorkloadIdentityId,
   groupNamePrefix,
+  projectNamePrefix,
   serviceAccountNamePrefix,
   workloadIdentityNamePrefix,
+  workspaceNamePrefix,
 } from "@/stores/modules/v1/common";
 import {
   AccountType,
   ALL_USERS_USER_EMAIL,
   getAccountTypeByEmail,
-  serviceAccountBindingPrefix,
-  userBindingPrefix,
-  workloadIdentityBindingPrefix,
+  getAccountTypeByFullname,
 } from "@/types";
 import type { Group } from "@/types/proto-es/v1/group_service_pb";
 import type { User } from "@/types/proto-es/v1/user_service_pb";
 import { getDefaultPagination, isValidEmail } from "@/utils";
+import {
+  convertFullnameToMember,
+  convertMemberToFullname,
+} from "@/utils/v1/iam";
 
 import { getAvatarColor, getInitials } from "./UserAvatar";
 
 // ---- Account type detection ----
 //
-// Routes typed input to the right account type. Uses the canonical helpers
-// from @/types/v1/user so project-scoped emails like
-// "foo@<project>.workload.bytebase.com" are recognized — a hardcoded
-// "@workload.bytebase.com" suffix would miss them and fall through to a
-// `user:` binding.
+// Routes typed input to the right account type.
 
-type SpecialAccountType = "serviceAccount" | "workloadIdentity";
-
-function detectSpecialAccount(input: string): {
-  type: SpecialAccountType;
+function getSpecialAccountByFullname(fullname: string): {
+  type: AccountType;
   email: string;
 } | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  // Canonical resource-name prefix (case-sensitive, matches backend AIP names).
-  if (trimmed.startsWith(serviceAccountNamePrefix)) {
-    return {
-      type: "serviceAccount",
-      email: trimmed.slice(serviceAccountNamePrefix.length),
-    };
-  }
-  if (trimmed.startsWith(workloadIdentityNamePrefix)) {
-    return {
-      type: "workloadIdentity",
-      email: trimmed.slice(workloadIdentityNamePrefix.length),
-    };
-  }
-  // IAM binding prefix (`serviceAccount:` / `workloadIdentity:`).
-  if (trimmed.startsWith(serviceAccountBindingPrefix)) {
-    return {
-      type: "serviceAccount",
-      email: trimmed.slice(serviceAccountBindingPrefix.length),
-    };
-  }
-  if (trimmed.startsWith(workloadIdentityBindingPrefix)) {
-    return {
-      type: "workloadIdentity",
-      email: trimmed.slice(workloadIdentityBindingPrefix.length),
-    };
-  }
-  // Fallback: classify by email suffix using the canonical detector, which
-  // matches both the root and project-scoped variants.
-  switch (getAccountTypeByEmail(trimmed)) {
-    case AccountType.SERVICE_ACCOUNT:
-      return { type: "serviceAccount", email: trimmed };
-    case AccountType.WORKLOAD_IDENTITY:
-      return { type: "workloadIdentity", email: trimmed };
+  switch (getAccountTypeByFullname(fullname)) {
+    case AccountType.SERVICE_ACCOUNT: {
+      const email = extractServiceAccountId(fullname);
+      return isValidEmail(email)
+        ? { type: AccountType.SERVICE_ACCOUNT, email }
+        : null;
+    }
+    case AccountType.WORKLOAD_IDENTITY: {
+      const email = extractWorkloadIdentityId(fullname);
+      return isValidEmail(email)
+        ? { type: AccountType.WORKLOAD_IDENTITY, email }
+        : null;
+    }
     default:
       return null;
   }
 }
 
-// ---- Conversion helpers ----
+function getSpecialAccountByEmail(email: string): {
+  type: AccountType;
+  email: string;
+} | null {
+  if (!isValidEmail(email)) return null;
 
-// binding  →  fullname
-function bindingToFullname(binding: string): string {
-  if (binding === ALL_USERS_USER_EMAIL) return ALL_USERS_USER_EMAIL;
-  if (binding.startsWith("user:"))
-    return `users/${binding.slice("user:".length)}`;
-  if (binding.startsWith("group:"))
-    return `${groupNamePrefix}${binding.slice("group:".length)}`;
-  if (binding.startsWith("serviceAccount:"))
-    return `serviceAccounts/${binding.slice("serviceAccount:".length)}`;
-  if (binding.startsWith("workloadIdentity:"))
-    return `workloadIdentities/${binding.slice("workloadIdentity:".length)}`;
-  return binding;
+  switch (getAccountTypeByEmail(email)) {
+    case AccountType.SERVICE_ACCOUNT:
+      return { type: AccountType.SERVICE_ACCOUNT, email };
+    case AccountType.WORKLOAD_IDENTITY:
+      return { type: AccountType.WORKLOAD_IDENTITY, email };
+    default:
+      return null;
+  }
 }
 
-// fullname  →  binding
-function fullnameToBinding(fullname: string): string {
-  if (fullname === ALL_USERS_USER_EMAIL) return ALL_USERS_USER_EMAIL;
-  if (fullname.startsWith("users/"))
-    return `${userBindingPrefix}${fullname.slice("users/".length)}`;
-  if (fullname.startsWith(groupNamePrefix))
-    return `group:${fullname.slice(groupNamePrefix.length)}`;
-  if (fullname.startsWith("serviceAccounts/"))
-    return `serviceAccount:${fullname.slice("serviceAccounts/".length)}`;
-  if (fullname.startsWith("workloadIdentities/"))
-    return `workloadIdentity:${fullname.slice("workloadIdentities/".length)}`;
-  return fullname;
+function detectSpecialAccount(input: string): {
+  type: AccountType;
+  email: string;
+} | null {
+  const email = input.trim();
+  if (!email) return null;
+
+  return getSpecialAccountByFullname(email) ?? getSpecialAccountByEmail(email);
 }
+
+type SpecialAccount = {
+  type: AccountType;
+  fullname: string;
+  email: string;
+  title?: string;
+};
+
+type AccountParent = {
+  name: string;
+  canListServiceAccounts: boolean;
+  canListWorkloadIdentities: boolean;
+};
 
 // ---- Sub-components ----
 
@@ -130,16 +117,18 @@ function SelectionCheckbox({ selected }: { selected: boolean }) {
 }
 
 function SpecialAccountOption({
+  keyword,
   match,
   selected,
   onToggle,
 }: {
-  match: { type: SpecialAccountType; email: string };
+  keyword: string;
+  match: SpecialAccount;
   selected: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
-  const isServiceAccount = match.type === "serviceAccount";
+  const isServiceAccount = match.type === AccountType.SERVICE_ACCOUNT;
   const Icon = isServiceAccount ? KeyRound : Shield;
   const label = isServiceAccount
     ? t("settings.members.service-account")
@@ -162,16 +151,20 @@ function SpecialAccountOption({
       </div>
       <div className="flex flex-col min-w-0">
         <div className="flex items-center gap-x-1">
-          <span className="text-sm font-medium truncate">
-            {match.email.split("@")[0]}
-          </span>
+          <HighlightLabelText
+            text={match.title || match.email.split("@")[0]}
+            keyword={keyword}
+            className="text-sm font-medium truncate"
+          />
           <span className="text-xs text-control-light bg-control-bg rounded-xs px-1">
             {label}
           </span>
         </div>
-        <span className="text-xs text-control-light truncate">
-          {match.email}
-        </span>
+        <HighlightLabelText
+          text={match.email}
+          keyword={keyword}
+          className="text-xs text-control-light truncate"
+        />
       </div>
     </div>
   );
@@ -184,44 +177,201 @@ export function AccountMultiSelect({
   onChange,
   disabled,
   includeAllUsers,
+  excludeAccounts,
+  accountParents,
+  placeholder,
 }: {
   value: string[];
   onChange: (value: string[]) => void;
   disabled?: boolean;
   includeAllUsers?: boolean;
+  /** Empty-state text in the trigger; defaults to the generic account label. */
+  placeholder?: string;
+  /**
+   * Binding strings ("user:{email}" / "group:{email}") to hide from the
+   * dropdown — accounts that cannot or need not be picked here, such as the
+   * caller themselves or accounts already holding a grant. Display-only:
+   * chips already in `value` keep rendering and stay removable.
+   */
+  excludeAccounts?: string[];
+  /** Resource parents whose special accounts may be discovered. */
+  accountParents?: string[];
 }) {
   const { t } = useTranslation();
   const listUsers = useAppStore((state) => state.listUsers);
   const listGroups = useAppStore((state) => state.listGroups);
+  const listServiceAccounts = useAppStore((state) => state.listServiceAccounts);
+  const listWorkloadIdentities = useAppStore(
+    (state) => state.listWorkloadIdentities
+  );
   const currentUser = useCurrentUser();
 
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [users, setUsers] = useState<User[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [specialAccounts, setSpecialAccounts] = useState<SpecialAccount[]>([]);
+
+  const uniqueAccountParents = useMemo(
+    () => [...new Set(accountParents?.filter(Boolean) ?? [])],
+    [accountParents]
+  );
+  const workspaceAccountParent = useMemo(
+    () =>
+      uniqueAccountParents.find((parent) =>
+        parent.startsWith(workspaceNamePrefix)
+      ),
+    [uniqueAccountParents]
+  );
+  const projectAccountParent = useMemo(
+    () =>
+      uniqueAccountParents.find((parent) =>
+        parent.startsWith(projectNamePrefix)
+      ),
+    [uniqueAccountParents]
+  );
+  const project = useAppStore((state) =>
+    projectAccountParent
+      ? state.projectsByName[projectAccountParent]
+      : undefined
+  );
+  const canListWorkspaceServiceAccounts = useAppStore((state) =>
+    workspaceAccountParent
+      ? state.hasWorkspacePermission("bb.serviceAccounts.list")
+      : false
+  );
+  const canListWorkspaceWorkloadIdentities = useAppStore((state) =>
+    workspaceAccountParent
+      ? state.hasWorkspacePermission("bb.workloadIdentities.list")
+      : false
+  );
+  const canListProjectServiceAccounts = useAppStore((state) =>
+    project
+      ? state.hasProjectPermission(project, "bb.serviceAccounts.list")
+      : false
+  );
+  const canListProjectWorkloadIdentities = useAppStore((state) =>
+    project
+      ? state.hasProjectPermission(project, "bb.workloadIdentities.list")
+      : false
+  );
+  const permittedAccountParents = useMemo((): AccountParent[] => {
+    const parents: AccountParent[] = [];
+    if (
+      workspaceAccountParent &&
+      (canListWorkspaceServiceAccounts || canListWorkspaceWorkloadIdentities)
+    ) {
+      parents.push({
+        name: workspaceAccountParent,
+        canListServiceAccounts: canListWorkspaceServiceAccounts,
+        canListWorkloadIdentities: canListWorkspaceWorkloadIdentities,
+      });
+    }
+    if (
+      projectAccountParent &&
+      project &&
+      (canListProjectServiceAccounts || canListProjectWorkloadIdentities)
+    ) {
+      parents.push({
+        name: projectAccountParent,
+        canListServiceAccounts: canListProjectServiceAccounts,
+        canListWorkloadIdentities: canListProjectWorkloadIdentities,
+      });
+    }
+    return parents;
+  }, [
+    workspaceAccountParent,
+    canListWorkspaceServiceAccounts,
+    canListWorkspaceWorkloadIdentities,
+    projectAccountParent,
+    project,
+    canListProjectServiceAccounts,
+    canListProjectWorkloadIdentities,
+  ]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Cache display labels for selected items so they persist across search changes
   const labelCacheRef = useRef<Map<string, string>>(new Map());
 
-  // Fetch on search change (debounced 300ms)
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      const query = search.trim();
-      listUsers({ pageSize: getDefaultPagination(), filter: { query } }).then(
-        ({ users: fetched }) => setUsers(fetched)
-      );
-      listGroups({ pageSize: getDefaultPagination(), filter: { query } }).then(
-        ({ groups: fetched }) => setGroups(fetched)
-      );
-    }, 300);
+    const query = search.trim();
+    // Over-fetch by the exclusion count: filtering happens after server
+    // pagination, so without this a widely-shared exclusion list could
+    // consume the entire page and leave nothing pickable.
+    const pageSize = getDefaultPagination() + (excludeAccounts?.length ?? 0);
+    listUsers({ pageSize, filter: { query } }).then(({ users: fetched }) =>
+      setUsers(fetched)
+    );
+    listGroups({ pageSize, filter: { query } }).then(({ groups: fetched }) =>
+      setGroups(fetched)
+    );
+  }, [search, listUsers, listGroups, excludeAccounts]);
+
+  useEffect(() => {
+    if (permittedAccountParents.length === 0) {
+      setSpecialAccounts([]);
+      return;
+    }
+
+    let cancelled = false;
+    const query = search.trim();
+    const pageSize = getDefaultPagination() + (excludeAccounts?.length ?? 0);
+    const params = (parent: string) => ({
+      parent,
+      pageSize,
+      showDeleted: false,
+      filter: { query },
+      skipCache: true,
+    });
+
+    void Promise.allSettled(
+      permittedAccountParents.flatMap((parent) => [
+        ...(parent.canListServiceAccounts
+          ? [listServiceAccounts(params(parent.name))]
+          : []),
+        ...(parent.canListWorkloadIdentities
+          ? [listWorkloadIdentities(params(parent.name))]
+          : []),
+      ])
+    ).then((results) => {
+      if (cancelled) return;
+      const discovered = new Map<string, SpecialAccount>();
+      for (const result of results) {
+        if (result.status !== "fulfilled") continue;
+        if ("serviceAccounts" in result.value) {
+          for (const account of result.value.serviceAccounts) {
+            discovered.set(account.name, {
+              type: AccountType.SERVICE_ACCOUNT,
+              fullname: account.name,
+              email: account.email,
+              title: account.title,
+            });
+          }
+        } else {
+          for (const account of result.value.workloadIdentities) {
+            discovered.set(account.name, {
+              type: AccountType.WORKLOAD_IDENTITY,
+              fullname: account.name,
+              email: account.email,
+              title: account.title,
+            });
+          }
+        }
+      }
+      setSpecialAccounts([...discovered.values()]);
+    });
+
     return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
+      cancelled = true;
     };
-  }, [search, listUsers, listGroups]);
+  }, [
+    search,
+    permittedAccountParents,
+    listServiceAccounts,
+    listWorkloadIdentities,
+    excludeAccounts,
+  ]);
 
   const handleClickOutside = useCallback(() => {
     setOpen(false);
@@ -231,13 +381,49 @@ export function AccountMultiSelect({
 
   // Selected fullnames set for quick lookup
   const selectedFullnames = useMemo(
-    () => new Set(value.map(bindingToFullname)),
+    () => new Set(value.map(convertMemberToFullname)),
     [value]
+  );
+
+  const excludedFullnames = useMemo(
+    () => new Set((excludeAccounts ?? []).map(convertMemberToFullname)),
+    [excludeAccounts]
+  );
+  // Filter the rendered lists only — `users`/`groups` stay complete so
+  // resolveLabel keeps labeling chips for any binding in `value`.
+  const visibleUsers = useMemo(
+    () => users.filter((user) => !excludedFullnames.has(`users/${user.email}`)),
+    [users, excludedFullnames]
+  );
+  const visibleGroups = useMemo(
+    () => groups.filter((group) => !excludedFullnames.has(group.name)),
+    [groups, excludedFullnames]
+  );
+  const visibleSpecialAccounts = useMemo(
+    () =>
+      specialAccounts.filter(
+        (account) => !excludedFullnames.has(account.fullname)
+      ),
+    [specialAccounts, excludedFullnames]
+  );
+  const visibleServiceAccounts = useMemo(
+    () =>
+      visibleSpecialAccounts.filter(
+        (account) => account.type === AccountType.SERVICE_ACCOUNT
+      ),
+    [visibleSpecialAccounts]
+  );
+  const visibleWorkloadIdentities = useMemo(
+    () =>
+      visibleSpecialAccounts.filter(
+        (account) => account.type === AccountType.WORKLOAD_IDENTITY
+      ),
+    [visibleSpecialAccounts]
   );
 
   const toggle = (fullname: string) => {
     if (disabled) return;
-    const binding = fullnameToBinding(fullname);
+    const binding = convertFullnameToMember(fullname);
     if (selectedFullnames.has(fullname)) {
       labelCacheRef.current.delete(binding);
       onChange(value.filter((v) => v !== binding));
@@ -266,19 +452,21 @@ export function AccountMultiSelect({
       const group = groups.find((g) => g.name === fullname);
       return group?.title || fullname;
     }
+    const specialAccount = specialAccounts.find(
+      (account) => account.fullname === fullname
+    );
+    if (specialAccount) {
+      return specialAccount.title || specialAccount.email;
+    }
     return undefined;
   };
 
   // Detect service account / workload identity typed in search
-  const specialAccountMatch = useMemo((): {
-    type: SpecialAccountType;
-    email: string;
-    fullname: string;
-  } | null => {
+  const specialAccountMatch = useMemo((): SpecialAccount | null => {
     const match = detectSpecialAccount(search);
     if (!match || !match.email) return null;
     const prefix =
-      match.type === "serviceAccount"
+      match.type === AccountType.SERVICE_ACCOUNT
         ? serviceAccountNamePrefix
         : workloadIdentityNamePrefix;
     return { ...match, fullname: `${prefix}${match.email}` };
@@ -297,6 +485,21 @@ export function AccountMultiSelect({
     return trimmed;
   }, [search, specialAccountMatch, users]);
 
+  const visibleSpecialAccountMatch =
+    specialAccountMatch &&
+    !excludedFullnames.has(specialAccountMatch.fullname) &&
+    !visibleSpecialAccounts.some(
+      (account) => account.fullname === specialAccountMatch.fullname
+    )
+      ? specialAccountMatch
+      : null;
+  const visibleArbitraryEmailMatch =
+    arbitraryEmailMatch &&
+    !excludedFullnames.has(`users/${arbitraryEmailMatch}`)
+      ? arbitraryEmailMatch
+      : null;
+  const showAllUsers = includeAllUsers && !search.trim();
+
   // Label for a selected binding chip — uses cache to survive search changes
   const chipLabel = (binding: string): string => {
     if (binding === ALL_USERS_USER_EMAIL) {
@@ -304,16 +507,30 @@ export function AccountMultiSelect({
     }
     const cached = labelCacheRef.current.get(binding);
     if (cached) return cached;
-    const fullname = bindingToFullname(binding);
-    if (fullname.startsWith("serviceAccounts/"))
-      return fullname.slice("serviceAccounts/".length);
-    if (fullname.startsWith("workloadIdentities/"))
-      return fullname.slice("workloadIdentities/".length);
+    const fullname = convertMemberToFullname(binding);
+    const specialAccount = detectSpecialAccount(fullname);
+    switch (specialAccount?.type) {
+      case AccountType.SERVICE_ACCOUNT:
+      case AccountType.WORKLOAD_IDENTITY:
+        return specialAccount.email;
+    }
     return resolveLabel(fullname) || binding;
   };
 
   return (
-    <div ref={containerRef} className="relative">
+    <div
+      ref={containerRef}
+      className="relative"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open) return;
+        // Swallow Escape while the dropdown is open: it closes only the
+        // dropdown, not the popover (and staged state) around the picker.
+        event.stopPropagation();
+        event.preventDefault();
+        setOpen(false);
+        setSearch("");
+      }}
+    >
       {/* Trigger */}
       <div
         className={cn(
@@ -350,7 +567,7 @@ export function AccountMultiSelect({
         ))}
         {value.length === 0 && (
           <span className="text-control-placeholder">
-            {t("settings.members.select-account", { count: 2 })}
+            {placeholder ?? t("settings.members.select-account", { count: 2 })}
           </span>
         )}
         <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-control-light" />
@@ -373,9 +590,9 @@ export function AccountMultiSelect({
             placeholder={t("common.search-for-more")}
           />
 
-          <div className="overflow-auto">
+          <div className="overflow-auto" role="listbox" aria-multiselectable>
             {/* allUsers option */}
-            {includeAllUsers && (
+            {showAllUsers && (
               <div
                 className={cn(
                   "flex items-center gap-x-3 px-3 py-2 cursor-pointer hover:bg-control-bg",
@@ -393,19 +610,21 @@ export function AccountMultiSelect({
                 >
                   <Users className="h-4 w-4" />
                 </div>
-                <span className="text-sm font-medium">
-                  {t("settings.members.all-users")}
-                </span>
+                <HighlightLabelText
+                  text={t("settings.members.all-users")}
+                  keyword={search}
+                  className="text-sm font-medium"
+                />
               </div>
             )}
 
             {/* Users */}
-            {users.length > 0 && (
+            {visibleUsers.length > 0 && (
               <div>
                 <div className="px-3 py-1.5 text-xs font-medium text-control-light uppercase tracking-wide bg-control-bg border-b">
                   {t("common.users")}
                 </div>
-                {users.map((user) => {
+                {visibleUsers.map((user) => {
                   const fullname = `users/${user.email}`;
                   const selected = selectedFullnames.has(fullname);
                   const isCurrentUser = user.email === currentUser?.email;
@@ -431,9 +650,11 @@ export function AccountMultiSelect({
                       </div>
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-x-1">
-                          <span className="text-sm font-medium truncate">
-                            {displayName}
-                          </span>
+                          <HighlightLabelText
+                            text={displayName}
+                            keyword={search}
+                            className="text-sm font-medium truncate"
+                          />
                           {isCurrentUser && (
                             <span className="text-xs text-control-light bg-control-bg rounded-xs px-1">
                               {t("common.you")}
@@ -441,9 +662,11 @@ export function AccountMultiSelect({
                           )}
                         </div>
                         {user.title && (
-                          <span className="text-xs text-control-light truncate">
-                            {user.email}
-                          </span>
+                          <HighlightLabelText
+                            text={user.email}
+                            keyword={search}
+                            className="text-xs text-control-light truncate"
+                          />
                         )}
                       </div>
                     </div>
@@ -453,21 +676,30 @@ export function AccountMultiSelect({
             )}
 
             {/* Groups */}
-            {groups.length > 0 && (
+            {visibleGroups.length > 0 && (
               <div>
                 <div className="px-3 py-1.5 text-xs font-medium text-control-light uppercase tracking-wide bg-control-bg border-b">
                   {t("common.groups")}
                 </div>
-                {groups.map((group) => {
+                {visibleGroups.map((group) => {
                   const selected = selectedFullnames.has(group.name);
                   return (
                     <div
                       key={group.name}
+                      role="option"
+                      aria-selected={selected}
+                      tabIndex={0}
                       className={cn(
                         "flex items-center gap-x-3 px-3 py-2 cursor-pointer hover:bg-control-bg",
                         selected && "bg-accent/5"
                       )}
                       onClick={() => toggle(group.name)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          toggle(group.name);
+                        }
+                      }}
                     >
                       <SelectionCheckbox selected={selected} />
                       <div className="size-7 rounded-full bg-control-bg-hover flex items-center justify-center shrink-0">
@@ -475,9 +707,11 @@ export function AccountMultiSelect({
                       </div>
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-x-1.5">
-                          <span className="text-sm font-medium truncate">
-                            {group.title || group.email}
-                          </span>
+                          <HighlightLabelText
+                            text={group.title || group.email}
+                            keyword={search}
+                            className="text-sm font-medium truncate"
+                          />
                           <span className="text-xs text-control-light">
                             ({group.members.length}{" "}
                             {t("common.members", {
@@ -486,9 +720,11 @@ export function AccountMultiSelect({
                             )
                           </span>
                         </div>
-                        <span className="text-xs text-control-light truncate">
-                          {group.email}
-                        </span>
+                        <HighlightLabelText
+                          text={group.email}
+                          keyword={search}
+                          className="text-xs text-control-light truncate"
+                        />
                       </div>
                     </div>
                   );
@@ -496,52 +732,105 @@ export function AccountMultiSelect({
               </div>
             )}
 
-            {/* Service account / workload identity match */}
-            {specialAccountMatch && (
+            {/* Service accounts */}
+            {(visibleSpecialAccountMatch?.type ===
+              AccountType.SERVICE_ACCOUNT ||
+              visibleServiceAccounts.length > 0) && (
+              <div className="px-3 py-1.5 text-xs font-medium text-control-light uppercase tracking-wide bg-control-bg border-b">
+                {t("settings.members.service-accounts")}
+              </div>
+            )}
+            {visibleSpecialAccountMatch?.type ===
+              AccountType.SERVICE_ACCOUNT && (
               <SpecialAccountOption
-                match={specialAccountMatch}
-                selected={selectedFullnames.has(specialAccountMatch.fullname)}
-                onToggle={() => toggle(specialAccountMatch.fullname)}
+                keyword={search}
+                match={visibleSpecialAccountMatch}
+                selected={selectedFullnames.has(
+                  visibleSpecialAccountMatch.fullname
+                )}
+                onToggle={() => toggle(visibleSpecialAccountMatch.fullname)}
               />
             )}
+            {visibleServiceAccounts.map((account) => (
+              <SpecialAccountOption
+                key={account.fullname}
+                keyword={search}
+                match={account}
+                selected={selectedFullnames.has(account.fullname)}
+                onToggle={() => toggle(account.fullname)}
+              />
+            ))}
+
+            {/* Workload identities */}
+            {(visibleSpecialAccountMatch?.type ===
+              AccountType.WORKLOAD_IDENTITY ||
+              visibleWorkloadIdentities.length > 0) && (
+              <div className="px-3 py-1.5 text-xs font-medium text-control-light uppercase tracking-wide bg-control-bg border-b">
+                {t("settings.members.workload-identities")}
+              </div>
+            )}
+            {visibleSpecialAccountMatch?.type ===
+              AccountType.WORKLOAD_IDENTITY && (
+              <SpecialAccountOption
+                keyword={search}
+                match={visibleSpecialAccountMatch}
+                selected={selectedFullnames.has(
+                  visibleSpecialAccountMatch.fullname
+                )}
+                onToggle={() => toggle(visibleSpecialAccountMatch.fullname)}
+              />
+            )}
+            {visibleWorkloadIdentities.map((account) => (
+              <SpecialAccountOption
+                key={account.fullname}
+                keyword={search}
+                match={account}
+                selected={selectedFullnames.has(account.fullname)}
+                onToggle={() => toggle(account.fullname)}
+              />
+            ))}
 
             {/* Arbitrary email fallback */}
-            {arbitraryEmailMatch && (
+            {visibleArbitraryEmailMatch && (
               <div
                 className={cn(
                   "flex items-center gap-x-3 px-3 py-2 cursor-pointer hover:bg-control-bg",
-                  selectedFullnames.has(`users/${arbitraryEmailMatch}`) &&
-                    "bg-accent/5"
+                  selectedFullnames.has(
+                    `users/${visibleArbitraryEmailMatch}`
+                  ) && "bg-accent/5"
                 )}
-                onClick={() => toggle(`users/${arbitraryEmailMatch}`)}
+                onClick={() => toggle(`users/${visibleArbitraryEmailMatch}`)}
               >
                 <SelectionCheckbox
                   selected={selectedFullnames.has(
-                    `users/${arbitraryEmailMatch}`
+                    `users/${visibleArbitraryEmailMatch}`
                   )}
                 />
                 <div
                   className="size-7 rounded-full flex items-center justify-center text-accent-text text-xs font-medium shrink-0"
                   style={{
-                    backgroundColor: getAvatarColor(arbitraryEmailMatch),
+                    backgroundColor: getAvatarColor(visibleArbitraryEmailMatch),
                   }}
                 >
-                  {getInitials(arbitraryEmailMatch.split("@")[0])}
+                  {getInitials(visibleArbitraryEmailMatch.split("@")[0])}
                 </div>
                 <div className="flex flex-col min-w-0">
-                  <span className="text-sm font-medium truncate">
-                    {arbitraryEmailMatch}
-                  </span>
+                  <HighlightLabelText
+                    text={visibleArbitraryEmailMatch}
+                    keyword={search}
+                    className="text-sm font-medium truncate"
+                  />
                 </div>
               </div>
             )}
 
             {/* Empty state */}
-            {!includeAllUsers &&
-              users.length === 0 &&
-              groups.length === 0 &&
-              !specialAccountMatch &&
-              !arbitraryEmailMatch && (
+            {!showAllUsers &&
+              visibleUsers.length === 0 &&
+              visibleGroups.length === 0 &&
+              visibleSpecialAccounts.length === 0 &&
+              !visibleSpecialAccountMatch &&
+              !visibleArbitraryEmailMatch && (
                 <div className="px-3 py-4 text-sm text-center text-control-light">
                   {t("common.no-data")}
                 </div>

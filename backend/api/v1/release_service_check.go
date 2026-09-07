@@ -31,6 +31,42 @@ import (
 	"github.com/bytebase/bytebase/backend/utils"
 )
 
+type releaseCheckTarget struct {
+	database *store.DatabaseMessage
+	name     string
+}
+
+// checkReleaseTargetProject refuses a database target that spells another
+// project: it asks for nothing this project could hold, so it is malformed
+// for this request rather than merely absent.
+func checkReleaseTargetProject(projectID, target string, targetProjectID *string) error {
+	if targetProjectID != nil && *targetProjectID != projectID {
+		return connect.NewError(connect.CodeInvalidArgument, errors.Errorf("database target %q does not belong to project %q", target, projectID))
+	}
+	return nil
+}
+
+// checkReleaseDatabase refuses a target whose database is missing or belongs
+// to another project. One error for both: a distinct one would confirm what
+// lives in a project the caller cannot see.
+func checkReleaseDatabase(projectID, target string, database *store.DatabaseMessage) error {
+	if database == nil || database.ProjectID != projectID {
+		return connect.NewError(connect.CodeNotFound, errors.Errorf("database %v not found", target))
+	}
+	return nil
+}
+
+// checkReleaseDatabaseInstance refuses a target whose instance is gone or whose
+// name is not the database's own canonical one — a project instance's database
+// is not reachable through the workspace form. The same error as
+// checkReleaseDatabase, for the same reason.
+func checkReleaseDatabaseInstance(target string, database *store.DatabaseMessage, instance *store.InstanceMessage) error {
+	if instance == nil || instance.Deleted || database.ResourceName() != target {
+		return connect.NewError(connect.CodeNotFound, errors.Errorf("database %v not found", target))
+	}
+	return nil
+}
+
 func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[v1pb.CheckReleaseRequest]) (*connect.Response[v1pb.CheckReleaseResponse], error) {
 	request := req.Msg
 	projectID, err := common.GetProjectID(request.GetParent())
@@ -49,6 +85,9 @@ func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[
 	if project == nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("project %q not found", projectID))
 	}
+	if project.Deleted {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.Errorf("project %q is archived", projectID))
+	}
 
 	if request.GetRelease() == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("release is required"))
@@ -66,42 +105,45 @@ func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("targets cannot be empty"))
 	}
 
-	var targetDatabases []*store.DatabaseMessage
+	var targets []*releaseCheckTarget
 	for _, target := range request.Targets {
 		// Handle database target.
-		if instanceID, databaseName, err := common.GetInstanceDatabaseID(target); err == nil {
+		if targetProjectID, instanceID, databaseName, err := common.GetDatabaseResourceName(target); err == nil {
+			if err := checkReleaseTargetProject(projectID, target, targetProjectID); err != nil {
+				return nil, err
+			}
 			database, err := s.store.GetDatabase(ctx, &store.FindDatabaseMessage{
-				Workspace:    common.GetWorkspaceIDFromContext(ctx),
+				Workspace:    workspaceID,
 				InstanceID:   &instanceID,
 				DatabaseName: &databaseName,
 			})
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to found database %v", target))
 			}
-			if database == nil {
-				return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("database %v not found", target))
+			if err := checkReleaseDatabase(projectID, target, database); err != nil {
+				return nil, err
 			}
-			targetDatabases = append(targetDatabases, database)
+			instance, err := s.store.GetInstance(ctx, &store.FindInstanceMessage{
+				Workspace:  workspaceID,
+				ResourceID: &instanceID,
+			})
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, err)
+			}
+			if err := checkReleaseDatabaseInstance(target, database, instance); err != nil {
+				return nil, err
+			}
+			targets = append(targets, &releaseCheckTarget{database: database, name: target})
 			continue
 		}
 
 		// Handle database group target. Extract all matched databases in the database group.
 		if projectResourceID, databaseGroupResourceID, err := common.GetProjectIDDatabaseGroupID(target); err == nil {
-			project, err := s.store.GetProject(ctx, &store.FindProjectMessage{
-				Workspace:  workspaceID,
-				ResourceID: &projectResourceID,
-			})
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			if project == nil {
-				return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("project %q not found", projectResourceID))
-			}
-			if project.Deleted {
-				return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("project %q has been deleted", projectResourceID))
+			if projectResourceID != projectID {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("database group target %q does not belong to project %q", target, projectID))
 			}
 			existedDatabaseGroup, err := s.store.GetDatabaseGroup(ctx, &store.FindDatabaseGroupMessage{
-				ProjectIDs: []string{project.ResourceID},
+				ProjectIDs: []string{projectID},
 				ResourceID: &databaseGroupResourceID,
 			})
 			if err != nil {
@@ -122,24 +164,33 @@ func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[
 			if err != nil {
 				return nil, err
 			}
-			targetDatabases = append(targetDatabases, matches...)
+			for _, database := range matches {
+				targets = append(targets, &releaseCheckTarget{
+					database: database,
+					name:     database.ResourceName(),
+				})
+			}
 			continue
 		}
 
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("unsupported target %q", target))
 	}
 
-	if project.Setting.GetCiSamplingSize() > 0 && len(targetDatabases) > int(project.Setting.GetCiSamplingSize()) {
-		targetDatabases = targetDatabases[:project.Setting.GetCiSamplingSize()]
+	if project.Setting.GetCiSamplingSize() > 0 && len(targets) > int(project.Setting.GetCiSamplingSize()) {
+		targets = targets[:project.Setting.GetCiSamplingSize()]
 	}
 
 	// Validate and sanitize release files.
-	sanitizedFiles, err := validateAndSanitizeReleaseFiles(ctx, s.store, request.Release.Files, request.Release.Type)
+	sanitizedFiles, err := validateAndSanitizeReleaseFiles(request.Release.Files, request.Release.Type)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Wrapf(err, "invalid release files"))
 	}
 	if len(sanitizedFiles) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("release files cannot be empty"))
+	}
+	// The checks below run over the SQL itself, so load sheet content here.
+	if err := loadReleaseFileStatements(ctx, s.store, projectID, sanitizedFiles); err != nil {
+		return nil, err
 	}
 
 	if err := s.touchVCSProviderUser(ctx, workspaceID, request.GetVcsUser()); err != nil {
@@ -149,13 +200,13 @@ func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[
 	var response *v1pb.CheckReleaseResponse
 	switch releaseType {
 	case v1pb.Release_DECLARATIVE:
-		resp, err := s.checkReleaseDeclarative(ctx, sanitizedFiles, targetDatabases, request.CustomRules)
+		resp, err := s.checkReleaseDeclarative(ctx, sanitizedFiles, targets, request.CustomRules)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to check release declarative"))
 		}
 		response = resp
 	case v1pb.Release_VERSIONED:
-		resp, err := s.checkReleaseVersioned(ctx, project, sanitizedFiles, targetDatabases, request.CustomRules)
+		resp, err := s.checkReleaseVersioned(ctx, project, sanitizedFiles, targets, request.CustomRules)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to check release versioned"))
 		}
@@ -165,6 +216,37 @@ func (s *ReleaseService) CheckRelease(ctx context.Context, req *connect.Request[
 	}
 
 	return connect.NewResponse(response), nil
+}
+
+// loadReleaseFileStatements populates Statement for files that reference a
+// sheet, reading full content through the project-scoped accessor. The scoped
+// read is also what scopes CheckRelease: a sheet without this project's ref
+// comes back absent and errors as not found.
+func loadReleaseFileStatements(ctx context.Context, s *store.Store, projectID string, files []*v1pb.Release_File) error {
+	var sheetSha256s []string
+	for _, f := range files {
+		if f.Sheet != "" {
+			sheetSha256s = append(sheetSha256s, f.SheetSha256)
+		}
+	}
+	if len(sheetSha256s) == 0 {
+		return nil
+	}
+	sheets, err := s.GetSheetsForProject(ctx, projectID, sheetSha256s, true)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get sheets"))
+	}
+	for _, f := range files {
+		if f.Sheet == "" {
+			continue
+		}
+		sheet, ok := sheets[f.SheetSha256]
+		if !ok {
+			return connect.NewError(connect.CodeNotFound, errors.Errorf("sheet %q not found", f.Sheet))
+		}
+		f.Statement = []byte(sheet.Statement)
+	}
+	return nil
 }
 
 func (s *ReleaseService) touchVCSProviderUser(ctx context.Context, workspaceID string, vcsUser *v1pb.VCSUser) error {
@@ -230,7 +312,7 @@ func truncateVCSProviderUserMetadata(value string) string {
 	return string([]rune(value)[:maxVCSProviderUserFieldLength])
 }
 
-func (s *ReleaseService) checkReleaseVersioned(ctx context.Context, project *store.ProjectMessage, files []*v1pb.Release_File, databases []*store.DatabaseMessage, customRules string) (*v1pb.CheckReleaseResponse, error) {
+func (s *ReleaseService) checkReleaseVersioned(ctx context.Context, project *store.ProjectMessage, files []*v1pb.Release_File, targets []*releaseCheckTarget, customRules string) (*v1pb.CheckReleaseResponse, error) {
 	resp := &v1pb.CheckReleaseResponse{}
 	var errorAdviceCount, warningAdviceCount int
 
@@ -240,7 +322,8 @@ func (s *ReleaseService) checkReleaseVersioned(ctx context.Context, project *sto
 	}
 
 loop:
-	for _, database := range databases {
+	for _, target := range targets {
+		database := target.database
 		instance, err := s.store.GetInstance(ctx, &store.FindInstanceMessage{
 			Workspace:  common.GetWorkspaceIDFromContext(ctx),
 			ResourceID: &database.InstanceID,
@@ -326,7 +409,7 @@ loop:
 					// Add a warning advice if SHA256 mismatch
 					checkResult := &v1pb.CheckReleaseResponse_CheckResult{
 						File:   file.Path,
-						Target: common.FormatDatabase(instance.ResourceID, database.DatabaseName),
+						Target: target.name,
 						Advices: []*v1pb.Advice{
 							{
 								Status:  v1pb.Advice_WARNING,
@@ -346,9 +429,9 @@ loop:
 			checkResult, err := func() (*v1pb.CheckReleaseResponse_CheckResult, error) {
 				checkResult := &v1pb.CheckReleaseResponse_CheckResult{
 					File:   file.Path,
-					Target: common.FormatDatabase(instance.ResourceID, database.DatabaseName),
+					Target: target.name,
 				}
-				// statement is guaranteed to be populated by validateAndSanitizeReleaseFiles
+				// statement is guaranteed to be populated by loadReleaseFileStatements
 				statement := string(file.Statement)
 				// Check if any syntax error in the statement.
 				if common.EngineSupportSyntaxCheck(engine) {
@@ -404,7 +487,7 @@ loop:
 			if err != nil {
 				checkResult = &v1pb.CheckReleaseResponse_CheckResult{
 					File:   file.Path,
-					Target: common.FormatDatabase(instance.ResourceID, database.DatabaseName),
+					Target: target.name,
 					Advices: []*v1pb.Advice{
 						{
 							Status:  v1pb.Advice_ERROR,
@@ -441,7 +524,7 @@ loop:
 	return resp, nil
 }
 
-func (s *ReleaseService) checkReleaseDeclarative(ctx context.Context, files []*v1pb.Release_File, databases []*store.DatabaseMessage, customRules string) (*v1pb.CheckReleaseResponse, error) {
+func (s *ReleaseService) checkReleaseDeclarative(ctx context.Context, files []*v1pb.Release_File, targets []*releaseCheckTarget, customRules string) (*v1pb.CheckReleaseResponse, error) {
 	var results []*v1pb.CheckReleaseResponse_CheckResult
 	var errorAdviceCount, warningAdviceCount int
 
@@ -454,7 +537,8 @@ func (s *ReleaseService) checkReleaseDeclarative(ctx context.Context, files []*v
 	}
 	combinedTargetSDL := combinedSDLBuilder.String()
 
-	for _, database := range databases {
+	for _, target := range targets {
+		database := target.database
 		instance, err := s.store.GetInstance(ctx, &store.FindInstanceMessage{
 			Workspace:  common.GetWorkspaceIDFromContext(ctx),
 			ResourceID: &database.InstanceID,
@@ -490,7 +574,7 @@ func (s *ReleaseService) checkReleaseDeclarative(ctx context.Context, files []*v
 				if fv.LessThanOrEqual(rv) {
 					checkResult := &v1pb.CheckReleaseResponse_CheckResult{
 						File:   file.Path,
-						Target: common.FormatDatabase(instance.ResourceID, database.DatabaseName),
+						Target: target.name,
 						Advices: []*v1pb.Advice{
 							{
 								Status:  v1pb.Advice_WARNING,
@@ -589,10 +673,10 @@ func (s *ReleaseService) checkReleaseDeclarative(ctx context.Context, files []*v
 		for _, file := range files {
 			checkResult := &v1pb.CheckReleaseResponse_CheckResult{
 				File:   file.Path,
-				Target: common.FormatDatabase(instance.ResourceID, database.DatabaseName),
+				Target: target.name,
 			}
 
-			// statement is guaranteed to be populated by validateAndSanitizeReleaseFiles
+			// statement is guaranteed to be populated by loadReleaseFileStatements
 			statement := string(file.Statement)
 
 			// Check if any syntax error in the statement.

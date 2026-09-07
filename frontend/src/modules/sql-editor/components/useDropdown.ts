@@ -1,5 +1,5 @@
 /**
- * useDropdown — context-menu state for the worksheet tree.
+ * useDropdown — context-menu state for the saved query tree.
  *
  * The hook exposes `confirmDelete` state that the consumer (SheetTree) binds
  * to a shadcn AlertDialog, and `showSharePanel` + `handleSharePanelShow` so
@@ -11,12 +11,18 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "@/hooks/useAppState";
 import type {
+  SavedQueryFilter,
+  SavedQueryFolderNode,
   SheetViewMode,
-  WorksheetFilter,
-  WorksheetFolderNode,
 } from "@/modules/sql-editor/model/Sheet";
+import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
 import { useAppStore } from "@/stores/app";
-import { isWorksheetWritableV1 } from "@/utils";
+import {
+  canCreateSavedQueryInProject,
+  isSavedQueryDeletableV1,
+  isSavedQueryShareableV1,
+  isSavedQueryWritableV1,
+} from "@/utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,7 +33,7 @@ export type DropdownOptionType =
   | "rename"
   | "delete"
   | "add-folder"
-  | "add-worksheet"
+  | "add-saved-query"
   | "multi-select"
   | "duplicate";
 
@@ -42,11 +48,11 @@ export type MenuItem =
 
 export function useDropdown(
   viewMode: SheetViewMode,
-  worksheetFilter: WorksheetFilter,
+  savedQueryFilter: SavedQueryFilter,
   // Only the "my" tree is wired to the parent's multi-select state. For
   // other views (shared / draft) the context-menu entry is hidden so a
-  // right-click on a shared worksheet cannot populate the my tree's
-  // checkedNodes — which the toolbar's Delete + Move-to-folder flows act on.
+  // right-click on a shared saved query cannot populate the my tree's
+  // checkedNodes — which the toolbar's Delete flow acts on.
   canMultiSelect = false
 ) {
   const { t } = useTranslation();
@@ -57,24 +63,29 @@ export function useDropdown(
   // Context state — current right-click target
   // ------------------------------------------------------------------
   const [currentNode, setCurrentNode] = useState<
-    WorksheetFolderNode | undefined
+    SavedQueryFolderNode | undefined
   >(undefined);
   const [showSharePanel, setShowSharePanel] = useState(false);
 
   // ------------------------------------------------------------------
   // Reactive reads from Pinia / Vue stores
   // ------------------------------------------------------------------
-  const worksheetEntity = useAppStore((s) =>
-    viewMode === "draft" || !currentNode?.worksheet
+  const savedQueryEntity = useAppStore((s) =>
+    viewMode === "draft" || !currentNode?.savedQuery
       ? undefined
-      : s.getWorksheetByName(currentNode.worksheet.name)
+      : s.getSavedQueryByName(currentNode.savedQuery.name)
   );
 
   // ------------------------------------------------------------------
   // Derived: allowed-to-create-new
   // ------------------------------------------------------------------
+  const project = useSQLEditorEditorState((s) => s.project);
+  // Adding a folder is local until something is filed into it, so only the
+  // entries that persist a new saved query need the create permission.
   const allowCreateNew =
-    !worksheetFilter.keyword && !worksheetFilter.onlyShowStarred;
+    !savedQueryFilter.keyword && !savedQueryFilter.onlyShowStarred;
+  const allowCreateSavedQuery =
+    allowCreateNew && canCreateSavedQueryInProject(project);
 
   // ------------------------------------------------------------------
   // Menu options — computed from current state
@@ -91,33 +102,39 @@ export function useDropdown(
 
     const items: ItemDef[] = [];
 
-    if (currentNode.worksheet) {
-      if (!worksheetEntity) {
+    if (currentNode.savedQuery) {
+      if (!savedQueryEntity) {
         return [];
       }
-      const isCreator = worksheetEntity.creator === `users/${me?.email ?? ""}`;
-      items.push({
-        key: "duplicate",
-        label: isCreator ? t("common.duplicate") : t("common.fork"),
-      });
-      if (isCreator) {
+      const isCreator = savedQueryEntity.creator === `users/${me?.email ?? ""}`;
+      // Duplicate and fork both write a new saved query.
+      if (canCreateSavedQueryInProject(project)) {
+        items.push({
+          key: "duplicate",
+          label: isCreator ? t("common.duplicate") : t("common.fork"),
+        });
+      }
+      // Per-verb affordances mirroring the server: share follows
+      // setIamPolicy (creator, or a custom role), delete follows the delete
+      // verb (creator, or a role grant) — so an admin doing orphan cleanup
+      // sees Delete on shared rows too.
+      if (isSavedQueryShareableV1(savedQueryEntity)) {
         items.push({
           key: "share",
           label: t("common.share"),
         });
       }
-      const canWriteSheet = isWorksheetWritableV1(worksheetEntity);
-      if (canWriteSheet) {
-        items.push(
-          {
-            key: "rename",
-            label: t("sql-editor.tab.context-menu.actions.rename"),
-          },
-          {
-            key: "delete",
-            label: t("common.delete"),
-          }
-        );
+      if (isSavedQueryWritableV1(savedQueryEntity)) {
+        items.push({
+          key: "rename",
+          label: t("sql-editor.tab.context-menu.actions.rename"),
+        });
+      }
+      if (isSavedQueryDeletableV1(savedQueryEntity)) {
+        items.push({
+          key: "delete",
+          label: t("common.delete"),
+        });
       }
       if (canMultiSelect) {
         items.push({
@@ -126,17 +143,21 @@ export function useDropdown(
         });
       }
     } else {
-      if (allowCreateNew) {
+      // Folder structure is the creator's own: MoveMySavedQueries only moves
+      // rows you created, so offering to rename, delete, or add folders in the
+      // Shared tree would accept a gesture the server declines.
+      const canOrganize = viewMode === "my";
+      if (allowCreateNew && canOrganize) {
         items.push({
           key: "add-folder",
           label: t("sql-editor.tab.context-menu.actions.add-folder"),
         });
       }
       if (viewMode === "my") {
-        if (allowCreateNew) {
+        if (allowCreateSavedQuery) {
           items.push({
-            key: "add-worksheet",
-            label: t("sql-editor.tab.context-menu.actions.add-worksheet"),
+            key: "add-saved-query",
+            label: t("sql-editor.tab.context-menu.actions.add-saved-query"),
           });
         }
         if (canMultiSelect) {
@@ -146,7 +167,7 @@ export function useDropdown(
           });
         }
       }
-      if (currentNode.editable) {
+      if (currentNode.editable && canOrganize) {
         items.push(
           {
             key: "rename",
@@ -166,9 +187,11 @@ export function useDropdown(
   }, [
     viewMode,
     currentNode,
-    worksheetEntity,
+    savedQueryEntity,
     me,
     allowCreateNew,
+    allowCreateSavedQuery,
+    project,
     canMultiSelect,
     t,
   ]);
@@ -184,7 +207,7 @@ export function useDropdown(
    */
   const handleContextMenu = (
     e: React.MouseEvent,
-    node: WorksheetFolderNode
+    node: SavedQueryFolderNode
   ) => {
     e.preventDefault();
     e.stopPropagation();
@@ -198,7 +221,7 @@ export function useDropdown(
    */
   const handleSharePanelShow = (
     e: React.MouseEvent,
-    node: WorksheetFolderNode
+    node: SavedQueryFolderNode
   ) => {
     e.preventDefault();
     e.stopPropagation();
@@ -221,8 +244,8 @@ export function useDropdown(
     currentNode,
     /** Computed menu options for the ContextMenu. */
     options,
-    /** Worksheet entity resolved from the store (for SharePopoverBody). */
-    worksheetEntity,
+    /** SavedQuery entity resolved from the store (for SharePopoverBody). */
+    savedQueryEntity,
     /** Whether the share panel should be shown. */
     showSharePanel,
     /** Call from each row's onContextMenu to open the context menu. */

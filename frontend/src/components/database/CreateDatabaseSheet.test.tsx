@@ -76,6 +76,7 @@ vi.mock("@/components/ui/combobox", () => ({
     value,
     onChange,
     placeholder,
+    disabled,
     portal,
   }: {
     value: string;
@@ -84,6 +85,7 @@ vi.mock("@/components/ui/combobox", () => ({
     noResultsText?: string;
     options?: unknown[];
     onSearch?: (q: string) => void;
+    disabled?: boolean;
     portal?: boolean;
     renderValue?: (opt: unknown) => ReactNode;
   }) =>
@@ -92,13 +94,28 @@ vi.mock("@/components/ui/combobox", () => ({
       "data-portal": String(Boolean(portal)),
       value,
       placeholder,
+      disabled,
       onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
         onChange(e.target.value),
     }),
 }));
 
-vi.mock("@/hooks/useClickOutside", () => ({
-  useClickOutside: () => undefined,
+vi.mock("@/components/ui/popover", () => ({
+  Popover: ({ children }: { children: ReactNode }) => children,
+  PopoverTrigger: ({
+    children,
+    className: _c,
+  }: {
+    children: ReactNode;
+    className?: string;
+  }) => createElement("button", { type: "button" }, children),
+  PopoverContent: ({
+    children,
+    className: _c,
+  }: {
+    children: ReactNode;
+    className?: string;
+  }) => createElement("div", { "data-testid": "popover-content" }, children),
 }));
 
 vi.mock("@/lib/utils", () => ({
@@ -119,7 +136,6 @@ vi.mock("@/types/proto-es/v1/plan_service_pb", () => ({
 
 vi.mock("@/types/proto-es/v1/issue_service_pb", () => ({
   Issue_Type: { DATABASE_CHANGE: 1 },
-  IssueStatus: { OPEN: 1 },
   CreateIssueRequestSchema: {},
   IssueSchema: {},
 }));
@@ -219,16 +235,25 @@ vi.mock("@/types", () => ({
     name.startsWith("projects/") &&
     name !== "projects/-1",
   isValidInstanceName: (name: string) =>
-    typeof name === "string" && name.startsWith("instances/"),
+    typeof name === "string" &&
+    /^(?:instances|projects\/[^/]+\/instances)\/[^/]+$/.test(name),
   defaultCharsetOfEngineV1: () => "utf8",
   defaultCollationOfEngineV1: () => "utf8_general_ci",
 }));
 
 vi.mock("@/utils", () => ({
+  colorToHex: () => undefined,
   enginesSupportCreateDatabase: () => [],
   extractPlanUID: (name: string) => name.split("/").at(-1) ?? "",
   extractProjectResourceName: (name: string) => name.split("/")[1] ?? "",
   getDefaultPagination: () => 20,
+  getIssueRoute: (issue: { name: string }) => ({
+    name: "workspace.project.issue.detail",
+    params: {
+      projectId: issue.name.split("/")[1] ?? "",
+      issueId: issue.name.split("/").at(-1) ?? "",
+    },
+  }),
   instanceV1HasCollationAndCharacterSet: () => false,
   normalizeTitle: (s: string) => s.trim(),
 }));
@@ -238,6 +263,11 @@ import { CreateDatabaseSheet } from "./CreateDatabaseSheet";
 
 const TEST_INSTANCE = {
   name: "instances/test-instance",
+  engine: Engine.MYSQL,
+  environment: "environments/dev",
+};
+const PROJECT_INSTANCE = {
+  name: "projects/app/instances/project-instance",
   engine: Engine.MYSQL,
   environment: "environments/dev",
 };
@@ -261,7 +291,7 @@ beforeEach(() => {
   });
   mocks.createIssue.mockResolvedValue({
     name: "projects/foo/issues/456",
-    draft: true,
+    draft: false,
     plan: "projects/foo/plans/123",
   });
 });
@@ -273,20 +303,34 @@ afterEach(() => {
   document.body.removeChild(container);
 });
 
-function setupProjectMock(enforceIssueTitle: boolean) {
+interface ProjectMockOptions {
+  issueLabels?: { value: string }[];
+  forceIssueLabels?: boolean;
+}
+
+function setupProjectMock(
+  enforceIssueTitle: boolean,
+  {
+    issueLabels = [],
+    forceIssueLabels = false,
+  }: ProjectMockOptions = {}
+) {
   mocks.getOrFetchProjectByName.mockImplementation(async (name: string) => ({
     name,
     enforceIssueTitle,
-    issueLabels: [],
-    forceIssueLabels: false,
+    issueLabels,
+    forceIssueLabels,
   }));
   appStoreState.instancesByName[TEST_INSTANCE.name] = TEST_INSTANCE;
   mocks.instancesByName[TEST_INSTANCE.name] = TEST_INSTANCE;
   mocks.getOrFetchInstanceByName.mockResolvedValue(TEST_INSTANCE);
 }
 
-async function renderSheet(enforceIssueTitle: boolean): Promise<void> {
-  setupProjectMock(enforceIssueTitle);
+async function renderSheet(
+  enforceIssueTitle: boolean,
+  options?: ProjectMockOptions
+): Promise<void> {
+  setupProjectMock(enforceIssueTitle, options);
   await act(async () => {
     root.render(
       createElement(CreateDatabaseSheet, {
@@ -343,6 +387,21 @@ function getCreateButton(): HTMLButtonElement {
   ) as HTMLButtonElement;
 }
 
+async function selectIssueLabel(value: string): Promise<void> {
+  const toggle = [...container.querySelectorAll("button")].find((b) =>
+    b.textContent?.includes("common.select")
+  ) as HTMLButtonElement;
+  await act(async () => {
+    toggle.click();
+  });
+  const option = [...container.querySelectorAll("button")].find(
+    (b) => b !== toggle && b.textContent?.trim() === value
+  ) as HTMLButtonElement;
+  await act(async () => {
+    option.click();
+  });
+}
+
 async function flush(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -363,6 +422,25 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
 
     expect(projectSelect.dataset.portal).toBe("true");
     expect(instanceSelect.dataset.portal).toBe("true");
+  });
+
+  it("selects and locks the owner project for a project-owned instance", async () => {
+    setupProjectMock(false);
+    mocks.instancesByName[PROJECT_INSTANCE.name] = PROJECT_INSTANCE;
+    await renderSheetWithoutFixedProject();
+
+    await fillInstance(PROJECT_INSTANCE.name);
+    await flush();
+
+    const projectSelect = container.querySelector(
+      "input[placeholder='common.project']"
+    ) as HTMLInputElement;
+    expect(projectSelect.value).toBe("projects/app");
+    expect(projectSelect.disabled).toBe(true);
+
+    await fillInstance(TEST_INSTANCE.name);
+    expect(projectSelect.value).toBe("");
+    expect(projectSelect.disabled).toBe(false);
   });
 
   it("hydrates a fixed project only when an always-mounted sheet opens", async () => {
@@ -733,31 +811,20 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
     expect(getCreateButton().disabled).toBe(true);
   });
 
-  it("creates one Plan and one linked draft Issue with the exact payload", async () => {
-    mocks.getOrFetchProjectByName.mockImplementation(async (name: string) => ({
-      name,
-      enforceIssueTitle: false,
+  it("creates one Plan and one linked non-draft Issue, then opens Issue Detail (BYT-10015)", async () => {
+    await renderSheet(false, {
       issueLabels: [{ value: "required" }],
       forceIssueLabels: true,
-    }));
-    mocks.instancesByName[TEST_INSTANCE.name] = TEST_INSTANCE;
-    mocks.getOrFetchInstanceByName.mockResolvedValue(TEST_INSTANCE);
-    await act(async () => {
-      root.render(
-        createElement(CreateDatabaseSheet, {
-          open: true,
-          onClose: () => {},
-          projectName: "projects/foo",
-        })
-      );
-      await Promise.resolve();
-      await Promise.resolve();
     });
     await fillInstance();
     await fillDatabaseName("widgets");
     await flush();
 
+    // forceIssueLabels: Create stays disabled until a label is selected.
+    expect(getCreateButton().disabled).toBe(true);
+    await selectIssueLabel("required");
     expect(getCreateButton().disabled).toBe(false);
+
     await act(async () => {
       getCreateButton().click();
       await Promise.resolve();
@@ -794,20 +861,32 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
     expect(mocks.createIssue).toHaveBeenCalledWith({
       issue: {
         creator: "users/me@example.com",
-        description: undefined,
-        draft: true,
-        labels: [],
+        draft: false,
+        labels: ["required"],
         plan: "projects/foo/plans/123",
-        status: 1,
-        title: "Create database 'widgets'",
+        title: "quick-action.create-db 'widgets'",
         type: 1,
       },
       parent: "projects/foo",
     });
     expect(mocks.routerPush).toHaveBeenCalledWith({
-      name: "workspace.project.plan.detail",
-      params: { planId: "123", projectId: "foo" },
+      name: "workspace.project.issue.detail",
+      params: { issueId: "456", projectId: "foo" },
     });
+  });
+
+  it("blocks Create and warns when the project requires issue labels but has none configured", async () => {
+    await renderSheet(false, {
+      forceIssueLabels: true,
+    });
+    await fillInstance();
+    await fillDatabaseName("widgets");
+    await flush();
+
+    const alert = container.querySelector("[role='alert']");
+    expect(alert?.textContent).toContain("create-db.labels-misconfigured");
+    expect(getCreateButton().disabled).toBe(true);
+    expect(mocks.createPlan).not.toHaveBeenCalled();
   });
 
   it("ignores a stale create completion after close, reopen, and project switch", async () => {
@@ -870,8 +949,8 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
     expect(getCreateButton().disabled).toBe(true);
   });
 
-  it("routes to the malformed Plan and surfaces the Issue error without retrying", async () => {
-    const failure = new Error("draft issue failed");
+  it("routes to the orphaned Plan and surfaces the Issue error without retrying", async () => {
+    const failure = new Error("issue failed");
     mocks.createIssue.mockRejectedValue(failure);
     await renderSheet(false);
     await fillInstance();
@@ -892,13 +971,13 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
     });
     expect(mocks.pushNotification).toHaveBeenCalledWith(
       expect.objectContaining({
-        description: "Error: draft issue failed",
+        description: "Error: issue failed",
         style: "CRITICAL",
       })
     );
   });
 
-  it("requires both create permissions but only warns when issue-update is missing", async () => {
+  it("requires only the create permissions — bb.issues.update is not needed (BYT-10015)", async () => {
     mocks.permissions["bb.issues.update"] = false;
     await renderSheet(false);
     await fillInstance();
@@ -906,10 +985,7 @@ describe("CreateDatabaseSheet — enforceIssueTitle (BYT-9310)", () => {
     await flush();
 
     expect(getCreateButton().disabled).toBe(false);
-    const permissionAlert = container.querySelector("[role='alert']");
-    expect(permissionAlert?.textContent).toContain(
-      "plan.draft-update-permission-required"
-    );
+    expect(container.querySelector("[role='alert']")).toBeNull();
 
     mocks.permissions["bb.issues.create"] = false;
     await act(async () => {

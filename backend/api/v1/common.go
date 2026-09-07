@@ -209,7 +209,12 @@ func normalizeFilter(filter string) (string, []string, error) {
 }
 
 func convertToEngine(engine storepb.Engine) v1pb.Engine {
+	// A missing arm reports as unspecified, which reads as "Bytebase does not
+	// know this engine". golangci checks only switches that ask for it
+	// (.golangci.yaml, explicit-exhaustive-switch).
+	//exhaustive:enforce
 	switch engine {
+	case storepb.Engine_ENGINE_UNSPECIFIED:
 	case storepb.Engine_CLICKHOUSE:
 		return v1pb.Engine_CLICKHOUSE
 	case storepb.Engine_MYSQL:
@@ -377,36 +382,6 @@ func parseLimitAndOffset(size *pageSize) (*pageOffset, error) {
 		offset.limit = size.maximum
 	}
 	return offset, nil
-}
-
-func convertExportFormat(format storepb.ExportFormat) v1pb.ExportFormat {
-	switch format {
-	case storepb.ExportFormat_CSV:
-		return v1pb.ExportFormat_CSV
-	case storepb.ExportFormat_JSON:
-		return v1pb.ExportFormat_JSON
-	case storepb.ExportFormat_SQL:
-		return v1pb.ExportFormat_SQL
-	case storepb.ExportFormat_XLSX:
-		return v1pb.ExportFormat_XLSX
-	default:
-	}
-	return v1pb.ExportFormat_FORMAT_UNSPECIFIED
-}
-
-func convertToExportFormat(format v1pb.ExportFormat) storepb.ExportFormat {
-	switch format {
-	case v1pb.ExportFormat_CSV:
-		return storepb.ExportFormat_CSV
-	case v1pb.ExportFormat_JSON:
-		return storepb.ExportFormat_JSON
-	case v1pb.ExportFormat_SQL:
-		return storepb.ExportFormat_SQL
-	case v1pb.ExportFormat_XLSX:
-		return storepb.ExportFormat_XLSX
-	default:
-	}
-	return storepb.ExportFormat_FORMAT_UNSPECIFIED
 }
 
 func GetUserFromContext(ctx context.Context) (*store.UserMessage, bool) {

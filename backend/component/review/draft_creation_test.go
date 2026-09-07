@@ -32,10 +32,30 @@ func TestCreateDraftIssueRevalidatesPlanAfterProposal(t *testing.T) {
 			name: "Plan kind changed",
 			mutate: func(ctx context.Context, t *testing.T, stores *store.Store, plan *store.PlanMessage) {
 				specs := []*storepb.PlanConfig_Spec{{
-					Config: &storepb.PlanConfig_Spec_ExportDataConfig{
-						ExportDataConfig: &storepb.PlanConfig_ExportDataConfig{},
+					Config: &storepb.PlanConfig_Spec_ChangeDatabaseConfig{
+						ChangeDatabaseConfig: &storepb.PlanConfig_ChangeDatabaseConfig{
+							Release: "projects/project-a/releases/1",
+						},
 					},
 				}}
+				_, err := NewWorkflow(stores).UpdatePlan(ctx, UpdatePlanInput{
+					Workspace: "default", ProjectID: plan.ProjectID, PlanUID: plan.UID, Specs: &specs,
+				})
+				require.NoError(t, err)
+			},
+			errorCode: ErrorInvalidAction,
+		},
+		{
+			name: "Plan mixed",
+			mutate: func(ctx context.Context, t *testing.T, stores *store.Store, plan *store.PlanMessage) {
+				specs := []*storepb.PlanConfig_Spec{
+					{Config: &storepb.PlanConfig_Spec_CreateDatabaseConfig{
+						CreateDatabaseConfig: &storepb.PlanConfig_CreateDatabaseConfig{},
+					}},
+					{Config: &storepb.PlanConfig_Spec_ChangeDatabaseConfig{
+						ChangeDatabaseConfig: &storepb.PlanConfig_ChangeDatabaseConfig{},
+					}},
+				}
 				_, err := NewWorkflow(stores).UpdatePlan(ctx, UpdatePlanInput{
 					Workspace: "default", ProjectID: plan.ProjectID, PlanUID: plan.UID, Specs: &specs,
 				})

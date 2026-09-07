@@ -15,6 +15,7 @@ import {
 import { FeatureAttention } from "@/components/FeatureAttention";
 import { FeatureBadge } from "@/components/FeatureBadge";
 import { RouterLink } from "@/components/RouterLink";
+import { UserHoverCard } from "@/components/UserHoverCard";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { FeatureModal } from "@/components/ui/feature-modal";
@@ -274,7 +275,7 @@ export function ProjectMaskingExemptionPage({
         filter: keyword ? { query: keyword } : undefined,
       });
       return result.databases.map((db) => {
-        const { database: dbName } = extractDatabaseResourceName(db.name);
+        const { databaseName: dbName } = extractDatabaseResourceName(db.name);
         return {
           value: db.name,
           keywords: [dbName, db.name],
@@ -403,6 +404,7 @@ export function ProjectMaskingExemptionPage({
           <Button onClick={handleGrantClick} disabled={!hasCreatePermission}>
             <FeatureBadge
               feature={PlanFeature.FEATURE_DATA_MASKING}
+              clickable={false}
               className="text-white"
               fallback={<ShieldCheck className="size-4" />}
             />
@@ -1027,12 +1029,9 @@ function ExemptionDetailPanel({
             member.member.startsWith(workloadIdentityBindingPrefix) ? (
             <span className="font-medium">{userEmail}</span>
           ) : (
-            <RouterLink
-              className="normal-link font-medium"
-              to={`/users/${userEmail}`}
-            >
-              {userEmail}
-            </RouterLink>
+            <UserHoverCard email={userEmail}>
+              <span className="font-medium">{userEmail}</span>
+            </UserHoverCard>
           )}
         </div>
         <div className="mt-1 text-sm textinfolabel">

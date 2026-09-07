@@ -37,6 +37,7 @@ import {
 import { EmptyView } from "./EmptyView";
 import { ErrorView } from "./ErrorView";
 import { SingleResultView } from "./SingleResultView";
+import type { ResultViewPresentation } from "./types";
 
 export interface ResultViewProps {
   executeParams: SQLEditorQueryParams;
@@ -44,8 +45,9 @@ export interface ResultViewProps {
   resultSet?: SQLResultSetV1;
   loading?: boolean;
   // Compact layout (fixed-height result body) for the terminal / admin panel.
-  // The worksheet panel leaves this false to keep the flex-grow layout.
+  // The saved query panel leaves this false to keep the flex-grow layout.
   compact?: boolean;
+  presentation?: ResultViewPresentation;
 }
 
 type ViewMode = "SINGLE-RESULT" | "MULTI-RESULT" | "EMPTY" | "ERROR";
@@ -63,6 +65,7 @@ export function ResultView({
   resultSet,
   loading,
   compact = false,
+  presentation = "STANDARD",
 }: ResultViewProps) {
   const { t } = useTranslation();
   const project = useSQLEditorEditorState((s) => s.project);
@@ -198,6 +201,7 @@ export function ResultView({
           admin,
           password: options.password,
           schema: executeParams.connection.schema,
+          container: executeParams.connection.table,
         })
       );
       resolve([
@@ -261,6 +265,7 @@ export function ResultView({
                   !showExport ? requestExportButton : undefined
                 }
                 compact={compact}
+                presentation={presentation}
               />
             ))}
 
@@ -333,6 +338,7 @@ export function ResultView({
                       maximumExportCount={queryDataPolicy?.maximumResultRows}
                       onExport={handleExport}
                       compact={compact}
+                      presentation={presentation}
                     />
                   )}
                 </TabsPanel>

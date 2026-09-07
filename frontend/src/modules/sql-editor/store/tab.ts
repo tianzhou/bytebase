@@ -4,7 +4,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { useShallow } from "zustand/react/shallow";
 import {
-  extractWorksheetConnection,
+  extractSavedQueryConnection,
   isConnectedSQLEditorTab,
 } from "@/lib/sqlEditorConnection";
 import {
@@ -38,7 +38,7 @@ enableMapSet();
 
 const PERSISTENT_TAB_FIELDS = [
   "id",
-  "worksheet",
+  "savedQuery",
   "mode",
   "batchQueryContext",
   "treeState",
@@ -47,7 +47,10 @@ const PERSISTENT_TAB_FIELDS = [
 export type PersistentTab = Pick<
   SQLEditorTab,
   (typeof PERSISTENT_TAB_FIELDS)[number]
->;
+> & {
+  connection?: SQLEditorTab["connection"];
+  dataExplorer?: Pick<NonNullable<SQLEditorTab["dataExplorer"]>, "filter">;
+};
 
 export interface SQLEditorTabsState {
   /** Authoritative live tab objects keyed by id. */
@@ -59,7 +62,7 @@ export interface SQLEditorTabsState {
 
   setCurrentTabId: (id: string) => void;
   /** Rewrites the persisted tab order without touching individual tabs. */
-  setOpenTabListOrder: (order: PersistentTab[]) => void;
+  setOpenTabListOrder: (order: string[]) => void;
   addTab: (payload?: Partial<SQLEditorTab>, beside?: boolean) => SQLEditorTab;
   cloneTab: (targetId: string, payload?: Partial<SQLEditorTab>) => SQLEditorTab;
   closeTab: (tabId: string) => void;
@@ -121,6 +124,34 @@ const safeWrite = (key: string, value: unknown) => {
 const isPersistentTabArray = (v: unknown): v is PersistentTab[] =>
   Array.isArray(v);
 
+// Tabs persisted before the worksheet → saved query rename carry a
+// `worksheet` field holding a `projects/*/worksheets/*` name and mode
+// "WORKSHEET". Rewrite them on read so restored tabs keep their saved
+// query link across the rename.
+const normalizePersistedTab = (
+  persisted: PersistentTab & { worksheet?: string }
+): PersistentTab => {
+  const legacyName = persisted.savedQuery || persisted.worksheet || "";
+  const savedQuery = legacyName.replace("/worksheets/", "/savedQueries/");
+  const mode =
+    (persisted.mode as string) === "WORKSHEET" ? "SAVED_QUERY" : persisted.mode;
+  const { worksheet: _legacy, ...rest } = persisted;
+  if (mode === "DATA_EXPLORER") {
+    return {
+      ...rest,
+      savedQuery: "",
+      mode,
+      dataExplorer: {
+        filter:
+          typeof persisted.dataExplorer?.filter === "string"
+            ? persisted.dataExplorer.filter
+            : "",
+      },
+    };
+  }
+  return { ...rest, savedQuery, mode };
+};
+
 const currentScope = (): {
   wsScope: string;
   project: string;
@@ -165,8 +196,19 @@ const readOpenTabs = (
 ): PersistentTab[] =>
   safeRead<PersistentTab[]>(
     storageKeySqlEditorTabs(wsScope, project, email),
-    (v) => (isPersistentTabArray(v) ? v : undefined),
+    (v) => (isPersistentTabArray(v) ? v.map(normalizePersistedTab) : undefined),
     []
+  );
+
+const readCurrentTabId = (
+  wsScope: string,
+  project: string,
+  email: string
+): string =>
+  safeRead<string>(
+    storageKeySqlEditorCurrentTab(wsScope, project, email),
+    (v) => (typeof v === "string" ? v : undefined),
+    ""
   );
 
 export const useSQLEditorTabsStore: UseBoundStore<
@@ -186,9 +228,13 @@ export const useSQLEditorTabsStore: UseBoundStore<
 
     setOpenTabListOrder(order) {
       set((s) => {
-        s.openTmpTabList = order;
+        const byId = new Map(s.openTmpTabList.map((tab) => [tab.id, tab]));
+        s.openTmpTabList = order.flatMap((id) => {
+          const tab = byId.get(id);
+          return tab ? [tab] : [];
+        });
       });
-      persistOpenTabs(order);
+      persistOpenTabs(get().openTmpTabList);
     },
 
     addTab(payload, beside = false) {
@@ -424,6 +470,7 @@ const hydrateProjectTabs = async (project: string): Promise<void> => {
   );
 
   const storedTabs = readOpenTabs(wsScope, project, email);
+  const storedCurrentTabId = readCurrentTabId(wsScope, project, email);
 
   const hydratedTabs: SQLEditorTab[] = [];
   const validPersistent: PersistentTab[] = [];
@@ -431,23 +478,56 @@ const hydrateProjectTabs = async (project: string): Promise<void> => {
 
   for (const persisted of storedTabs) {
     if (seen.has(persisted.id)) continue;
-    if (!persisted.worksheet) continue;
 
-    const worksheet = await useAppStore
+    if (persisted.mode === "DATA_EXPLORER") {
+      const connection = persisted.connection;
+      if (!connection?.instance || !connection.database || !connection.table) {
+        continue;
+      }
+      const database = await useAppStore
+        .getState()
+        .getOrFetchDatabaseByName(connection.database);
+      if (database.project !== project) continue;
+
+      const fullTab: SQLEditorTab = {
+        ...defaultSQLEditorTab(),
+        ...omitBy(persisted, isUndefined),
+        title: connection.table,
+        status: "CLEAN",
+        connection,
+        dataExplorer: {
+          filter:
+            typeof persisted.dataExplorer?.filter === "string"
+              ? persisted.dataExplorer.filter
+              : "",
+          initialized: false,
+        },
+        databaseQueryContexts: undefined,
+      };
+
+      seen.add(persisted.id);
+      validPersistent.push(persisted);
+      hydratedTabs.push(fullTab);
+      continue;
+    }
+
+    if (!persisted.savedQuery) continue;
+
+    const savedQuery = await useAppStore
       .getState()
-      .getOrFetchWorksheetByName(persisted.worksheet, true);
-    if (!worksheet) continue;
-    if (worksheet.project !== project) continue;
+      .getOrFetchSavedQueryByName(persisted.savedQuery, true);
+    if (!savedQuery) continue;
+    if (savedQuery.project !== project) continue;
 
-    const statement = getSheetStatement(worksheet);
-    const connection = await extractWorksheetConnection(worksheet);
+    const statement = getSheetStatement(savedQuery);
+    const connection = await extractSavedQueryConnection(savedQuery);
 
     const fullTab: SQLEditorTab = {
       ...defaultSQLEditorTab(),
       ...omitBy(persisted, isUndefined),
       connection,
-      worksheet: worksheet.name,
-      title: worksheet.title,
+      savedQuery: savedQuery.name,
+      title: savedQuery.title,
       statement,
       status: "CLEAN",
       databaseQueryContexts: undefined,
@@ -458,10 +538,16 @@ const hydrateProjectTabs = async (project: string): Promise<void> => {
     hydratedTabs.push(fullTab);
   }
 
+  const currentTabId = validPersistent.some(
+    (tab) => tab.id === storedCurrentTabId
+  )
+    ? storedCurrentTabId
+    : (head(validPersistent)?.id ?? "");
+
   useSQLEditorTabsStore.setState({
     tabsById: new Map(hydratedTabs.map((t) => [t.id, t])),
     openTmpTabList: validPersistent,
-    currentTabId: head(validPersistent)?.id ?? "",
+    currentTabId,
   });
 
   persistOpenTabs(validPersistent);
@@ -492,9 +578,15 @@ const upsertOpenTabDraft = (
   beside: boolean
 ) => {
   const persistent = pick(tab, ...PERSISTENT_TAB_FIELDS) as PersistentTab;
+  if (tab.mode === "DATA_EXPLORER") {
+    persistent.connection = tab.connection;
+    persistent.dataExplorer = {
+      filter: tab.dataExplorer?.filter ?? "",
+    };
+  }
   const position = state.openTmpTabList.findIndex((item) => item.id === tab.id);
   if (position >= 0) {
-    Object.assign(state.openTmpTabList[position], persistent);
+    state.openTmpTabList[position] = persistent;
     return;
   }
   const currentPosition = state.openTmpTabList.findIndex(
@@ -622,7 +714,8 @@ export const useTabById = (tabId: string): SQLEditorTab | undefined =>
 export const isSQLEditorTabClosable = (tab: SQLEditorTab): boolean => {
   const open = getSQLEditorTabsState().openTmpTabList;
   if (open.length > 1) return true;
-  if (open.length === 1) return !!tab.worksheet;
+  if (tab.mode === "DATA_EXPLORER") return true;
+  if (open.length === 1) return !!tab.savedQuery;
   return false;
 };
 
@@ -642,14 +735,14 @@ export const useIsDisconnected = (): boolean =>
 export const useSupportBatchMode = (): boolean =>
   useSQLEditorTabsStore((s) => {
     const tab = s.tabsById.get(s.currentTabId);
-    return tab?.mode !== "ADMIN";
+    return tab?.mode === "SAVED_QUERY";
   });
 
 export const useIsInBatchMode = (): boolean =>
   useSQLEditorTabsStore((s) => {
     const tab = s.tabsById.get(s.currentTabId);
     if (!tab) return false;
-    if (tab.mode === "ADMIN") return false;
+    if (tab.mode !== "SAVED_QUERY") return false;
     const appStore = useAppStore.getState();
     if (!appStore.hasFeature(PlanFeature.FEATURE_BATCH_QUERY)) return false;
     const ctx = tab.batchQueryContext;

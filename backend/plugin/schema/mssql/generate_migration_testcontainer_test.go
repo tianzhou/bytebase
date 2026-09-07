@@ -33,8 +33,7 @@ func TestGenerateMigrationWithTestcontainer(t *testing.T) {
 	ctx := context.Background()
 
 	// Start shared MSSQL container for all subtests
-	container := testcontainer.GetTestMSSQLContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedMSSQLContainer(t)
 
 	// Test cases with various schema changes
 	testCases := []struct {

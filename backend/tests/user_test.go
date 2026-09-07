@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/type/expr"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -17,6 +18,7 @@ import (
 )
 
 func TestDeleteUser(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -48,9 +50,7 @@ func TestDeleteUser(t *testing.T) {
 	a.Error(err)
 	a.ErrorContains(err, expectErrorMsg)
 
-	actuator, err := ctl.actuatorServiceClient.GetActuatorInfo(ctx, connect.NewRequest(&v1pb.GetActuatorInfoRequest{
-		Name: memberResp.Msg.Workspace,
-	}))
+	actuator, err := ctl.actuatorServiceClient.GetActuatorInfo(ctx, connect.NewRequest(&v1pb.GetActuatorInfoRequest{}))
 	a.NoError(err)
 
 	serviceAccountResp, err := ctl.serviceAccountServiceClient.CreateServiceAccount(ctx, connect.NewRequest(&v1pb.CreateServiceAccountRequest{
@@ -128,7 +128,45 @@ func TestDeleteUser(t *testing.T) {
 // TestSeatCountExcludesDeletedPrincipal verifies a soft-deleted principal stops
 // occupying a seat even though its IAM binding lingers, while a pending member
 // (in IAM, no principal) still counts.
+func TestBatchGetUsers(t *testing.T) {
+	t.Parallel()
+	a := require.New(t)
+	ctx := context.Background()
+	ctl := &controller{}
+	ctx, err := ctl.StartServerWithExternalPg(ctx)
+	a.NoError(err)
+	defer ctl.Close(ctx)
+
+	first, err := ctl.userServiceClient.CreateUser(ctx, connect.NewRequest(&v1pb.CreateUserRequest{
+		User: &v1pb.User{Title: "first", Email: "batch-first@bytebase.com", Password: "1024bytebase"},
+	}))
+	a.NoError(err)
+	second, err := ctl.userServiceClient.CreateUser(ctx, connect.NewRequest(&v1pb.CreateUserRequest{
+		User: &v1pb.User{Title: "second", Email: "batch-second@bytebase.com", Password: "1024bytebase"},
+	}))
+	a.NoError(err)
+
+	// Newest first, so the store's own created_at ordering would invert this.
+	resp, err := ctl.userServiceClient.BatchGetUsers(ctx, connect.NewRequest(&v1pb.BatchGetUsersRequest{
+		Names: []string{second.Msg.Name, first.Msg.Name},
+	}))
+	a.NoError(err)
+	names := make([]string, 0, len(resp.Msg.Users))
+	for _, user := range resp.Msg.Users {
+		names = append(names, user.Name)
+	}
+	a.Equal([]string{second.Msg.Name, first.Msg.Name}, names, "users come back in request order")
+
+	// One name that does not resolve fails the whole call.
+	_, err = ctl.userServiceClient.BatchGetUsers(ctx, connect.NewRequest(&v1pb.BatchGetUsersRequest{
+		Names: []string{first.Msg.Name, "users/nobody@bytebase.com"},
+	}))
+	a.Error(err)
+	a.Equal(connect.CodeNotFound, connect.CodeOf(err))
+}
+
 func TestSeatCountExcludesDeletedPrincipal(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -180,6 +218,7 @@ func TestSeatCountExcludesDeletedPrincipal(t *testing.T) {
 // workspace can still add a seat-neutral member (service account / workload
 // identity) to its IAM, while adding another end user remains blocked.
 func TestSeatLimitAllowsServiceAccountWhenOverLimit(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -273,6 +312,7 @@ func TestSeatLimitAllowsServiceAccountWhenOverLimit(t *testing.T) {
 // workspace is at the limit — closing the delete-bound-user, refill, undelete
 // loophole. Undelete is still allowed when a seat is free.
 func TestSeatLimitGuardsUndeleteOfBoundUser(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -351,6 +391,7 @@ func TestSeatLimitGuardsUndeleteOfBoundUser(t *testing.T) {
 }
 
 func TestUpdateUserEmail(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -442,6 +483,20 @@ func TestUpdateUserEmail(t *testing.T) {
 	}))
 	a.NoError(err)
 
+	pgContainer, err := provisionPgInstance(ctx, t)
+	a.NoError(err)
+	instanceResp, err := ctl.instanceServiceClient.CreateInstance(ctx, connect.NewRequest(&v1pb.CreateInstanceRequest{
+		InstanceId: generateRandomString("email-update"),
+		Instance: &v1pb.Instance{
+			Title:       "email-update",
+			Engine:      v1pb.Engine_POSTGRES,
+			Environment: new("environments/prod"),
+			Activation:  true,
+			DataSources: []*v1pb.DataSource{pgContainer.adminDataSource()},
+		},
+	}))
+	a.NoError(err)
+
 	// 2. Login as user and create resources
 	loginResp, err := ctl.authServiceClient.Login(ctx, connect.NewRequest(&v1pb.LoginRequest{
 		Email:    originalEmail,
@@ -478,6 +533,22 @@ func TestUpdateUserEmail(t *testing.T) {
 	}))
 	a.NoError(err)
 	comment := commentResp.Msg
+
+	planResp, err := ctl.planServiceClient.CreatePlan(userCtx, connect.NewRequest(&v1pb.CreatePlanRequest{
+		Parent: "projects/" + projectID,
+		Plan: &v1pb.Plan{Specs: []*v1pb.Plan_Spec{{
+			Id: uuid.NewString(),
+			Config: &v1pb.Plan_Spec_CreateDatabaseConfig{
+				CreateDatabaseConfig: &v1pb.Plan_CreateDatabaseConfig{
+					Target:   instanceResp.Msg.Name,
+					Database: "email_update_test",
+				},
+			},
+		}}},
+	}))
+	a.NoError(err)
+	plan := planResp.Msg
+	a.Equal(common.FormatUserEmail(originalEmail), plan.LastPlanEditor)
 
 	// 3. Update Email (as Admin)
 	// Login as admin
@@ -521,6 +592,12 @@ func TestUpdateUserEmail(t *testing.T) {
 		}
 	}
 	a.True(foundComment)
+
+	updatedPlanResp, err := ctl.planServiceClient.GetPlan(ctx, connect.NewRequest(&v1pb.GetPlanRequest{
+		Name: plan.Name,
+	}))
+	a.NoError(err)
+	a.Equal(common.FormatUserEmail(newEmail), updatedPlanResp.Msg.LastPlanEditor, "Plan last editor should be updated")
 
 	// Verify Project Policy
 	newPolicyResp, err := ctl.projectServiceClient.GetIamPolicy(ctx, connect.NewRequest(&v1pb.GetIamPolicyRequest{
@@ -580,6 +657,7 @@ func TestUpdateUserEmail(t *testing.T) {
 }
 
 func TestGetCurrentUser_ServiceAccount(t *testing.T) {
+	t.Parallel()
 	a := require.New(t)
 	ctx := context.Background()
 	ctl := &controller{}
@@ -587,8 +665,8 @@ func TestGetCurrentUser_ServiceAccount(t *testing.T) {
 	a.NoError(err)
 	defer ctl.Close(ctx)
 
-	// Create a dummy user to get the workspace reference.
-	userResp, err := ctl.userServiceClient.CreateUser(ctx, connect.NewRequest(&v1pb.CreateUserRequest{
+	// Create a dummy user before creating the service account.
+	_, err = ctl.userServiceClient.CreateUser(ctx, connect.NewRequest(&v1pb.CreateUserRequest{
 		User: &v1pb.User{
 			Title:    "dummy",
 			Email:    "dummy@bytebase.com",
@@ -596,12 +674,8 @@ func TestGetCurrentUser_ServiceAccount(t *testing.T) {
 		},
 	}))
 	a.NoError(err)
-	workspace := userResp.Msg.Workspace
-
-	// Get actuator info using the workspace reference.
-	actuator, err := ctl.actuatorServiceClient.GetActuatorInfo(ctx, connect.NewRequest(&v1pb.GetActuatorInfoRequest{
-		Name: workspace,
-	}))
+	// Get actuator info for the authenticated workspace.
+	actuator, err := ctl.actuatorServiceClient.GetActuatorInfo(ctx, connect.NewRequest(&v1pb.GetActuatorInfoRequest{}))
 	a.NoError(err)
 
 	// Create a service account.

@@ -1,4 +1,4 @@
-import { ChevronLeft, Play, Save, Share2 } from "lucide-react";
+import { ChevronLeft, Save, Share2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -8,8 +8,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tooltip } from "@/components/ui/tooltip";
-import { useWorksheetAndTab } from "@/hooks/useWorksheetAndTab";
-import { cn } from "@/lib/utils";
+import { useSavedQueryAndTab } from "@/hooks/useSavedQueryAndTab";
 import { useConnectionOfCurrentSQLEditorTab } from "@/modules/sql-editor/hooks/useSQLEditorState";
 import { sqlEditorEvents } from "@/modules/sql-editor/model/events";
 import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
@@ -22,11 +21,17 @@ import {
 import { useAppStore } from "@/stores/app";
 import type { SQLEditorQueryParams } from "@/types";
 import { Engine } from "@/types/proto-es/v1/common_pb";
-import { isWorksheetWritableV1, keyboardShortcutStr } from "@/utils";
+import {
+  canCreateSavedQueryInProject,
+  isSavedQueryWritableV1,
+  keyboardShortcutStr,
+} from "@/utils";
 import { AdminModeButton } from "./AdminModeButton";
 import { ChooserGroup } from "./ChooserGroup";
+import { ContainerChooser } from "./ContainerChooser";
 import { OpenAIButton } from "./OpenAIButton";
 import { QueryContextSettingPopover } from "./QueryContextSettingPopover";
+import { RunQueryButton } from "./RunQueryButton";
 import { SharePopoverBody } from "./SharePopoverBody";
 
 type Props = {
@@ -43,7 +48,7 @@ type Props = {
  */
 export function EditorAction({ onExecute }: Props) {
   const { t } = useTranslation();
-  const { currentSheet: currentWorksheet } = useWorksheetAndTab();
+  const { currentSheet: currentSavedQuery } = useSavedQueryAndTab();
   const { instance } = useConnectionOfCurrentSQLEditorTab();
 
   const [shareOpen, setShareOpen] = useState(false);
@@ -62,47 +67,45 @@ export function EditorAction({ onExecute }: Props) {
   const tabMode = useSQLEditorTabState(
     (s) => s.tabsById.get(s.currentTabId)?.mode
   );
-  const tabWorksheet = useSQLEditorTabState(
-    (s) => s.tabsById.get(s.currentTabId)?.worksheet ?? ""
+  const tabSavedQuery = useSQLEditorTabState(
+    (s) => s.tabsById.get(s.currentTabId)?.savedQuery ?? ""
   );
   const tabConnectionTable = useSQLEditorTabState(
     (s) => s.tabsById.get(s.currentTabId)?.connection.table ?? ""
   );
   const isDisconnected = useIsDisconnected();
-  const resultRowsLimit = useSQLEditorEditorState((s) => s.resultRowsLimit);
+  const project = useSQLEditorEditorState((s) => s.project);
 
   const isAdminMode = tabMode === "ADMIN";
-  const showSheetsFeature = tabMode === "WORKSHEET";
+  const showSheetsFeature = tabMode === "SAVED_QUERY";
   const isEmptyStatement = !currentTab || tabStatement === "";
-
-  const queryTip =
-    instance.engine === Engine.COSMOSDB && !tabConnectionTable
-      ? t("database.table.select-tip")
-      : "";
+  const isCosmosDBWithoutContainer =
+    instance.engine === Engine.COSMOSDB && !tabConnectionTable;
 
   const allowQuery = (() => {
     if (isDisconnected) return false;
     if (isEmptyStatement) return false;
-    if (instance.engine === Engine.COSMOSDB) {
-      return !!tabConnectionTable;
-    }
+    if (isCosmosDBWithoutContainer) return false;
     return true;
   })();
 
   const canWriteSheet = (() => {
-    if (!tabWorksheet) return false;
-    const sheet = useAppStore.getState().getWorksheetByName(tabWorksheet);
-    return sheet ? isWorksheetWritableV1(sheet) : false;
+    if (!tabSavedQuery) return false;
+    const sheet = useAppStore.getState().getSavedQueryByName(tabSavedQuery);
+    return sheet ? isSavedQueryWritableV1(sheet) : false;
   })();
 
   const allowSave = (() => {
     if (!showSheetsFeature || !currentTab) return false;
-    if (tabWorksheet) {
+    if (tabSavedQuery) {
       if (!canWriteSheet) return false;
-      const sheet = useAppStore.getState().getWorksheetByName(tabWorksheet);
+      const sheet = useAppStore.getState().getSavedQueryByName(tabSavedQuery);
       if (sheet && sheet.database !== currentTab.connection.database) {
         return true;
       }
+    } else if (!canCreateSavedQueryInProject(project)) {
+      // Saving a tab that has no saved query behind it creates one.
+      return false;
     }
     // Only disable when status is CLEAN (nothing to save).
     // SAVING is allowed — manual save will abort auto-save and proceed.
@@ -113,7 +116,7 @@ export function EditorAction({ onExecute }: Props) {
     if (!currentTab) return false;
     if (tabStatus !== "CLEAN") return false;
     if (isEmptyStatement || isDisconnected) return false;
-    if (tabWorksheet && !canWriteSheet) return false;
+    if (tabSavedQuery && !canWriteSheet) return false;
     return true;
   })();
 
@@ -130,16 +133,12 @@ export function EditorAction({ onExecute }: Props) {
       explain: false,
       selection: currentTab.editorState.selection,
     });
-    useAppStore.getState().saveIntroStateByKey({
-      key: "data.query",
-      newState: true,
-    });
   };
 
   const exitAdminMode = () => {
     // Inlined to avoid pulling `@/types` (monaco-editor transitive) into the
     // React bundle. Matches `DEFAULT_SQL_EDITOR_TAB_MODE` in `@/types/sqlEditor/tab`.
-    getSQLEditorTabsState().updateCurrentTab({ mode: "WORKSHEET" });
+    getSQLEditorTabsState().updateCurrentTab({ mode: "SAVED_QUERY" });
   };
 
   const handleClickSave = () => {
@@ -164,27 +163,21 @@ export function EditorAction({ onExecute }: Props) {
           </Button>
         )}
 
-        {!isAdminMode && (
-          <div className="inline-flex">
-            <Tooltip content={queryTip} side="bottom">
-              <Button
-                variant="default"
-                size="sm"
-                className={cn("h-7 px-1.5 gap-1 rounded-r-none text-sm")}
-                disabled={!allowQuery}
-                onClick={handleRunQuery}
-              >
-                <Play className="size-4 fill-current" />
-                <span className="inline-flex items-center">
-                  (limit&nbsp;{resultRowsLimit})
-                </span>
-              </Button>
-            </Tooltip>
-            <QueryContextSettingPopover
-              disabled={!showQueryContextSettingPopover || !allowQuery}
+        {!isAdminMode &&
+          (isCosmosDBWithoutContainer ? (
+            <div className="inline-flex">
+              <ContainerChooser variant="run" />
+              <QueryContextSettingPopover
+                disabled={!showQueryContextSettingPopover}
+              />
+            </div>
+          ) : (
+            <RunQueryButton
+              disabled={!allowQuery}
+              settingsDisabled={!showQueryContextSettingPopover}
+              onClick={handleRunQuery}
             />
-          </div>
-        )}
+          ))}
 
         <AdminModeButton size="sm" hideText />
 
@@ -234,7 +227,7 @@ export function EditorAction({ onExecute }: Props) {
                 />
               </Tooltip>
               <PopoverContent align="end" sideOffset={4}>
-                <SharePopoverBody worksheet={currentWorksheet} />
+                <SharePopoverBody savedQuery={currentSavedQuery} />
               </PopoverContent>
             </Popover>
           </>
@@ -242,10 +235,7 @@ export function EditorAction({ onExecute }: Props) {
       </div>
       <div className="action-right gap-x-2 flex overflow-x-auto sm:overflow-x-hidden sm:justify-end items-center">
         <ChooserGroup />
-        <OpenAIButton
-          size="sm"
-          statement={currentTab?.selectedStatement || currentTab?.statement}
-        />
+        <OpenAIButton size="sm" />
       </div>
     </div>
   );

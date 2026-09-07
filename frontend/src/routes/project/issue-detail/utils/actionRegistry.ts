@@ -1,5 +1,4 @@
 import type { TFunction } from "i18next";
-import { first, orderBy } from "lodash-es";
 import { extractUserEmail } from "@/stores";
 import {
   ApprovalStatus,
@@ -7,29 +6,20 @@ import {
   State,
 } from "@/types/proto-es/v1/common_pb";
 import type { Issue } from "@/types/proto-es/v1/issue_service_pb";
-import {
-  Issue_Approver_Status,
-  Issue_Type,
-} from "@/types/proto-es/v1/issue_service_pb";
+import { Issue_Approver_Status } from "@/types/proto-es/v1/issue_service_pb";
 import type { Plan } from "@/types/proto-es/v1/plan_service_pb";
 import type { Project } from "@/types/proto-es/v1/project_service_pb";
-import type { Rollout, TaskRun } from "@/types/proto-es/v1/rollout_service_pb";
-import {
-  Task_Status,
-  Task_Type,
-  TaskRun_ExportArchiveStatus,
-  TaskRun_Status,
-} from "@/types/proto-es/v1/rollout_service_pb";
+import type { Rollout } from "@/types/proto-es/v1/rollout_service_pb";
+import { Task_Status } from "@/types/proto-es/v1/rollout_service_pb";
 import { Advice_Level } from "@/types/proto-es/v1/sql_service_pb";
 import type { User } from "@/types/proto-es/v1/user_service_pb";
 import {
-  extractTaskRunUID,
-  extractTaskUID,
   hasProjectPermissionV2,
   isUserIncludedInList,
   isValidIssueName,
   isValidPlanName,
 } from "@/utils";
+import { getApprovalEligibility } from "../../approvalEligibility";
 import { isApprovalCompleted } from "./approval";
 import { candidatesOfApprovalStepV1 } from "./approvalCandidates";
 
@@ -40,8 +30,7 @@ export type IssueAction =
   | IssueStatusAction
   | "ISSUE_CREATE";
 export type RolloutAction = "ROLLOUT_START" | "ROLLOUT_CANCEL";
-export type ExportAction = "EXPORT_DOWNLOAD";
-export type UnifiedAction = IssueAction | RolloutAction | ExportAction;
+export type UnifiedAction = IssueAction | RolloutAction;
 export type ExecuteType =
   | "immediate"
   | "popover:labels"
@@ -55,8 +44,9 @@ export interface ActionPermissions {
   createIssue: boolean;
   updateIssue: boolean;
   createRollout: boolean;
+  canApproveIssue: boolean;
+  isReviewCandidate: boolean;
   runTasks: boolean;
-  isApprovalCandidate: boolean;
 }
 
 export interface ActionValidation {
@@ -75,14 +65,10 @@ export interface ActionContext {
   approvalStatus: ApprovalStatus | undefined;
   isCreating: boolean;
   isIssueOnly: boolean;
-  isExportPlan: boolean;
   isReleasePlan: boolean;
   hasDeferredRollout: boolean;
-  isCreator: boolean;
   issueApproved: boolean;
-  exportArchiveReady: boolean;
   allTasksFinished: boolean;
-  hasDatabaseCreateOrExportTasks: boolean;
   hasStartableTasks: boolean;
   hasRunningTasks: boolean;
   permissions: ActionPermissions;
@@ -107,29 +93,30 @@ export interface ContextBuilderInput {
   rollout: Rollout | undefined;
   project: Project;
   currentUser: User;
-  taskRuns: TaskRun[];
   isCreating: boolean;
   planCheckStatus: Advice_Level;
   hasRunningPlanChecks: boolean;
   isSpecEmpty: (spec: Plan["specs"][0]) => boolean;
 }
 
-const computeIsApprovalCandidate = (
+const computeApprovalEligibility = (
   issue: Issue | undefined,
   currentUser: User,
+  plan: Plan,
   project: Project
-): boolean => {
-  if (!issue) return false;
-  if (isApprovalCompleted(issue)) return false;
+) => {
+  if (!issue || isApprovalCompleted(issue)) {
+    return { canApprove: false, canReview: false };
+  }
 
   const { approvers, approvalTemplate } = issue;
   const hasRejection = approvers.some(
     (app) => app.status === Issue_Approver_Status.REJECTED
   );
-  if (hasRejection) return false;
+  if (hasRejection) return { canApprove: false, canReview: false };
 
   const roles = approvalTemplate?.flow?.roles ?? [];
-  if (roles.length === 0) return false;
+  if (roles.length === 0) return { canApprove: false, canReview: false };
 
   const rejectedIndex = approvers.findIndex(
     (approver) => approver.status === Issue_Approver_Status.REJECTED
@@ -137,77 +124,18 @@ const computeIsApprovalCandidate = (
   const currentRoleIndex =
     rejectedIndex >= 0 ? rejectedIndex : approvers.length;
   const currentRole = roles[currentRoleIndex];
-  if (!currentRole) return false;
+  if (!currentRole) return { canApprove: false, canReview: false };
 
   const candidates = candidatesOfApprovalStepV1(issue, currentRole);
-  if (!isUserIncludedInList(currentUser.email, candidates)) return false;
-
-  if (
-    !project.allowSelfApproval &&
-    currentUser.email === extractUserEmail(issue.creator)
-  ) {
-    return false;
+  if (!isUserIncludedInList(currentUser.email, candidates)) {
+    return { canApprove: false, canReview: false };
   }
-  return true;
-};
-
-const computeExportArchiveReady = (
-  rollout: Rollout | undefined,
-  taskRuns: TaskRun[],
-  issue: Issue | undefined,
-  currentUserEmail: string
-): boolean => {
-  if (!issue) return false;
-  if (![IssueStatus.OPEN, IssueStatus.DONE].includes(issue.status))
-    return false;
-  if (currentUserEmail !== extractUserEmail(issue.creator)) return false;
-
-  const exportTasks =
-    rollout?.stages
-      .flatMap((stage) => stage.tasks)
-      .filter((task) => task.type === Task_Type.DATABASE_EXPORT) ?? [];
-  if (exportTasks.length === 0) return false;
-  if (
-    !exportTasks.every((task) =>
-      [Task_Status.DONE, Task_Status.SKIPPED].includes(task.status)
-    )
-  ) {
-    return false;
-  }
-
-  const doneTasks = exportTasks.filter(
-    (task) => task.status === Task_Status.DONE
-  );
-  if (doneTasks.length === 0) return false;
-
-  const exportTaskRuns = doneTasks
-    .map((task) => {
-      const taskRunsForTask = taskRuns.filter(
-        (taskRun) => extractTaskUID(taskRun.name) === extractTaskUID(task.name)
-      );
-      return first(
-        orderBy(
-          taskRunsForTask,
-          (taskRun) => Number(extractTaskRunUID(taskRun.name)),
-          "desc"
-        )
-      );
-    })
-    .filter(Boolean) as TaskRun[];
-
-  if (
-    exportTaskRuns.length === 0 ||
-    exportTaskRuns.some(
-      (taskRun) =>
-        taskRun.status !== TaskRun_Status.DONE ||
-        taskRun.exportArchiveStatus ===
-          TaskRun_ExportArchiveStatus.EXPORT_ARCHIVE_STATUS_UNSPECIFIED
-    )
-  ) {
-    return false;
-  }
-
-  return true;
+  return getApprovalEligibility({
+    actor: currentUser.name,
+    issueCreator: issue.creator,
+    lastPlanEditor: plan.lastPlanEditor,
+    project,
+  });
 };
 
 export const buildIssueDetailActionContext = (
@@ -223,29 +151,25 @@ export const buildIssueDetailActionContext = (
     planCheckStatus,
     project,
     rollout,
-    taskRuns,
   } = input;
 
   const currentUserEmail = currentUser.email;
   const isIssueOnly =
     !isValidPlanName(plan.name) && Boolean(isValidIssueName(issue?.name));
-  const isExportPlan = plan.specs.some(
-    (spec) => spec.config?.case === "exportDataConfig"
-  );
   const isReleasePlan = plan.specs.some(
     (spec) =>
       spec.config?.case === "changeDatabaseConfig" &&
       Boolean(spec.config.value.release)
   );
   const hasDeferredRollout = plan.specs.some(
-    (spec) =>
-      spec.config?.case === "exportDataConfig" ||
-      spec.config?.case === "createDatabaseConfig"
+    (spec) => spec.config?.case === "createDatabaseConfig"
   );
-  const isCreator =
-    currentUserEmail === extractUserEmail(plan.creator || "") ||
-    (issue ? currentUserEmail === extractUserEmail(issue.creator) : false);
-
+  const reviewEligibility = computeApprovalEligibility(
+    issue,
+    currentUser,
+    plan,
+    project
+  );
   const permissions: ActionPermissions = {
     updatePlan:
       currentUserEmail === extractUserEmail(plan.creator || "") ||
@@ -253,15 +177,9 @@ export const buildIssueDetailActionContext = (
     createIssue: hasProjectPermissionV2(project, "bb.issues.create"),
     updateIssue: hasProjectPermissionV2(project, "bb.issues.update"),
     createRollout: hasProjectPermissionV2(project, "bb.rollouts.create"),
-    runTasks:
-      issue?.type === Issue_Type.DATABASE_EXPORT
-        ? currentUserEmail === extractUserEmail(issue.creator)
-        : hasProjectPermissionV2(project, "bb.taskRuns.create"),
-    isApprovalCandidate: computeIsApprovalCandidate(
-      issue,
-      currentUser,
-      project
-    ),
+    runTasks: hasProjectPermissionV2(project, "bb.taskRuns.create"),
+    canApproveIssue: reviewEligibility.canApprove,
+    isReviewCandidate: reviewEligibility.canReview,
   };
 
   const validation: ActionValidation = {
@@ -273,11 +191,6 @@ export const buildIssueDetailActionContext = (
   const allTasks = rollout?.stages.flatMap((stage) => stage.tasks) ?? [];
   const allTasksFinished = allTasks.every((task) =>
     [Task_Status.DONE, Task_Status.SKIPPED].includes(task.status)
-  );
-  const hasDatabaseCreateOrExportTasks = allTasks.some(
-    (task) =>
-      task.type === Task_Type.DATABASE_CREATE ||
-      task.type === Task_Type.DATABASE_EXPORT
   );
   const hasStartableTasks = allTasks.some((task) =>
     [
@@ -300,19 +213,10 @@ export const buildIssueDetailActionContext = (
     approvalStatus: issue?.approvalStatus,
     isCreating,
     isIssueOnly,
-    isExportPlan,
     isReleasePlan,
     hasDeferredRollout,
-    isCreator,
     issueApproved: isApprovalCompleted(issue),
-    exportArchiveReady: computeExportArchiveReady(
-      rollout,
-      taskRuns,
-      issue,
-      currentUserEmail
-    ),
     allTasksFinished,
-    hasDatabaseCreateOrExportTasks,
     hasStartableTasks,
     hasRunningTasks,
     permissions,
@@ -372,7 +276,7 @@ export const createIssueDetailActions = (t: TFunction): ActionDefinition[] => {
         ctx.issueStatus === IssueStatus.OPEN &&
         ctx.approvalStatus !== ApprovalStatus.APPROVED &&
         ctx.approvalStatus !== ApprovalStatus.SKIPPED &&
-        ctx.permissions.isApprovalCandidate,
+        ctx.permissions.isReviewCandidate,
       isDisabled: () => false,
       disabledReason: () => undefined,
       executeType: "popover:review",
@@ -419,8 +323,7 @@ export const createIssueDetailActions = (t: TFunction): ActionDefinition[] => {
   const rolloutActions: ActionDefinition[] = [
     {
       id: "ROLLOUT_START",
-      label: (ctx) =>
-        ctx.isExportPlan ? t("common.export") : t("common.rollout"),
+      label: () => t("common.rollout"),
       buttonType: "primary",
       category: "primary",
       priority: 60,
@@ -433,9 +336,6 @@ export const createIssueDetailActions = (t: TFunction): ActionDefinition[] => {
       isDisabled: (ctx) => !ctx.permissions.runTasks,
       disabledReason: (ctx) => {
         if (!ctx.permissions.runTasks) {
-          if (ctx.isExportPlan) {
-            return t("common.only-creator-allowed-export");
-          }
           return t("common.missing-required-permission", {
             permissions: "bb.taskRuns.create",
           });
@@ -467,18 +367,6 @@ export const createIssueDetailActions = (t: TFunction): ActionDefinition[] => {
         return undefined;
       },
       executeType: "panel:rollout",
-    },
-    {
-      id: "EXPORT_DOWNLOAD",
-      label: () => t("common.download"),
-      buttonType: "primary",
-      category: "primary",
-      priority: 0,
-      isVisible: (ctx) =>
-        ctx.isExportPlan && ctx.exportArchiveReady && ctx.isCreator,
-      isDisabled: () => false,
-      disabledReason: () => undefined,
-      executeType: "immediate",
     },
   ];
 

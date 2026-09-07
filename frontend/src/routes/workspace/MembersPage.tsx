@@ -20,10 +20,7 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { v4 as uuidv4 } from "uuid";
-import {
-  WORKSPACE_ROUTE_GROUPS,
-  WORKSPACE_ROUTE_USER_PROFILE,
-} from "@/app/router";
+import { WORKSPACE_ROUTE_GROUPS } from "@/app/router";
 import { AccountMultiSelect } from "@/components/AccountMultiSelect";
 import { DatabaseResourceSelector as DatabaseResourceSelectorComponent } from "@/components/DatabaseResourceSelector";
 import { EnvironmentSelect } from "@/components/EnvironmentSelect";
@@ -77,6 +74,10 @@ import {
   getMemberBindings,
   groupProjectRoleBindings,
 } from "@/lib/memberBindings";
+import {
+  GRANT_ACCESS_PRODUCT_INTRO,
+  useProductIntro,
+} from "@/lib/productIntro";
 import {
   getRoleEnvironmentLimitationKind,
   roleHasDatabaseLimitation,
@@ -422,23 +423,19 @@ function MemberTable({
                           </>
                         ) : undefined
                       }
+                      hoverEmail={
+                        mb.type === "users" && canGetUsers
+                          ? mb.user?.email
+                          : undefined
+                      }
                       nameLink={
-                        mb.type === "users" && canGetUsers && mb.user?.email
+                        mb.type === "groups" && canGetGroups
                           ? {
                               to: {
-                                name: WORKSPACE_ROUTE_USER_PROFILE,
-                                params: {
-                                  principalEmail: mb.user.email,
-                                },
+                                name: WORKSPACE_ROUTE_GROUPS,
                               },
                             }
-                          : mb.type === "groups" && canGetGroups
-                            ? {
-                                to: {
-                                  name: WORKSPACE_ROUTE_GROUPS,
-                                },
-                              }
-                            : undefined
+                          : undefined
                       }
                       badges={
                         <>
@@ -542,18 +539,7 @@ function MemberTable({
                             subtitle={user.email}
                             size="sm"
                             className="pl-12"
-                            nameLink={
-                              canGetUsers
-                                ? {
-                                    to: {
-                                      name: WORKSPACE_ROUTE_USER_PROFILE,
-                                      params: {
-                                        principalEmail: user.email,
-                                      },
-                                    },
-                                  }
-                                : undefined
-                            }
+                            hoverEmail={canGetUsers ? user.email : undefined}
                             badges={
                               user.name === currentUser.name ? (
                                 <Badge className="text-xs">
@@ -1277,7 +1263,7 @@ function ProjectRoleBindingForm({
         }
         description={
           maximumRoleExpirationDays !== undefined
-            ? t("project.members.request-role.max-expiration-hint", {
+            ? t("common.expiration-max-hint", {
                 days: maximumRoleExpirationDays,
               })
             : undefined
@@ -1323,13 +1309,11 @@ function ProjectRoleBindingForm({
           />
         )}
         {expirationIsInPast && (
-          <FormError>
-            {t("project.members.request-role.expiration-must-be-future")}
-          </FormError>
+          <FormError>{t("common.expiration-must-be-future")}</FormError>
         )}
         {expirationExceedsMax && (
           <FormError>
-            {t("project.members.request-role.expiration-exceeds-max", {
+            {t("common.expiration-exceeds-max", {
               days: maximumRoleExpirationDays,
             })}
           </FormError>
@@ -1373,6 +1357,7 @@ function EditMemberRoleDrawer({
     (state) => state.updateProjectIamPolicy
   );
   const isSaaSMode = useAppStore((s) => s.isSaaSMode());
+  const workspaceResourceName = useAppStore((s) => s.workspaceResourceName());
   const roleList = useAppStore((state) => state.roleList);
   const settingsByName = useAppStore((s) => s.settingsByName);
   const hasEmailSetting = useMemo(
@@ -1388,6 +1373,16 @@ function EditMemberRoleDrawer({
   const isEditMode = !!member;
   const isProjectCreateMode = !!projectName && !isEditMode;
   const isProjectEditMode = !!projectName && isEditMode;
+  const accountParents = useMemo(
+    () => [
+      ...new Set(
+        [workspaceResourceName, projectName].filter(
+          (parent): parent is string => !!parent
+        )
+      ),
+    ],
+    [workspaceResourceName, projectName]
+  );
 
   // Live project role bindings for the member (reactively updated when IAM policy changes).
   // Active bindings come first, expired ones last; original order is preserved within each group.
@@ -1966,6 +1961,7 @@ function EditMemberRoleDrawer({
                   value={selectedBindings}
                   onChange={setSelectedBindings}
                   includeAllUsers={!isSaaSMode}
+                  accountParents={accountParents}
                 />
               )}
             </FormField>
@@ -2067,16 +2063,6 @@ export function MembersPage({ projectId }: { projectId?: string }) {
   >();
   const [showRequestRoleDialog, setShowRequestRoleDialog] = useState(false);
 
-  useEffect(() => {
-    const store = useAppStore.getState();
-    if (!store.getIntroStateByKey("member.visit")) {
-      store.saveIntroStateByKey({
-        key: "member.visit",
-        newState: true,
-      });
-    }
-  }, []);
-
   const hasRequestRoleFeature = useAppStore((s) =>
     s.hasFeature(PlanFeature.FEATURE_REQUEST_ROLE_WORKFLOW)
   );
@@ -2131,6 +2117,13 @@ export function MembersPage({ projectId }: { projectId?: string }) {
       project.state !== State.DELETED &&
       hasProjectPermissionV2(project, "bb.projects.setIamPolicy")
     : hasWorkspacePermissionV2("bb.workspaces.setIamPolicy");
+
+  useProductIntro({
+    id: GRANT_ACCESS_PRODUCT_INTRO,
+    title: t("workspace-setup-guide.intro.grant-access-title"),
+    description: t("workspace-setup-guide.intro.grant-access-description"),
+    disabled: !!projectName || !canSetIamPolicy,
+  });
 
   // Whether the current user already holds every PROJECT_OWNER permission
   // (workspace- or project-scoped). hasProjectPermissionV2 falls back to
@@ -2307,13 +2300,14 @@ export function MembersPage({ projectId }: { projectId?: string }) {
                   </Button>
                 )}
                 <Button
+                  data-product-intro-target={GRANT_ACCESS_PRODUCT_INTRO}
                   disabled={disabled || !canSetIamPolicy}
                   onClick={() => {
                     setEditingMember(undefined);
                     setShowEditMemberDrawer(true);
                   }}
                 >
-                  <Plus className="h-4 w-4 mr-1" />
+                  <Plus />
                   {t("settings.members.grant-access")}
                 </Button>
               </div>

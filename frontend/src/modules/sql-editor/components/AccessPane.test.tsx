@@ -204,6 +204,8 @@ type GrantLike = {
   name: string;
   query: string;
   targets: string[];
+  schema?: string;
+  container?: string;
   unmask: boolean;
   issue: string;
   status: number;
@@ -285,7 +287,7 @@ afterEach(() => {
 });
 
 describe("AccessPane", () => {
-  test("empty state — shows no-access-requests text when no grants and not loading", async () => {
+  test("empty state — shows no-access-grants text when no grants and not loading", async () => {
     const { container, render, unmount } = renderIntoContainer(<AccessPane />);
     render();
 
@@ -294,7 +296,7 @@ describe("AccessPane", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
 
-    expect(container.textContent).toContain("sql-editor.no-access-requests");
+    expect(container.textContent).toContain("sql-editor.no-access-grants");
     unmount();
   });
 
@@ -385,7 +387,7 @@ describe("AccessPane", () => {
     unmount();
   });
 
-  test("click Request Access → drawer opens", async () => {
+  test("click Request access grant → drawer opens", async () => {
     const { container, render, unmount } = renderIntoContainer(<AccessPane />);
     render();
 
@@ -398,11 +400,11 @@ describe("AccessPane", () => {
       container.querySelector("[data-testid='access-grant-request-drawer']")
     ).toBeNull();
 
-    // Find and click the "request access" button
+    // Find and click the "Request access grant" button
     const buttons = container.querySelectorAll("button");
     let requestBtn: HTMLButtonElement | null = null;
     for (const btn of Array.from(buttons)) {
-      if (btn.textContent?.includes("sql-editor.request-access")) {
+      if (btn.textContent?.includes("sql-editor.request-access-grant")) {
         requestBtn = btn;
         break;
       }
@@ -447,6 +449,45 @@ describe("AccessPane", () => {
       "execute-sql",
       expect.objectContaining({
         statement: grant.query,
+      })
+    );
+    unmount();
+  });
+
+  test("click Run on a grant preserves schema and CosmosDB container", async () => {
+    const grant = {
+      ...makeGrant("grant1"),
+      schema: "APP",
+      container: "orders",
+    };
+    mocks.searchMyAccessGrants.mockResolvedValue({
+      accessGrants: [grant],
+      nextPageToken: "",
+    });
+
+    const { container, render, unmount } = renderIntoContainer(<AccessPane />);
+    render();
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    const runBtn = container.querySelector(
+      "[data-run-btn]"
+    ) as HTMLButtonElement;
+    expect(runBtn).not.toBeNull();
+
+    await act(async () => {
+      runBtn.click();
+    });
+
+    expect(mocks.sqlEditorEventsEmit).toHaveBeenCalledWith(
+      "execute-sql",
+      expect.objectContaining({
+        connection: expect.objectContaining({
+          schema: "APP",
+          table: "orders",
+        }),
       })
     );
     unmount();

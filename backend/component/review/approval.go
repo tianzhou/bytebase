@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/enterprise"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/store"
@@ -58,6 +59,7 @@ func (a *ApprovalEvaluator) ApplyApprovalTemplate(ctx context.Context, input App
 	if project == nil {
 		return nil, workflowError(ErrorNotFound, "project %s not found", input.ProjectID)
 	}
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, project.Workspace)
 	issue, err := w.store.GetIssue(ctx, &store.FindIssueMessage{
 		Workspace:  input.Workspace,
 		ProjectIDs: []string{input.ProjectID},
@@ -150,9 +152,7 @@ func (a *ApprovalEvaluator) ApplyApprovalTemplate(ctx context.Context, input App
 			return nil, workflowWrap(ErrorInternal, err, "failed to acquire Plan review lock for approval finding")
 		}
 	}
-	// The existing Issue row is the project-lifecycle fence for this update:
-	// project purge deletes Issues before the Project. Approval may finish while
-	// a soft-deleted Project still exists, but cannot write after purge passes it.
+	// Lock the Issue before comparing and updating its approval payload.
 	lockedIssue, err := lockIssue(ctx, tx, input.ProjectID, input.IssueUID)
 	if err != nil {
 		return nil, err

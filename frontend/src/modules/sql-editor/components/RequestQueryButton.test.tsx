@@ -249,8 +249,23 @@ describe("RequestQueryButton", () => {
     unmount();
   });
 
-  test("renders request-query button in non-JIT mode", () => {
+  test("renders the Request role label in non-JIT mode", () => {
     setupDefaultMocks(false, true);
+    const { container, render, unmount } = renderIntoContainer(
+      <RequestQueryButton
+        text={false}
+        permissionDeniedDetail={makePermissionDeniedDetail({
+          requiredPermissions: ["bb.sql.select"],
+        })}
+      />
+    );
+    render();
+    expect(container.textContent).toContain("issue.title.request-role");
+    unmount();
+  });
+
+  test("renders the Request query label in JIT mode", () => {
+    setupDefaultMocks(true, true);
     const { container, render, unmount } = renderIntoContainer(
       <RequestQueryButton
         text={false}
@@ -264,18 +279,18 @@ describe("RequestQueryButton", () => {
     unmount();
   });
 
-  test("renders request-jit button in JIT mode", () => {
+  test("bb.sql.info-only denial also takes the JIT path", () => {
     setupDefaultMocks(true, true);
     const { container, render, unmount } = renderIntoContainer(
       <RequestQueryButton
         text={false}
         permissionDeniedDetail={makePermissionDeniedDetail({
-          requiredPermissions: ["bb.sql.select"],
+          requiredPermissions: ["bb.sql.info"],
         })}
       />
     );
     render();
-    expect(container.textContent).toContain("sql-editor.request-jit");
+    expect(container.textContent).toContain("sql-editor.request-query");
     unmount();
   });
 

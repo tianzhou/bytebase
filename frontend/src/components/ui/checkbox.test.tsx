@@ -82,6 +82,33 @@ describe("Checkbox", () => {
     unmount();
   });
 
+  test("clicking an associated label emits true", () => {
+    const onCheckedChange = vi.fn();
+    const { container, unmount } = renderIntoContainer(
+      createElement(
+        "div",
+        undefined,
+        createElement(Checkbox, {
+          checked: false,
+          id: "show-inactive",
+          onCheckedChange,
+        }),
+        createElement(
+          "label",
+          { htmlFor: "show-inactive" },
+          "Show inactive accounts"
+        )
+      )
+    );
+
+    act(() => {
+      container.querySelector("label")?.click();
+    });
+
+    expect(onCheckedChange).toHaveBeenCalledWith(true);
+    unmount();
+  });
+
   test("click on checked emits false", () => {
     const onCheckedChange = vi.fn();
     const { container, unmount } = renderIntoContainer(
@@ -154,6 +181,14 @@ describe("Checkbox", () => {
       })
     );
     expect(getCheckbox(container).className).toContain("size-3.5");
+    unmount();
+  });
+
+  test("enabled checkbox uses pointer cursor", () => {
+    const { container, unmount } = renderIntoContainer(
+      createElement(Checkbox, { checked: false, "aria-label": "cb" })
+    );
+    expect(getCheckbox(container).className).toContain("cursor-pointer");
     unmount();
   });
 

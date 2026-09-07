@@ -319,7 +319,23 @@ func (s *LicenseService) IsFeatureEnabledForInstance(ctx context.Context, worksp
 
 // GetUserLimit gets the user limit value for the plan.
 func (s *LicenseService) GetUserLimit(ctx context.Context, workspaceID string) int {
-	subscription := s.LoadSubscription(ctx, workspaceID)
+	return userLimitFromSubscription(s.LoadSubscription(ctx, workspaceID))
+}
+
+// GetUserLimitUncached returns the effective user limit read directly from the
+// database, bypassing the per-replica subscription and setting caches. Metrics
+// collection uses this so replicas derive equivalent values from shared
+// metadata. A metadata read failure is returned as an error instead of silently
+// falling back to the Free plan.
+func (s *LicenseService) GetUserLimitUncached(ctx context.Context, workspaceID string) (int, error) {
+	state, err := s.GetVerifiedStateUncached(ctx, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return state.UserLimit, nil
+}
+
+func userLimitFromSubscription(subscription *v1pb.Subscription) int {
 	// Prefer to take values from the license first.
 	if subscription.Seats > 0 {
 		return int(subscription.Seats)
@@ -332,11 +348,7 @@ func (s *LicenseService) GetUserLimit(ctx context.Context, workspaceID string) i
 
 	// To be compatible with old licenses which don't have seat field set in the claim.
 	// Unlimited seat license.
-	if subscription.Seats <= 0 {
-		return math.MaxInt
-	}
-
-	return int(subscription.Seats)
+	return math.MaxInt
 }
 
 // GetInstanceLimit gets the instance limit value for the plan.
@@ -351,6 +363,62 @@ func (s *LicenseService) GetInstanceLimit(ctx context.Context, workspaceID strin
 	if limit == -1 {
 		// Enterprise license.
 		limit = math.MaxInt
+	}
+	return limit
+}
+
+// VerifiedState is the effective license state read directly from shared
+// metadata. Expired, correctly signed licenses use Free limits while retaining
+// their expiration timestamp; a malformed configured license is an error.
+type VerifiedState struct {
+	ExpiresAt     *time.Time
+	UserLimit     int
+	InstanceLimit int
+}
+
+// GetVerifiedStateUncached bypasses all setting and subscription caches. It is
+// used by state-metric collection so every replica observes the same verified
+// license state for a scrape.
+func (s *LicenseService) GetVerifiedStateUncached(ctx context.Context, workspaceID string) (*VerifiedState, error) {
+	setting, err := s.store.GetSystemSettingUncached(ctx, workspaceID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get system setting")
+	}
+	if setting == nil || setting.License == "" {
+		return verifiedState(defaultFreeSubscription), nil
+	}
+	subscription, err := s.parseLicenseUncheckedExpiry(setting.License, workspaceID)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to verify configured license")
+	}
+	state := verifiedState(subscription)
+	if isExpired(subscription) {
+		free := verifiedState(defaultFreeSubscription)
+		free.ExpiresAt = state.ExpiresAt
+		return free, nil
+	}
+	return state, nil
+}
+
+func verifiedState(subscription *v1pb.Subscription) *VerifiedState {
+	state := &VerifiedState{
+		UserLimit:     userLimitFromSubscription(subscription),
+		InstanceLimit: instanceLimitFromSubscription(subscription),
+	}
+	if subscription.GetExpiresTime() != nil {
+		expiresAt := subscription.GetExpiresTime().AsTime()
+		state.ExpiresAt = &expiresAt
+	}
+	return state
+}
+
+func instanceLimitFromSubscription(subscription *v1pb.Subscription) int {
+	if subscription.Instances > 0 {
+		return int(subscription.Instances)
+	}
+	limit := instanceLimitValues[subscription.Plan]
+	if limit == -1 {
+		return math.MaxInt
 	}
 	return limit
 }
@@ -529,8 +597,22 @@ func (s *LicenseService) CheckReplicaLimit(ctx context.Context) error {
 }
 
 func (s *LicenseService) parseLicense(license, workspaceID string) (*v1pb.Subscription, error) {
+	subscription, err := s.parseLicenseUncheckedExpiry(license, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if isExpired(subscription) {
+		return nil, common.Errorf(common.Invalid, "license has expired at %v", subscription.ExpiresTime.AsTime())
+	}
+	return subscription, nil
+}
+
+// parseLicenseUncheckedExpiry verifies a license's signature and all static
+// claims while deliberately retaining an otherwise valid expired token. The
+// caller chooses whether expiry is an error or an effective Free fallback.
+func (s *LicenseService) parseLicenseUncheckedExpiry(license, workspaceID string) (*v1pb.Subscription, error) {
 	claim := &Claims{}
-	token, err := jwt.ParseWithClaims(license, claim, func(token *jwt.Token) (any, error) {
+	token, err := jwt.NewParser(jwt.WithoutClaimsValidation()).ParseWithClaims(license, claim, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, common.Errorf(common.Invalid, "unexpected signing method: %v", token.Header["alg"])
 		}
@@ -548,6 +630,9 @@ func (s *LicenseService) parseLicense(license, workspaceID string) (*v1pb.Subscr
 
 	if !token.Valid {
 		return nil, common.Errorf(common.Invalid, "invalid token")
+	}
+	if claim.NotBefore != nil && time.Now().Before(claim.NotBefore.Time) {
+		return nil, common.Errorf(common.Invalid, "license is not valid before %v", claim.NotBefore.Time)
 	}
 
 	if s.config.Issuer != claim.Issuer {
@@ -583,10 +668,6 @@ func (s *LicenseService) parseLicense(license, workspaceID string) (*v1pb.Subscr
 	if claim.ExpiresAt != nil && !claim.ExpiresAt.IsZero() {
 		expiresTime = timestamppb.New(claim.ExpiresAt.Time)
 	}
-	if expiresTime != nil && expiresTime.AsTime().Before(time.Now()) {
-		return nil, errors.Errorf("license has expired at %v", expiresTime.AsTime())
-	}
-
 	return &v1pb.Subscription{
 		ActiveInstances: int32(claim.ActiveInstances),
 		Instances:       int32(claim.Instances),

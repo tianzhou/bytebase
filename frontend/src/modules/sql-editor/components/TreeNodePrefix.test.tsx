@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { WorksheetFolderNode } from "@/modules/sql-editor/model/Sheet";
+import type { SavedQueryFolderNode } from "@/modules/sql-editor/model/Sheet";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -15,8 +15,8 @@ globalThis.ResizeObserver = class ResizeObserver {
 };
 
 const makeNode = (
-  overrides?: Partial<WorksheetFolderNode>
-): WorksheetFolderNode => ({
+  overrides?: Partial<SavedQueryFolderNode>
+): SavedQueryFolderNode => ({
   key: "/my/folder",
   label: "folder",
   editable: true,
@@ -56,13 +56,13 @@ afterEach(() => {
 });
 
 describe("TreeNodePrefix", () => {
-  test("renders FileCode icon when node has a worksheet property", () => {
+  test("renders FileCode icon when node has a saved query property", () => {
     const node = makeNode({
-      worksheet: {
-        name: "worksheets/ws1",
+      savedQuery: {
+        name: "savedQueries/ws1",
         title: "My Query",
         folders: [],
-        type: "worksheet",
+        type: "savedQuery",
       },
     });
     const { container, render, unmount } = renderIntoContainer(
@@ -90,6 +90,22 @@ describe("TreeNodePrefix", () => {
     const svg = container.querySelector("svg");
     expect(svg).not.toBeNull();
     expect(svg?.classList.contains("lucide-folder-open")).toBe(true);
+
+    unmount();
+  });
+
+  test("renders the regular folder icon for empty folders", () => {
+    const node = makeNode({ empty: true });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <TreeNodePrefix node={node} isOpen={false} rootPath="/my" view="my" />
+    );
+    render();
+
+    const svg = container.querySelector("svg");
+    expect(svg).not.toBeNull();
+    expect(svg?.classList.contains("lucide-folder-code")).toBe(true);
+    expect(svg?.classList.contains("lucide-folder-minus")).toBe(false);
 
     unmount();
   });

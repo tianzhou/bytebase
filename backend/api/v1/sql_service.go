@@ -149,7 +149,7 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 			queryContext,
 		)
 
-		s.createQueryHistory(database, store.QueryHistoryTypeQuery, request.Statement, user.Email, duration, queryErr)
+		s.createQueryHistory(instance, database, store.QueryHistoryTypeQuery, request.Statement, user.Email, duration, queryErr)
 		response := &v1pb.AdminExecuteResponse{}
 		if queryErr != nil {
 			response.Results = []*v1pb.QueryResult{
@@ -168,16 +168,17 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 }
 
 // buildExportQueryContext assembles the db.QueryContext for an export request.
-// SkipMasking has to be set here (not only checked around the post-execution
-// MaskResults pass) because some drivers mask at query time via SQL rewrites
-// — by the time the second pass runs the rows would already be masked, and
-// a JIT grant with unmask=true would silently export masked data. See PR
-// #20487 review (RainbowDashy).
-func buildExportQueryContext(restriction *store.EffectiveQueryDataPolicy, userEmail string, schema *string, skipMasking bool) db.QueryContext {
+// SkipMasking has to be set here, not only checked around the post-execution
+// MaskResults pass: queryRetry reads it off the QueryContext to decide
+// maskingEnabled and whether to extract sensitive predicate columns, and both
+// of those run before the export's own check. See PR #20487 review
+// (RainbowDashy). No driver reads the field.
+func buildExportQueryContext(restriction *store.EffectiveQueryDataPolicy, userEmail string, schema *string, container string, skipMasking bool) db.QueryContext {
 	qc := db.QueryContext{
 		Limit:                int(restriction.MaximumResultRows),
 		OperatorEmail:        userEmail,
 		MaximumSQLResultSize: restriction.MaximumResultSize,
+		Container:            container,
 		SkipMasking:          skipMasking,
 	}
 	if restriction.MaxQueryTimeoutInSeconds > 0 {
@@ -190,14 +191,14 @@ func buildExportQueryContext(restriction *store.EffectiveQueryDataPolicy, userEm
 }
 
 // preCheckAccess returns the user's most capable active access grant matching
-// the given query, or nil if none. When `requireExport` is true the CEL
+// the given query, or nil if none. When `requireExport` is true the SQL
 // filter is narrowed to grants with `export == true`, so an unmask-only
 // grant on the same statement can't shadow a separately-active export
 // grant via slice-order ties (see PR #20491 review).
 //
 // The returned grant has a non-nil Payload — callers may deref
 // `Payload.Unmask` / `Payload.Export` without an additional check.
-func (s *SQLService) preCheckAccess(ctx context.Context, statement string, instance *store.InstanceMessage, database *store.DatabaseMessage, requireExport bool) *store.AccessGrantMessage {
+func (s *SQLService) preCheckAccess(ctx context.Context, statement string, instance *store.InstanceMessage, database *store.DatabaseMessage, schema *string, container string, requireExport bool) *store.AccessGrantMessage {
 	project, err := s.store.GetProject(ctx, &store.FindProjectMessage{
 		Workspace:  common.GetWorkspaceIDFromContext(ctx),
 		ResourceID: &database.ProjectID,
@@ -220,36 +221,27 @@ func (s *SQLService) preCheckAccess(ctx context.Context, statement string, insta
 		return nil
 	}
 
-	databaseFullName := common.FormatDatabase(database.InstanceID, database.DatabaseName)
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	filter := fmt.Sprintf(
-		`status == "ACTIVE" && target == %q && expire_time > %q && query == %q`,
-		databaseFullName,
-		now,
-		strings.TrimSpace(statement),
-	)
-	if requireExport {
-		filter += ` && export == true`
+	requestSchema := ""
+	if schema != nil {
+		requestSchema = *schema
 	}
-	filterQ, err := store.GetListAccessGrantFilter(filter)
-	if err != nil {
-		slog.Warn("failed to build access grant filter", log.BBError(err))
-		return nil
-	}
-
-	grants, err := s.store.ListAccessGrants(ctx, &store.FindAccessGrantMessage{
-		Workspace: common.GetWorkspaceIDFromContext(ctx),
-		ProjectID: &database.ProjectID,
-		Creator:   &user.Email,
-		FilterQ:   filterQ,
+	grants, err := s.store.ListActiveAccessGrants(ctx, &store.FindActiveAccessGrantMessage{
+		Workspace:     common.GetWorkspaceIDFromContext(ctx),
+		ProjectID:     database.ProjectID,
+		Creator:       user.Email,
+		Target:        formatDatabaseResourceName(instance, database),
+		Statement:     strings.Trim(statement, " \t\n\r\v\f"),
+		Schema:        requestSchema,
+		Container:     container,
+		RequireExport: requireExport,
+		ExpireTime:    time.Now().UTC(),
 	})
 	if err != nil {
-		slog.Warn("failed to list access grants", log.BBError(err))
+		slog.Warn("failed to find active access grant", log.BBError(err))
 		return nil
 	}
-
-	if len(grants) == 0 {
+	grant := selectBestAccessGrant(grants)
+	if grant == nil {
 		return nil
 	}
 	readOnly, err := isReadOnlyStatementForAccessGrant(ctx, instance.Metadata.GetEngine(), statement)
@@ -261,7 +253,7 @@ func (s *SQLService) preCheckAccess(ctx context.Context, statement string, insta
 		slog.Warn("skip access grant for non-read-only query", slog.String("instance", instance.ResourceID), slog.String("database", database.DatabaseName))
 		return nil
 	}
-	return selectBestAccessGrant(grants)
+	return grant
 }
 
 // selectBestAccessGrant picks the highest-ranked grant by capability count
@@ -282,8 +274,8 @@ func selectBestAccessGrant(grants []*store.AccessGrantMessage) *store.AccessGran
 		}
 		// Rank by Unmask only — Export plays no role in selection:
 		//
-		//   - Export callers pass `requireExport=true`, which pushes
-		//     `&& export == true` into the CEL filter, so every grant in
+		//   - Export callers pass `requireExport=true`, which adds
+		//     `export == true` to the SQL filter, so every grant in
 		//     this slice already has `Export=true` and a per-grant Export
 		//     bump would just be a uniform constant.
 		//   - Query callers don't read `Payload.Export` from the returned
@@ -313,7 +305,7 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 		return nil, err
 	}
 
-	accessGrant := s.preCheckAccess(ctx, request.Statement, instance, database, false /* requireExport */)
+	accessGrant := s.preCheckAccess(ctx, request.Statement, instance, database, request.Schema, request.GetContainer(), false /* requireExport */)
 
 	statement := request.Statement
 	// In Redshift datashare, Rewrite query used for parser.
@@ -329,14 +321,35 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 		}
 	}
 
-	queryDataPolicy := getEffectiveQueryDataPolicy(
+	// The MCP read-only clamp. Unconditional on Explain, unlike the gate
+	// above: an explain request carries the bare statement and the driver
+	// prepends EXPLAIN, so skipping it would hand a read-only session an
+	// unclassified write to send.
+	clamped, err := mcpReadOnlyClampApplies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if clamped {
+		if err := refuseNonReadOnlyStatement(instance.Metadata.GetEngine(), statement); err != nil {
+			// The same kind of refusal the ceiling gate records, taken at the
+			// one point that can see the request's argument. It adds no row
+			// today — Query is annotated audit = true, so the denial is
+			// recorded either way — and it is here so that stays true if that
+			// annotation ever changes, which is the only thing the mark
+			// controls.
+			common.SetMCPPolicyDenied(ctx)
+			return nil, err
+		}
+	}
+
+	queryRestriction := getEffectiveQueryDataPolicy(
 		ctx,
 		s.store,
 		s.licenseService,
-		0,
+		request.Limit,
 		database.ProjectID,
 	)
-	resolvedDataSourceID, err := resolveDataSourceID(ctx, instance, request.DataSourceId, statement, queryDataPolicy.AllowAdminDataSource)
+	resolvedDataSourceID, err := resolveDataSourceID(ctx, instance, request.DataSourceId, statement, queryRestriction.AllowAdminDataSource)
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +361,12 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 	driver, err := s.dbFactory.GetDataSourceDriver(ctx, instance, dataSource, db.ConnectionContext{
 		DatabaseName: database.DatabaseName,
 		DataShare:    database.Metadata.GetDatashare(),
-		ReadOnly:     dataSource.GetType() == storepb.DataSourceType_READ_ONLY,
+		// A clamped request asks for the read-only session whatever data
+		// source it landed on, so the depth does not depend on the customer
+		// having configured a read-only data source. The driver is opened and
+		// closed inside this handler, so the session cannot outlive the
+		// request or be reused by another one.
+		ReadOnly: clamped || dataSource.GetType() == storepb.DataSourceType_READ_ONLY,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get database driver: %v", err))
@@ -366,13 +384,6 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 	}
 
 	startTime := time.Now()
-	queryRestriction := getEffectiveQueryDataPolicy(
-		ctx,
-		s.store,
-		s.licenseService,
-		request.Limit,
-		database.ProjectID,
-	)
 	queryContext := db.QueryContext{
 		Explain:              request.Explain,
 		Limit:                int(queryRestriction.MaximumResultRows),
@@ -380,7 +391,10 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 		Option:               request.QueryOption,
 		Container:            request.GetContainer(),
 		MaximumSQLResultSize: queryRestriction.MaximumResultSize,
-		SkipMasking:          accessGrant != nil && accessGrant.Payload.Unmask,
+		// SkipMasking turns the whole masking pass off (queryRetry's
+		// maskingEnabled), so exemptionsForPrincipal never runs when it is set.
+		// The toggle has to suppress it here as well as there.
+		SkipMasking: accessGrant != nil && accessGrant.Payload.Unmask && !mcpIgnoresMaskingExemptions(ctx),
 	}
 	if request.Schema != nil {
 		queryContext.Schema = *request.Schema
@@ -417,7 +431,7 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 	)
 
 	// Update activity.
-	s.createQueryHistory(database, store.QueryHistoryTypeQuery, statement, user.Email, duration, queryErr)
+	s.createQueryHistory(instance, database, store.QueryHistoryTypeQuery, statement, user.Email, duration, queryErr)
 
 	if queryErr != nil {
 		if len(results) == 0 {
@@ -965,15 +979,6 @@ func executeWithTimeout(
 // Export exports the SQL query result.
 func (s *SQLService) Export(ctx context.Context, req *connect.Request[v1pb.ExportRequest]) (*connect.Response[v1pb.ExportResponse], error) {
 	request := req.Msg
-	// Prehandle export from issue.
-	if strings.HasPrefix(request.Name, common.ProjectNamePrefix) {
-		response, err := s.doExportFromIssue(ctx, request.Name)
-		if err != nil {
-			return nil, err
-		}
-		return connect.NewResponse(response), nil
-	}
-
 	// Prepare related message.
 	user, instance, database, err := s.prepareRelatedMessage(ctx, request.Name)
 	if err != nil {
@@ -989,7 +994,7 @@ func (s *SQLService) Export(ctx context.Context, req *connect.Request[v1pb.Expor
 	// requireExport=true narrows the CEL filter to grants with export=true,
 	// so a tied unmask-only grant can't shadow a separately-active export
 	// grant via slice order (PR #20491 bot review).
-	accessGrant := s.preCheckAccess(ctx, request.Statement, instance, database, true /* requireExport */)
+	accessGrant := s.preCheckAccess(ctx, request.Statement, instance, database, request.Schema, request.GetContainer(), true /* requireExport */)
 
 	// Validate the request.
 	// New query ACL experience.
@@ -1013,16 +1018,22 @@ func (s *SQLService) Export(ctx context.Context, req *connect.Request[v1pb.Expor
 	// its target databases, so span-level ACL still runs and only the
 	// granted targets are exempted from IAM. See PR #20487 review.
 	optionalAccessCheck := s.accessCheckWithGrant(accessGrant)
+	// Export is a WRITE method, so a read-write MCP session reaches it with the
+	// same access-grant unmask Query carries.
 	skipMasking := false
 	if accessGrant != nil {
-		skipMasking = accessGrant.Payload.Unmask
+		skipMasking = accessGrant.Payload.Unmask && !mcpIgnoresMaskingExemptions(ctx)
 	}
 	bytes, duration, exportErr := doExport(ctx, s.store, s.dbFactory, s.licenseService, request, user, instance, database, optionalAccessCheck, s.schemaSyncer, dataSource, skipMasking)
 
-	s.createQueryHistory(database, store.QueryHistoryTypeExport, statement, user.Email, duration, exportErr)
+	s.createQueryHistory(instance, database, store.QueryHistoryTypeExport, statement, user.Email, duration, exportErr)
 
 	if exportErr != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New(exportErr.Error()))
+		var connectErr *connect.Error
+		if errors.As(exportErr, &connectErr) {
+			return nil, connectErr
+		}
+		return nil, connect.NewError(connect.CodeInternal, exportErr)
 	}
 
 	exportResponse := &v1pb.ExportResponse{
@@ -1035,121 +1046,8 @@ func (s *SQLService) Export(ctx context.Context, req *connect.Request[v1pb.Expor
 	return connect.NewResponse(exportResponse), nil
 }
 
-func (s *SQLService) doExportFromIssue(ctx context.Context, requestName string) (*v1pb.ExportResponse, error) {
-	// Try to parse as rollout name first (more specific), then fallback to stage name
-	var planID int64
-	var projectID string
-	var err error
-	projectID, planID, err = common.GetProjectIDPlanIDFromRolloutName(requestName)
-	if err != nil {
-		// If rollout parsing fails, try parsing as stage name
-		projectID, planID, _, err = common.GetProjectIDPlanIDMaybeStageID(requestName)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("failed to parse request name as rollout or stage: %v", err))
-		}
-	}
-
-	plan, err := s.store.GetPlan(ctx, &store.FindPlanMessage{
-		Workspace: common.GetWorkspaceIDFromContext(ctx),
-		ProjectID: projectID,
-		UID:       &planID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get rollout: %v", err))
-	}
-	if plan == nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("rollout %d not found in project %s", planID, projectID))
-	}
-
-	tasks, err := s.store.ListTasks(ctx, &store.TaskFind{Workspace: common.GetWorkspaceIDFromContext(ctx), ProjectID: projectID, PlanID: &plan.UID})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get tasks: %v", err))
-	}
-	if len(tasks) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("rollout %d has no task", plan.UID))
-	}
-
-	// Get password from the plan spec
-	// For export data plans, there is always exactly one spec
-	var passwordStr string
-	if len(plan.Config.Specs) > 0 {
-		if exportConfig := plan.Config.Specs[0].GetExportDataConfig(); exportConfig != nil && exportConfig.Password != nil {
-			passwordStr = *exportConfig.Password
-		}
-	}
-
-	pendingEncrypts := []*encryptContent{}
-
-	for _, task := range tasks {
-		// Skip tasks that are marked as skipped (they don't have archives)
-		if task.Payload.GetSkipped() {
-			continue
-		}
-
-		taskRuns, err := s.store.ListTaskRuns(ctx, &store.FindTaskRunMessage{
-			Workspace: common.GetWorkspaceIDFromContext(ctx),
-			ProjectID: projectID,
-			TaskUID:   &task.ID,
-			Status:    &[]storepb.TaskRun_Status{storepb.TaskRun_DONE},
-		})
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get task run: %v", err))
-		}
-		if len(taskRuns) == 0 {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("rollout %v has no task run", requestName))
-		}
-		taskRun := taskRuns[0]
-		exportArchiveID := taskRun.ResultProto.ExportArchiveId
-		if exportArchiveID == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("issue %v has no export archive", requestName))
-		}
-		exportArchive, err := s.store.GetExportArchive(ctx, common.GetWorkspaceIDFromContext(ctx), exportArchiveID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get export archive: %v", err))
-		}
-		if exportArchive == nil {
-			return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("export not found or expired, please request a new export"))
-		}
-
-		// The exportArchive.Bytes should be a zip without password. We will read it and append all files into the pendingEncrypts,
-		// then create a new file zip for them.
-		zipReader, err := zip.NewReader(bytes.NewReader(exportArchive.Bytes), int64(len(exportArchive.Bytes)))
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to read export archive: %v", err))
-		}
-
-		for _, file := range zipReader.File {
-			rc, err := file.Open()
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to open file %s in archive: %v", file.Name, err))
-			}
-
-			content, err := io.ReadAll(rc)
-			rc.Close()
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to read file %s: %v", file.Name, err))
-			}
-
-			pendingEncrypts = append(pendingEncrypts, &encryptContent{
-				Content: content,
-				Name:    file.Name,
-			})
-		}
-	}
-
-	encryptedBytes, err := doEncrypt(pendingEncrypts, passwordStr)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to encrypt data: %v", err))
-	}
-
-	return &v1pb.ExportResponse{
-		Content: encryptedBytes,
-	}, nil
-}
-
 // doExport performs SQL Editor exports with masking applied.
 // This is used for ad-hoc exports where users have the EXPORTER role.
-// For approved DATABASE_EXPORT tasks, see data_export_executor.go which exports without masking.
 func doExport(
 	ctx context.Context,
 	stores *store.Store,
@@ -1193,7 +1091,7 @@ func doExport(
 		request.Limit,
 		database.ProjectID,
 	)
-	queryContext := buildExportQueryContext(queryRestriction, user.Email, request.Schema, skipMasking)
+	queryContext := buildExportQueryContext(queryRestriction, user.Email, request.Schema, request.GetContainer(), skipMasking)
 
 	// Split the statement for span analysis
 	statements, err := parserbase.SplitMultiSQL(instance.Metadata.GetEngine(), request.Statement)
@@ -1350,36 +1248,11 @@ func exportSQLWithContext(
 	return export.SQLToWriter(w, instance.Metadata.GetEngine(), statementPrefix, result)
 }
 
-type encryptContent struct {
-	Name    string
-	Content []byte
-}
-
-func doEncrypt(exports []*encryptContent, password string) ([]byte, error) {
-	var b bytes.Buffer
-	fzip := io.Writer(&b)
-
-	zipw := zip.NewWriter(fzip)
-	defer zipw.Close()
-
-	for _, exportContent := range exports {
-		if err := export.WriteZipEntry(zipw, exportContent.Name, exportContent.Content, password); err != nil {
-			return nil, err
-		}
-	}
-
-	if err := zipw.Close(); err != nil {
-		return nil, errors.Wrap(err, "failed to close zip writer")
-	}
-
-	return b.Bytes(), nil
-}
-
-func (s *SQLService) createQueryHistory(database *store.DatabaseMessage, queryType store.QueryHistoryType, statement string, userEmail string, duration time.Duration, queryErr error) {
+func (s *SQLService) createQueryHistory(instance *store.InstanceMessage, database *store.DatabaseMessage, queryType store.QueryHistoryType, statement string, userEmail string, duration time.Duration, queryErr error) {
 	qh := &store.QueryHistoryMessage{
 		Creator:   userEmail,
 		Project:   database.ProjectID,
-		Database:  common.FormatDatabase(database.InstanceID, database.DatabaseName),
+		Database:  formatDatabaseResourceName(instance, database),
 		Statement: statement,
 		Type:      queryType,
 		Payload: &storepb.QueryHistoryPayload{
@@ -1508,7 +1381,7 @@ func (s *SQLService) accessCheckWithGrantedTargets(
 	}
 
 	checkDatabaseAccess := func(perm permission.Permission) error {
-		databaseFullName := common.FormatDatabase(instance.ResourceID, database.DatabaseName)
+		databaseFullName := formatDatabaseResourceName(instance, database)
 		if _, granted := grantedTargets[databaseFullName]; granted {
 			return nil
 		}
@@ -1649,8 +1522,16 @@ func (s *SQLService) accessCheckWithGrantedTargets(
 
 		var deniedResources []string
 		for column := range span.SourceColumns {
-			columnDatabaseFullName := common.FormatDatabase(instance.ResourceID, column.Database)
-			if _, granted := grantedTargets[columnDatabaseFullName]; granted {
+			columnDatabaseFullName := formatDatabaseResourceName(instance, &store.DatabaseMessage{
+				InstanceID:   instance.ResourceID,
+				DatabaseName: column.Database,
+			})
+			grantTargetName := formatDatabaseResourceName(instance, &store.DatabaseMessage{
+				ProjectID:    database.ProjectID,
+				InstanceID:   instance.ResourceID,
+				DatabaseName: column.Database,
+			})
+			if _, granted := grantedTargets[grantTargetName]; granted {
 				continue
 			}
 			attributes := map[string]any{
@@ -1748,8 +1629,16 @@ func (s *SQLService) authorizeWriteTargets(
 
 	var deniedResources []string
 	for _, t := range targets {
-		databaseFullName := common.FormatDatabase(instance.ResourceID, t.database)
-		if _, granted := grantedTargets[databaseFullName]; granted {
+		databaseFullName := formatDatabaseResourceName(instance, &store.DatabaseMessage{
+			InstanceID:   instance.ResourceID,
+			DatabaseName: t.database,
+		})
+		grantTargetName := formatDatabaseResourceName(instance, &store.DatabaseMessage{
+			ProjectID:    database.ProjectID,
+			InstanceID:   instance.ResourceID,
+			DatabaseName: t.database,
+		})
+		if _, granted := grantedTargets[grantTargetName]; granted {
 			continue
 		}
 		// A target with no table name is a database-only target: DDL on a non-table object
@@ -2009,9 +1898,9 @@ func (s *SQLService) prepareRelatedMessage(ctx context.Context, requestName stri
 		return nil, nil, nil, connect.NewError(connect.CodeInternal, errors.New(err.Error()))
 	}
 
-	instanceID, databaseName, err := common.GetInstanceDatabaseID(requestName)
+	targetProjectID, instanceID, databaseName, err := common.GetDatabaseResourceName(requestName)
 	if err != nil {
-		return nil, nil, nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to parse %q", requestName))
+		return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.Wrapf(err, "failed to parse %q", requestName))
 	}
 	database, err := s.store.GetDatabase(ctx, &store.FindDatabaseMessage{
 		Workspace:    common.GetWorkspaceIDFromContext(ctx),
@@ -2024,6 +1913,19 @@ func (s *SQLService) prepareRelatedMessage(ctx context.Context, requestName stri
 	if database == nil {
 		return nil, nil, nil, connect.NewError(connect.CodeNotFound, errors.Errorf("database %q not found", requestName))
 	}
+	if targetProjectID != nil && database.ProjectID != *targetProjectID {
+		return nil, nil, nil, connect.NewError(connect.CodeNotFound, errors.Errorf("database %q not found in project %q", requestName, *targetProjectID))
+	}
+	project, err := s.store.GetProject(ctx, &store.FindProjectMessage{
+		Workspace:  common.GetWorkspaceIDFromContext(ctx),
+		ResourceID: &database.ProjectID,
+	})
+	if err != nil {
+		return nil, nil, nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get project %q", database.ProjectID))
+	}
+	if project == nil || project.Deleted {
+		return nil, nil, nil, connect.NewError(connect.CodeNotFound, errors.Errorf("project %q not found", database.ProjectID))
+	}
 
 	instance, err := s.store.GetInstance(ctx, &store.FindInstanceMessage{
 		Workspace:  common.GetWorkspaceIDFromContext(ctx),
@@ -2034,6 +1936,13 @@ func (s *SQLService) prepareRelatedMessage(ctx context.Context, requestName stri
 	}
 	if instance == nil {
 		return nil, nil, nil, connect.NewError(connect.CodeNotFound, errors.Errorf("instance %q not found", database.InstanceID))
+	}
+	if instance.Deleted {
+		return nil, nil, nil, connect.NewError(connect.CodeNotFound, errors.Errorf("instance %q not found", database.InstanceID))
+	}
+	if (targetProjectID == nil) != (instance.ProjectID == nil) ||
+		targetProjectID != nil && *targetProjectID != *instance.ProjectID {
+		return nil, nil, nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("database name %q is not canonical for its instance", requestName))
 	}
 
 	return user, instance, database, nil

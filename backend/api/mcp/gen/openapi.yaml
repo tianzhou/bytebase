@@ -255,44 +255,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.SearchMyAccessGrantsResponse'
-  /bytebase.v1.ActuatorService/DeleteCache:
-    post:
-      tags:
-        - bytebase.v1.ActuatorService
-      summary: DeleteCache
-      description: |-
-        Clears the system cache to force data refresh.
-         Permissions required: None
-      operationId: bytebase.v1.ActuatorService.DeleteCache
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.DeleteCacheRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/google.protobuf.Empty'
   /bytebase.v1.ActuatorService/GetActuatorInfo:
     post:
       tags:
@@ -300,9 +262,8 @@ paths:
       summary: GetActuatorInfo
       description: |-
         Gets system information and health status of the Bytebase instance.
-         When `name` is provided (or the workspace-scoped binding is used), the
-         response includes workspace-scoped fields for that workspace.
-         Permissions required: None
+         The workspace is resolved from the authenticated session.
+         Permissions required: None (authentication required)
       operationId: bytebase.v1.ActuatorService.GetActuatorInfo
       parameters:
         - name: Connect-Protocol-Version
@@ -333,44 +294,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ActuatorInfo'
-  /bytebase.v1.ActuatorService/SetupSample:
-    post:
-      tags:
-        - bytebase.v1.ActuatorService
-      summary: SetupSample
-      description: |-
-        Sets up sample data for demonstration and testing purposes.
-         Permissions required: bb.projects.create
-      operationId: bytebase.v1.ActuatorService.SetupSample
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.SetupSampleRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/google.protobuf.Empty'
   /bytebase.v1.AuditLogService/ExportAuditLogs:
     post:
       tags:
@@ -486,6 +409,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ExchangeTokenResponse'
+  /bytebase.v1.AuthService/GetAuthenticationInfo:
+    post:
+      tags:
+        - bytebase.v1.AuthService
+      summary: GetAuthenticationInfo
+      description: |-
+        Gets everything the login page renders: the sign-in restrictions and the
+         identity providers it offers.
+         Permissions required: None
+      operationId: bytebase.v1.AuthService.GetAuthenticationInfo
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.GetAuthenticationInfoRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.AuthenticationInfo'
   /bytebase.v1.AuthService/Login:
     post:
       tags:
@@ -608,6 +570,8 @@ paths:
       description: |-
         Requests a password reset email for the given email address.
          Always returns success to avoid leaking whether the email exists.
+         Requires the workspace's SMTP mail delivery setting; without it the
+         recovery route is an admin password reset.
          Permissions required: None
       operationId: bytebase.v1.AuthService.RequestPasswordReset
       parameters:
@@ -685,6 +649,8 @@ paths:
       description: |-
         Sends a 6-digit verification code to the email for login/signup.
          Always returns success (no email enumeration). Enforces 60-sec resend cooldown.
+         The signed-in counterpart is UserService.RequestReauthCode; LOGIN and
+         REAUTH codes are not interchangeable.
          Permissions required: None
       operationId: bytebase.v1.AuthService.SendEmailLoginCode
       parameters:
@@ -1220,7 +1186,9 @@ paths:
       summary: BatchGetDatabases
       description: |-
         Retrieves multiple databases by their names.
-         Permissions required: bb.databases.get
+         One resource per requested name, in request order. The first name that
+         does not resolve fails the whole call (AIP-231: no partial response).
+         Permissions required: bb.databases.get (on each named database's project)
       operationId: bytebase.v1.DatabaseService.BatchGetDatabases
       parameters:
         - name: Connect-Protocol-Version
@@ -1716,6 +1684,8 @@ paths:
       description: |-
         Gets multiple groups in a single request.
          Group members or users with bb.groups.get permission can get the group.
+         One resource per requested name, in request order. The first name that
+         does not resolve fails the whole call (AIP-231: no partial response).
          Permissions required: bb.groups.get OR caller is the group member
       operationId: bytebase.v1.GroupService.BatchGetGroups
       parameters:
@@ -2057,10 +2027,16 @@ paths:
     post:
       tags:
         - bytebase.v1.IdentityProviderService
-      summary: ListIdentityProviders
+      summary: |-
+        Lists the identity providers configured for the caller's workspace.
+         The login page reads AuthService.GetAuthenticationInfo instead,
+         which publishes only the fields a browser needs to start an SSO redirect.
       description: |-
-        Lists all configured identity providers (public endpoint for login page).
-         Permissions required: None
+        Returns the same representation as GetIdentityProvider — secrets redacted,
+         the rest of the configuration included — so granting
+         bb.identityProviders.list conveys configuration read over the whole
+         collection, not merely the names in it.
+         Permissions required: bb.identityProviders.list
       operationId: bytebase.v1.IdentityProviderService.ListIdentityProviders
       parameters:
         - name: Connect-Protocol-Version
@@ -2365,6 +2341,8 @@ paths:
       summary: DeleteInstance
       description: |-
         Deletes or soft-deletes a database instance.
+         Soft-delete requests fail with FAILED_PRECONDITION while any task run
+         targeting the instance is pending, available, or running.
          Permissions required: bb.instances.delete
       operationId: bytebase.v1.InstanceService.DeleteInstance
       parameters:
@@ -2478,7 +2456,7 @@ paths:
         - bytebase.v1.InstanceService
       summary: ListInstances
       description: |-
-        Lists all database instances.
+        Lists database instances, optionally within a project.
          Permissions required: bb.instances.list
       operationId: bytebase.v1.InstanceService.ListInstances
       parameters:
@@ -2510,6 +2488,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ListInstancesResponse'
+  /bytebase.v1.InstanceService/PrepareSampleProjectInstance:
+    post:
+      tags:
+        - bytebase.v1.InstanceService
+      summary: PrepareSampleProjectInstance
+      description: |-
+        Prepares a Sample Project Instance for a project.
+         Permissions required: bb.instances.create
+      operationId: bytebase.v1.InstanceService.PrepareSampleProjectInstance
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.PrepareSampleProjectInstanceRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.Instance'
   /bytebase.v1.InstanceService/RemoveDataSource:
     post:
       tags:
@@ -2593,6 +2609,8 @@ paths:
       summary: UndeleteInstance
       description: |-
         Restores a soft-deleted database instance.
+         Restore requests fail with FAILED_PRECONDITION while any task run targeting
+         the instance is pending, available, or running.
          Permissions required: bb.instances.undelete
       operationId: bytebase.v1.InstanceService.UndeleteInstance
       parameters:
@@ -3087,6 +3105,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.Issue'
+  /bytebase.v1.IssueService/RunReview:
+    post:
+      tags:
+        - bytebase.v1.IssueService
+      summary: RunReview
+      description: |-
+        Triggers a review run. The slot is reset unconditionally: a RUNNING
+         execution is superseded (its completion is fenced off), the attempt
+         number is bumped, and the returned run is AVAILABLE.
+         Review results are not returned by this RPC and have no read RPC yet:
+         findings will surface as issue comments once the review comment
+         integration lands. The returned run carries execution status only.
+         The audit log is the only record of who triggered a run.
+         Permissions required: bb.reviewRuns.run
+      operationId: bytebase.v1.IssueService.RunReview
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.RunReviewRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.ReviewRun'
   /bytebase.v1.IssueService/SearchIssues:
     post:
       tags:
@@ -3741,7 +3803,9 @@ paths:
       summary: BatchGetProjects
       description: |-
         BatchGetProjects retrieves multiple projects by their names.
-         Permissions required: bb.projects.get
+         One resource per requested name, in request order. The first name that
+         does not resolve fails the whole call (AIP-231: no partial response).
+         Permissions required: bb.projects.get (on each named project)
       operationId: bytebase.v1.ProjectService.BatchGetProjects
       parameters:
         - name: Connect-Protocol-Version
@@ -4274,6 +4338,7 @@ paths:
       summary: ListQueryHistories
       description: |-
         ListQueryHistories lists query histories of all users in a project.
+         Results are ordered by create time descending (newest first).
          Permissions required: bb.queryHistories.list
       operationId: bytebase.v1.QueryHistoryService.ListQueryHistories
       parameters:
@@ -5192,7 +5257,7 @@ paths:
          PENDING and AVAILABLE task runs are moved to CANCELED synchronously. RUNNING task runs receive
          a best-effort cancellation request and may continue running if the request is missed or the
          executor does not stop. The response does not report which task runs were actually canceled.
-         Permissions required: bb.taskRuns.create (or issue creator for data export issues, or user with rollout policy role for the environment)
+         Permissions required: bb.taskRuns.create (or user with rollout policy role for the environment)
       operationId: bytebase.v1.RolloutService.BatchCancelTaskRuns
       parameters:
         - name: Connect-Protocol-Version
@@ -5230,7 +5295,7 @@ paths:
       summary: BatchRunTasks
       description: |-
         Executes multiple tasks in a rollout stage.
-         Permissions required: bb.taskRuns.create (or issue creator for data export issues, or user with rollout policy role for the environment)
+         Permissions required: bb.taskRuns.create (or user with rollout policy role for the environment)
       operationId: bytebase.v1.RolloutService.BatchRunTasks
       parameters:
         - name: Connect-Protocol-Version
@@ -5268,7 +5333,7 @@ paths:
       summary: BatchSkipTasks
       description: |-
         Skips multiple tasks in a rollout stage.
-         Permissions required: bb.taskRuns.create (or issue creator for data export issues, or user with rollout policy role for the environment)
+         Permissions required: bb.taskRuns.create (or user with rollout policy role for the environment)
       operationId: bytebase.v1.RolloutService.BatchSkipTasks
       parameters:
         - name: Connect-Protocol-Version
@@ -5306,7 +5371,7 @@ paths:
       summary: CreateRollout
       description: |-
         Creates a new rollout for a plan.
-         Permissions required: bb.rollouts.create (or issue creator for data export issues)
+         Permissions required: bb.rollouts.create
       operationId: bytebase.v1.RolloutService.CreateRollout
       parameters:
         - name: Connect-Protocol-Version
@@ -5803,6 +5868,446 @@ paths:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.SearchQueryHistoriesResponse'
       deprecated: true
+  /bytebase.v1.SavedQueryService/CreateSavedQuery:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: CreateSavedQuery
+      description: |-
+        Create a saved query. The creator becomes the owner and the saved query
+         starts private.
+         Permissions required: bb.savedQueries.create on the project
+      operationId: bytebase.v1.SavedQueryService.CreateSavedQuery
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.CreateSavedQueryRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+  /bytebase.v1.SavedQueryService/DeleteSavedQuery:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: DeleteSavedQuery
+      description: |-
+        Delete a saved query and every user's stars on it. An EDITOR binding
+         cannot delete.
+         Permissions required: bb.savedQueries.delete (creator or project-level
+         grant)
+      operationId: bytebase.v1.SavedQueryService.DeleteSavedQuery
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.DeleteSavedQueryRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/google.protobuf.Empty'
+  /bytebase.v1.SavedQueryService/GetSavedQuery:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: GetSavedQuery
+      description: |-
+        Get a saved query with its full content.
+         Permissions required: bb.savedQueries.get (creator, VIEWER/EDITOR
+         binding, or project-level grant)
+      operationId: bytebase.v1.SavedQueryService.GetSavedQuery
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.GetSavedQueryRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+  /bytebase.v1.SavedQueryService/GetSavedQueryPolicy:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: GetSavedQueryPolicy
+      description: |-
+        Get a saved query's sharing policy: who it is shared with, at what level.
+         Permissions required: bb.savedQueries.getIamPolicy (creator, VIEWER/EDITOR
+         binding, or project-level grant)
+      operationId: bytebase.v1.SavedQueryService.GetSavedQueryPolicy
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.GetSavedQueryPolicyRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQueryPolicy'
+  /bytebase.v1.SavedQueryService/ListSavedQueries:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: ListSavedQueries
+      description: |-
+        List saved queries for auditing. The permission alone grants reading
+         every matched saved query with full content, private ones included;
+         bindings are ignored. Use parent "projects/-" for all projects.
+         Results default to title ascending; see `order_by`.
+         Permissions required: bb.savedQueries.list on the project, or on the
+         workspace when the parent is "projects/-"
+      operationId: bytebase.v1.SavedQueryService.ListSavedQueries
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.ListSavedQueriesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.ListSavedQueriesResponse'
+  /bytebase.v1.SavedQueryService/MoveMySavedQueries:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: MoveMySavedQueries
+      description: |-
+        Move the caller's saved queries filed under `source_folder`, descendants
+         included, into `target_folder`: renaming "a/b" to "a/c" also moves
+         "a/b/deep". Only the caller's own saved queries move; the response counts
+         how many did. Re-filing a single saved query is UpdateSavedQuery's
+         `folder` field.
+         Permissions required: creator
+      operationId: bytebase.v1.SavedQueryService.MoveMySavedQueries
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.MoveMySavedQueriesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.MoveMySavedQueriesResponse'
+  /bytebase.v1.SavedQueryService/SearchSavedQueries:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: SearchSavedQueries
+      description: |-
+        Search saved queries in one project. Returns content previews of the
+         saved queries the caller can read, the same access rule as GetSavedQuery.
+         Permissions required: bb.savedQueries.search on the project
+      operationId: bytebase.v1.SavedQueryService.SearchSavedQueries
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.SearchSavedQueriesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SearchSavedQueriesResponse'
+  /bytebase.v1.SavedQueryService/SearchSavedQueryFolders:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: SearchSavedQueryFolders
+      description: |-
+        Search folder paths. A path is returned when it holds at least one saved
+         query the caller can read, the same access rule as SearchSavedQueries.
+         Permissions required: bb.savedQueries.search on the project
+      operationId: bytebase.v1.SavedQueryService.SearchSavedQueryFolders
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.SearchSavedQueryFoldersRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SearchSavedQueryFoldersResponse'
+  /bytebase.v1.SavedQueryService/SetSavedQueryPolicy:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: SetSavedQueryPolicy
+      description: |-
+        Replace a saved query's sharing policy in full. `policy.etag` must match
+         the stored policy; a mismatch fails with ABORTED.
+         Permissions required: bb.savedQueries.setIamPolicy (creator or
+         project-level grant; no predefined role carries it)
+      operationId: bytebase.v1.SavedQueryService.SetSavedQueryPolicy
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.SetSavedQueryPolicyRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQueryPolicy'
+  /bytebase.v1.SavedQueryService/UpdateSavedQuery:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: UpdateSavedQuery
+      description: |-
+        Update a saved query. `database` must belong to the saved query's project.
+         Permissions required: bb.savedQueries.update (creator, EDITOR binding, or
+         project-level grant)
+      operationId: bytebase.v1.SavedQueryService.UpdateSavedQuery
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.UpdateSavedQueryRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+  /bytebase.v1.SavedQueryService/UpdateSavedQueryStar:
+    post:
+      tags:
+        - bytebase.v1.SavedQueryService
+      summary: UpdateSavedQueryStar
+      description: |-
+        Star or unstar a saved query for the caller. Stars are personal: nobody
+         else sees them and they grant nothing. The caller can star any saved
+         query they can read. When access is lost the star is hidden, not
+         deleted; it comes back if access returns.
+         Permissions required: bb.savedQueries.get (creator, VIEWER/EDITOR
+         binding, or project-level grant)
+      operationId: bytebase.v1.SavedQueryService.UpdateSavedQueryStar
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.UpdateSavedQueryStarRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SavedQuery'
   /bytebase.v1.ServiceAccountService/CreateServiceAccount:
     post:
       tags:
@@ -6408,7 +6913,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/google.api.HttpBody'
+                $ref: '#/components/schemas/bytebase.v1.ExportVCSProviderUsersResponse'
   /bytebase.v1.SubscriptionService/GetPaymentInfo:
     post:
       tags:
@@ -6638,6 +7143,8 @@ paths:
       description: |-
         Get the users in batch.
          Any authenticated user can batch get users.
+         One resource per requested name, in request order. The first name that
+         does not resolve fails the whole call (AIP-231: no partial response).
          Permissions required: bb.users.get
       operationId: bytebase.v1.UserService.BatchGetUsers
       parameters:
@@ -6669,6 +7176,87 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.BatchGetUsersResponse'
+  /bytebase.v1.UserService/ChangePassword:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: ChangePassword
+      description: |-
+        Changes the caller's own password. An administrator resetting someone
+         else's password uses UpdateUser with the `password` mask instead — that
+         is a different operation with a different audit story, even though both
+         end in a new password hash.
+         Permissions required: None beyond being signed in as `name`.
+      operationId: bytebase.v1.UserService.ChangePassword
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.ChangePasswordRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.User'
+  /bytebase.v1.UserService/ConfirmRecoveryCodes:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: ConfirmRecoveryCodes
+      description: |-
+        Promotes the pending recovery codes. During first-time enrollment this is
+         also where the pending TOTP secret goes live, so the factor and the codes
+         that recover it start existing in the same write.
+         Permissions required: None beyond being signed in as `name`.
+      operationId: bytebase.v1.UserService.ConfirmRecoveryCodes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.ConfirmRecoveryCodesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.User'
   /bytebase.v1.UserService/CreateUser:
     post:
       tags:
@@ -6746,6 +7334,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/google.protobuf.Empty'
+  /bytebase.v1.UserService/DisableMFA:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: DisableMFA
+      description: |-
+        Turns MFA off, clearing the entire MFA config — live and pending state
+         alike. Callers may disable their own; an administrator may disable
+         another user's with bb.users.update, which is how a locked-out user is
+         recovered.
+         Permissions required: bb.users.update, unless `name` is the caller's own.
+      operationId: bytebase.v1.UserService.DisableMFA
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.DisableMFARequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.User'
+  /bytebase.v1.UserService/EnableMFA:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: EnableMFA
+      description: |-
+        Verifies an otp_code against the pending enrollment. Nothing is written:
+         this is the step that catches a mistyped authenticator before the caller
+         is shown recovery codes, and promotion happens at ConfirmRecoveryCodes so
+         an account is never MFA-required with codes its owner never saved.
+         Permissions required: None beyond being signed in as `name`.
+         It writes nothing itself, but it is a required step of installing a
+         factor on the account, which is why it is denied on the same grounds as
+         the promotion it precedes.
+      operationId: bytebase.v1.UserService.EnableMFA
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.EnableMFARequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.User'
   /bytebase.v1.UserService/GetCurrentUser:
     post:
       tags:
@@ -6862,6 +7535,127 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ListUsersResponse'
+  /bytebase.v1.UserService/RegenerateRecoveryCodes:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: RegenerateRecoveryCodes
+      description: |-
+        Mints a pending recovery-code set beside the live one and returns it.
+         The old codes keep working until ConfirmRecoveryCodes promotes these, so
+         a caller who closes the page mid-way is not left without any.
+         Permissions required: None beyond being signed in as `name`.
+      operationId: bytebase.v1.UserService.RegenerateRecoveryCodes
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.RegenerateRecoveryCodesRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.RegenerateRecoveryCodesResponse'
+  /bytebase.v1.UserService/RequestReauthCode:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: RequestReauthCode
+      description: |-
+        Sends a one-time code to the caller's own email, usable as
+         CredentialProof.email_code. Bytebase Cloud only, and only while the
+         account has no live MFA factor. Not AuthService.SendEmailLoginCode: that
+         one starts a session, this one proves an existing one.
+         Permissions required: None beyond being signed in as `name`.
+      operationId: bytebase.v1.UserService.RequestReauthCode
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.RequestReauthCodeRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/google.protobuf.Empty'
+  /bytebase.v1.UserService/StartMFAEnrollment:
+    post:
+      tags:
+        - bytebase.v1.UserService
+      summary: StartMFAEnrollment
+      description: |-
+        Mints a pending TOTP secret and recovery codes for the caller's own
+         account and returns them. Nothing goes live until ConfirmRecoveryCodes,
+         so an abandoned enrollment leaves the account exactly as it was.
+         Permissions required: None beyond being signed in as `name`.
+      operationId: bytebase.v1.UserService.StartMFAEnrollment
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.StartMFAEnrollmentRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.StartMFAEnrollmentResponse'
   /bytebase.v1.UserService/UndeleteUser:
     post:
       tags:
@@ -7207,324 +8001,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.WorkloadIdentity'
-  /bytebase.v1.WorksheetService/BatchUpdateWorksheetOrganizer:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: BatchUpdateWorksheetOrganizer
-      description: |-
-        Batch update the organizers of worksheets.
-         The access is the same as UpdateWorksheet method.
-         Permissions required: bb.worksheets.get (or creator, or project member for shared worksheets)
-      operationId: bytebase.v1.WorksheetService.BatchUpdateWorksheetOrganizer
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.BatchUpdateWorksheetOrganizerRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.BatchUpdateWorksheetOrganizerResponse'
-  /bytebase.v1.WorksheetService/CreateWorksheet:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: CreateWorksheet
-      description: |-
-        Creates a personal worksheet used in SQL Editor. Any authenticated user can create their own worksheets.
-         Permissions required: None (authenticated users only)
-      operationId: bytebase.v1.WorksheetService.CreateWorksheet
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.CreateWorksheetRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.Worksheet'
-  /bytebase.v1.WorksheetService/DeleteWorksheet:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: DeleteWorksheet
-      description: |-
-        Delete a worksheet.
-         The access is the same as UpdateWorksheet method.
-         Permissions required: bb.worksheets.manage (or creator, or project member for PROJECT_WRITE worksheets)
-      operationId: bytebase.v1.WorksheetService.DeleteWorksheet
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.DeleteWorksheetRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/google.protobuf.Empty'
-  /bytebase.v1.WorksheetService/GetWorksheet:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: GetWorksheet
-      description: |-
-        Get a worksheet by name.
-         The users can access this method if,
-         - they are the creator of the worksheet;
-         - they have bb.worksheets.get permission on the workspace;
-         - the sheet is shared with them with PROJECT_READ and PROJECT_WRITE visibility, and they have bb.projects.get permission on the project.
-         Permissions required: bb.worksheets.get (or creator, or project member for shared worksheets)
-      operationId: bytebase.v1.WorksheetService.GetWorksheet
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.GetWorksheetRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.Worksheet'
-  /bytebase.v1.WorksheetService/ListWorksheets:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: ListWorksheets
-      description: |-
-        List worksheets.
-         This is used for listing worksheets in a project, or across all projects by using `projects/-`.
-         Permissions required: bb.worksheets.list
-      operationId: bytebase.v1.WorksheetService.ListWorksheets
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.ListWorksheetsRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.ListWorksheetsResponse'
-  /bytebase.v1.WorksheetService/SearchWorksheets:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: SearchWorksheets
-      description: |-
-        Search for worksheets.
-         This is used for finding my worksheets or worksheets shared by other people.
-         The sheet accessibility is the same as GetWorksheet().
-         Permissions required: bb.worksheets.get (or creator, or project member for shared worksheets)
-      operationId: bytebase.v1.WorksheetService.SearchWorksheets
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.SearchWorksheetsRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.SearchWorksheetsResponse'
-  /bytebase.v1.WorksheetService/UpdateWorksheet:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: UpdateWorksheet
-      description: |-
-        Update a worksheet.
-         The users can access this method if,
-         - they are the creator of the worksheet;
-         - they have bb.worksheets.manage permission on the workspace;
-         - the sheet is shared with them with PROJECT_WRITE visibility, and they have bb.projects.get permission on the project.
-         Permissions required: bb.worksheets.manage (or creator, or project member for PROJECT_WRITE worksheets)
-      operationId: bytebase.v1.WorksheetService.UpdateWorksheet
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.UpdateWorksheetRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.Worksheet'
-  /bytebase.v1.WorksheetService/UpdateWorksheetOrganizer:
-    post:
-      tags:
-        - bytebase.v1.WorksheetService
-      summary: UpdateWorksheetOrganizer
-      description: |-
-        Update the organizer of a worksheet.
-         The access is the same as UpdateWorksheet method.
-         Permissions required: bb.worksheets.get (or creator, or project member for shared worksheets)
-      operationId: bytebase.v1.WorksheetService.UpdateWorksheetOrganizer
-      parameters:
-        - name: Connect-Protocol-Version
-          in: header
-          required: true
-          schema:
-            $ref: '#/components/schemas/connect-protocol-version'
-        - name: Connect-Timeout-Ms
-          in: header
-          schema:
-            $ref: '#/components/schemas/connect-timeout-header'
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/bytebase.v1.UpdateWorksheetOrganizerRequest'
-        required: true
-      responses:
-        default:
-          description: Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/connect.error'
-        "200":
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/bytebase.v1.WorksheetOrganizer'
   /bytebase.v1.WorkspaceService/DeleteWorkspace:
     post:
       tags:
@@ -7718,6 +8194,47 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ListWorkspacesResponse'
+  /bytebase.v1.WorkspaceService/RotateDirectorySyncToken:
+    post:
+      tags:
+        - bytebase.v1.WorkspaceService
+      summary: RotateDirectorySyncToken
+      description: |-
+        Mints a new directory sync (SCIM) token, immediately invalidating the
+         previous one. The plaintext token is returned exactly once and cannot be
+         retrieved afterwards; only its hash is stored. Callers that lose it must
+         rotate again and update their identity provider.
+         Permissions required: bb.workspaces.rotateDirectorySyncToken
+      operationId: bytebase.v1.WorkspaceService.RotateDirectorySyncToken
+      parameters:
+        - name: Connect-Protocol-Version
+          in: header
+          required: true
+          schema:
+            $ref: '#/components/schemas/connect-protocol-version'
+        - name: Connect-Timeout-Ms
+          in: header
+          schema:
+            $ref: '#/components/schemas/connect-timeout-header'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.RotateDirectorySyncTokenRequest'
+        required: true
+      responses:
+        default:
+          description: Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/connect.error'
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.RotateDirectorySyncTokenResponse'
   /bytebase.v1.WorkspaceService/SetIamPolicy:
     post:
       tags:
@@ -8000,7 +8517,7 @@ components:
               title: targets
               description: |-
                 The target databases for this access grant.
-                 Format: instances/{instance}/databases/{database}
+                 Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
             query:
               type: string
               title: query
@@ -8022,6 +8539,14 @@ components:
               type: boolean
               title: export
               description: Whether export the query result.
+            schema:
+              type: string
+              title: schema
+              description: The default schema to execute the query.
+            container:
+              type: string
+              title: container
+              description: The container name to execute the query against, used for CosmosDB only.
         - oneOf:
             - type: object
               properties:
@@ -8093,22 +8618,10 @@ components:
           type: string
           title: git_commit
           description: The git commit hash of the build.
-        readonly:
-          type: boolean
-          title: readonly
-          description: Whether the Bytebase instance is running in read-only mode.
         saas:
           type: boolean
           title: saas
           description: Whether the Bytebase instance is running in SaaS mode where some features cannot be edited by users.
-        host:
-          type: string
-          title: host
-          description: The host address of the Bytebase instance.
-        port:
-          type: string
-          title: port
-          description: The port number of the Bytebase instance.
         externalUrl:
           type: string
           title: external_url
@@ -8129,15 +8642,6 @@ components:
             type: string
           title: unlicensed_features
           description: List of features that are not licensed.
-        docker:
-          type: boolean
-          title: docker
-          description: Whether the Bytebase instance is running in Docker.
-        activatedUserCount:
-          type: integer
-          title: activated_user_count
-          format: int32
-          description: The number of activated users.
         activatedInstanceCount:
           type: integer
           title: activated_instance_count
@@ -8148,10 +8652,6 @@ components:
           title: total_instance_count
           format: int32
           description: The total number of database instances.
-        enableSample:
-          type: boolean
-          title: enable_sample
-          description: Whether sample data setup is enabled.
         externalUrlFromFlag:
           type: boolean
           title: external_url_from_flag
@@ -8161,9 +8661,6 @@ components:
           title: replica_count
           format: int32
           description: The number of active replicas (servers sharing the same database).
-        restriction:
-          title: restriction
-          $ref: '#/components/schemas/bytebase.v1.Restriction'
         defaultProject:
           type: string
           title: default_project
@@ -8180,6 +8677,14 @@ components:
           title: active_vcs_user_count
           format: int32
           description: The number of active VCS users seen in the active window.
+        sample:
+          title: sample
+          description: Sample setup availability and provisioned resources.
+          $ref: '#/components/schemas/bytebase.v1.SampleInfo'
+        mcpSetting:
+          title: mcp_setting
+          description: The MCP (Model Context Protocol) setting in the current workspace.
+          $ref: '#/components/schemas/bytebase.v1.MCPSetting'
       title: ActuatorInfo
       additionalProperties: false
       description: |-
@@ -8193,7 +8698,7 @@ components:
           title: name
           description: |-
             The name of the instance to add a data source to.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         dataSource:
           title: data_source
           description: |-
@@ -8229,7 +8734,8 @@ components:
           title: name
           description: |-
             The name is the instance name to execute the query against.
-             Format: instances/{instance}/databases/{databaseName}
+             Format: instances/{instance}/databases/{databaseName} or
+             projects/{project}/instances/{instance}/databases/{databaseName}
         statement:
           type: string
           title: statement
@@ -8670,6 +9176,16 @@ components:
           description: The comment explaining the approval decision.
       title: ApproveIssueRequest
       additionalProperties: false
+    bytebase.v1.AuditBehavior:
+      type: string
+      title: AuditBehavior
+      enum:
+        - AUDIT_BEHAVIOR_UNSPECIFIED
+        - SENSITIVE
+        - OMIT
+      description: |-
+        What an audit payload may carry for a field. One enum rather than a bool per
+         behavior, because a field has exactly one classification.
     bytebase.v1.AuditData:
       type: object
       properties:
@@ -8741,6 +9257,13 @@ components:
           title: request_metadata
           description: Metadata about the request context.
           $ref: '#/components/schemas/bytebase.v1.RequestMetadata'
+        mcpDelegation:
+          title: mcp_delegation
+          description: |-
+            MCP delegation provenance. Present exactly when the audited call arrived
+             through the MCP server's delegated credential; never set for public API
+             calls. Presence of this message is the MCP-origin marker.
+          $ref: '#/components/schemas/bytebase.v1.MCPDelegation'
       title: AuditLog
       additionalProperties: false
       description: Audit log entry recording system activity or API call.
@@ -8766,6 +9289,49 @@ components:
         - IAM
         - CUSTOM
       description: Authorization method for RPC calls.
+    bytebase.v1.AuthenticationInfo:
+      type: object
+      properties:
+        workspace:
+          type: string
+          title: workspace
+          description: |-
+            The workspace used for authentication, when one can be resolved.
+             Format: workspaces/{workspace}
+        restriction:
+          title: restriction
+          description: The effective authentication restrictions.
+          $ref: '#/components/schemas/bytebase.v1.Restriction'
+        identityProviders:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.LoginIdentityProvider'
+          title: identity_providers
+          description: The identity providers the login page renders, in display order.
+      title: AuthenticationInfo
+      additionalProperties: false
+    bytebase.v1.AuthorizationRequest:
+      type: object
+      properties:
+        endpoint:
+          type: string
+          title: endpoint
+          description: |-
+            The OAuth2 auth_url, or the authorization endpoint from the OIDC issuer's
+             discovery document.
+        clientId:
+          type: string
+          title: client_id
+          description: The OAuth2 or OIDC client identifier.
+        scopes:
+          type: array
+          items:
+            type: string
+          title: scopes
+          description: The scopes to request.
+      title: AuthorizationRequest
+      additionalProperties: false
+      description: AuthorizationRequest is what a browser needs to start an SSO redirect.
     bytebase.v1.BatchCancelTaskRunsRequest:
       type: object
       properties:
@@ -8798,7 +9364,7 @@ components:
           title: parent
           description: |-
             The parent resource shared by all revisions being created.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         requests:
           type: array
           items:
@@ -8902,7 +9468,8 @@ components:
           description: |-
             The parent resource shared by all databases being retrieved.
              - projects/{project}: batch get databases in a project;
-             - instances/{instances}: batch get databases in a instance;
+             - instances/{instance}: batch get databases in an instance;
+             - projects/{project}/instances/{instance}: batch get databases in a project instance;
              Use "-" as wildcard to batch get databases across parent.
         names:
           type: array
@@ -8920,7 +9487,7 @@ components:
           items:
             $ref: '#/components/schemas/bytebase.v1.Database'
           title: databases
-          description: The databases from the specified request.
+          description: One database per requested name, in the same order as `names`.
       title: BatchGetDatabasesResponse
       additionalProperties: false
     bytebase.v1.BatchGetGroupsRequest:
@@ -8945,7 +9512,7 @@ components:
           items:
             $ref: '#/components/schemas/bytebase.v1.Group'
           title: groups
-          description: The groups from the specified request.
+          description: One group per requested name, in the same order as `names`.
       title: BatchGetGroupsResponse
       additionalProperties: false
       description: Response message for batch getting groups.
@@ -8970,7 +9537,7 @@ components:
           items:
             $ref: '#/components/schemas/bytebase.v1.Project'
           title: projects
-          description: The projects from the specified request.
+          description: One project per requested name, in the same order as `names`.
       title: BatchGetProjectsResponse
       additionalProperties: false
     bytebase.v1.BatchGetUsersRequest:
@@ -8994,7 +9561,7 @@ components:
           items:
             $ref: '#/components/schemas/bytebase.v1.User'
           title: users
-          description: The users from the specified request.
+          description: One user per requested name, in the same order as `names`.
       title: BatchGetUsersResponse
       additionalProperties: false
     bytebase.v1.BatchParseRequest:
@@ -9090,7 +9657,7 @@ components:
           title: parent
           description: |-
             The parent resource shared by all databases being updated.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
              If the operation spans parents, a dash (-) may be accepted as a wildcard.
         names:
           type: array
@@ -9107,6 +9674,15 @@ components:
     bytebase.v1.BatchSyncInstancesRequest:
       type: object
       properties:
+        parent:
+          type:
+            - string
+            - "null"
+          title: parent
+          description: |-
+            The parent, which owns this collection of instances.
+             Format: projects/{project}. If omitted, all targets must be workspace
+             instances; otherwise, every target must belong to this project collection.
         requests:
           type: array
           items:
@@ -9129,7 +9705,7 @@ components:
           title: parent
           description: |-
             The parent resource shared by all databases being updated.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
              If the operation spans parents, a dash (-) may be accepted as a wildcard.
              We only support updating the project of databases for now.
         requests:
@@ -9156,6 +9732,15 @@ components:
     bytebase.v1.BatchUpdateInstancesRequest:
       type: object
       properties:
+        parent:
+          type:
+            - string
+            - "null"
+          title: parent
+          description: |-
+            The parent, which owns this collection of instances.
+             Format: projects/{project}. If omitted, all targets must be workspace
+             instances; otherwise, every target must belong to this project collection.
         requests:
           type: array
           items:
@@ -9207,26 +9792,6 @@ components:
       type: object
       title: BatchUpdateIssuesStatusResponse
       additionalProperties: false
-    bytebase.v1.BatchUpdateWorksheetOrganizerRequest:
-      type: object
-      properties:
-        requests:
-          type: array
-          items:
-            $ref: '#/components/schemas/bytebase.v1.UpdateWorksheetOrganizerRequest'
-          title: requests
-      title: BatchUpdateWorksheetOrganizerRequest
-      additionalProperties: false
-    bytebase.v1.BatchUpdateWorksheetOrganizerResponse:
-      type: object
-      properties:
-        worksheetOrganizers:
-          type: array
-          items:
-            $ref: '#/components/schemas/bytebase.v1.WorksheetOrganizer'
-          title: worksheet_organizers
-      title: BatchUpdateWorksheetOrganizerResponse
-      additionalProperties: false
     bytebase.v1.BillingInterval:
       type: string
       title: BillingInterval
@@ -9263,7 +9828,7 @@ components:
              The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
 
              Support variables:
-             resource.database: the database full name in "instances/{instance}/databases/{database}" format, used by any role with SQL Editor read (e.g. "roles/sqlEditorUser", "roles/sqlEditorReadUser") or write (bb.sql.ddl / bb.sql.dml) access, support "==" operator.
+             resource.database: the canonical database full name in "instances/{instance}/databases/{database}" or "projects/{project}/instances/{instance}/databases/{database}" format, used by any role with SQL Editor read (e.g. "roles/sqlEditorUser", "roles/sqlEditorReadUser") or write (bb.sql.ddl / bb.sql.dml) access, support "==" operator.
              resource.schema_name: the schema name, used by any role with SQL Editor read or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
              resource.table_name: the table name, used by any role with SQL Editor read or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
              resource.environment_id: the environment to allow the DDL/DML operation in the SQL Editor, only works for the role with bb.sql.ddl or bb.sql.dml permissions. Support "in" operator.
@@ -9386,13 +9951,33 @@ components:
           description: Optional free-form comment. Max 500 chars (Stripe limit).
       title: CancelPurchaseRequest
       additionalProperties: false
+    bytebase.v1.ChangePasswordRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+        newPassword:
+          type: string
+          title: new_password
+          description: |
+            string.max_bytes = 72
+        credential:
+          title: credential
+          $ref: '#/components/schemas/bytebase.v1.CredentialProof'
+      title: ChangePasswordRequest
+      required:
+        - credential
+      additionalProperties: false
     bytebase.v1.Changelog:
       type: object
       properties:
         name:
           type: string
           title: name
-          description: 'Format: instances/{instance}/databases/{database}/changelogs/{changelog}'
+          description: 'Format: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}'
         createTime:
           title: create_time
           $ref: '#/components/schemas/google.protobuf.Timestamp'
@@ -9471,6 +10056,7 @@ components:
              Format:
              projects/{project}/databaseGroups/{databaseGroup}
              instances/{instance}/databases/{database}
+             projects/{project}/instances/{instance}/databases/{database}
         customRules:
           type: string
           title: custom_rules
@@ -9521,7 +10107,8 @@ components:
           title: target
           description: |-
             The target that the check is performed on.
-             Should be a database. Format: instances/{instance}/databases/{database}
+             Should be a database.
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         advices:
           type: array
           items:
@@ -9752,6 +10339,35 @@ components:
           description: The comment describing the composite type.
       title: CompositeTypeMetadata
       additionalProperties: false
+    bytebase.v1.ConfirmRecoveryCodesRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+        pendingVersion:
+          title: pending_version
+          description: |-
+            The pending_version of the codes being confirmed. Confirming promotes
+             exactly the set this version identifies, or nothing.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        credential:
+          title: credential
+          $ref: '#/components/schemas/bytebase.v1.CredentialProof'
+        otpCode:
+          type: string
+          title: otp_code
+          maxLength: 64
+          description: |-
+            Required for first-time enrollment, rejected otherwise. A *fresh* code,
+             not the one EnableMFA took.
+      title: ConfirmRecoveryCodesRequest
+      required:
+        - pendingVersion
+        - credential
+      additionalProperties: false
     bytebase.v1.CreateAccessGrantRequest:
       type: object
       properties:
@@ -9837,6 +10453,15 @@ components:
     bytebase.v1.CreateInstanceRequest:
       type: object
       properties:
+        parent:
+          type:
+            - string
+            - "null"
+          title: parent
+          description: |-
+            The parent, which owns this collection of instances.
+             Format: projects/{project}. If omitted, the instance is created in the
+             workspace collection.
         instance:
           title: instance
           description: The instance to create.
@@ -9854,12 +10479,6 @@ components:
           type: boolean
           title: validate_only
           description: Validate only also tests the data source connection.
-        initialDatabaseProject:
-          type: string
-          title: initial_database_project
-          description: |-
-            The project to assign newly discovered databases to during initial sync.
-             Format: projects/{project}
       title: CreateInstanceRequest
       additionalProperties: false
     bytebase.v1.CreateIssueCommentRequest:
@@ -9917,8 +10536,6 @@ components:
             The parent resource where this instance will be created.
              Workspace resource name: workspaces/{workspace-id}.
              Environment resource name: environments/environment-id.
-             Instance resource name: instances/instance-id.
-             Database resource name: instances/instance-id/databases/database-name.
         policy:
           title: policy
           description: The policy to create.
@@ -10005,7 +10622,7 @@ components:
         parent:
           type: string
           title: parent
-          description: 'Format: instances/{instance}/databases/{database}'
+          description: 'Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}'
         revision:
           title: revision
           description: The revision to create.
@@ -10050,6 +10667,21 @@ components:
              If unspecified, all stages are created.
              If set to "", no stages are created.
       title: CreateRolloutRequest
+      additionalProperties: false
+    bytebase.v1.CreateSavedQueryRequest:
+      type: object
+      properties:
+        parent:
+          type: string
+          title: parent
+          description: |-
+            The project to create the saved query in.
+             Format: projects/{project}
+        savedQuery:
+          title: saved_query
+          description: The saved query to create.
+          $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+      title: CreateSavedQueryRequest
       additionalProperties: false
     bytebase.v1.CreateServiceAccountRequest:
       type: object
@@ -10121,21 +10753,58 @@ components:
       title: CreateWorkloadIdentityRequest
       additionalProperties: false
       description: Request message for creating a workload identity.
-    bytebase.v1.CreateWorksheetRequest:
+    bytebase.v1.CredentialProof:
       type: object
-      properties:
-        parent:
-          type: string
-          title: parent
-          description: |-
-            The parent resource where this worksheet will be created.
-             Format: projects/{project}
-        worksheet:
-          title: worksheet
-          description: The worksheet to create.
-          $ref: '#/components/schemas/bytebase.v1.Worksheet'
-      title: CreateWorksheetRequest
+      oneOf:
+        - type: object
+          properties:
+            currentPassword:
+              type: string
+              title: current_password
+              description: |
+                The account's current password. Refused by a factor-touching method
+                 while a live MFA factor exists.
+                string.max_bytes = 72
+          title: current_password
+          required:
+            - currentPassword
+        - type: object
+          properties:
+            emailCode:
+              type: string
+              title: email_code
+              maxLength: 64
+              description: |-
+                A one-time code from RequestReauthCode. Bytebase Cloud only, and only
+                 while the account has no live MFA factor.
+          title: email_code
+          required:
+            - emailCode
+        - type: object
+          properties:
+            otpCode:
+              type: string
+              title: otp_code
+              maxLength: 64
+              description: A live code from the account's enrolled TOTP authenticator.
+          title: otp_code
+          required:
+            - otpCode
+        - type: object
+          properties:
+            recoveryCode:
+              type: string
+              title: recovery_code
+              maxLength: 64
+              description: A single-use MFA recovery code.
+          title: recovery_code
+          required:
+            - recoveryCode
+      title: CredentialProof
       additionalProperties: false
+      description: |-
+        One proof that the caller currently controls a credential on the account.
+         Exactly one field must be set; enforced in the handler.
     bytebase.v1.DataClassificationSetting:
       type: object
       properties:
@@ -10414,10 +11083,6 @@ components:
             redisType:
               title: redis_type
               $ref: '#/components/schemas/bytebase.v1.DataSource.RedisType'
-            cluster:
-              type: string
-              title: cluster
-              description: Cluster is the cluster name for the data source. Used by CockroachDB.
             extraConnectionParameters:
               type: object
               title: extra_connection_parameters
@@ -10706,7 +11371,7 @@ components:
           title: name
           description: |-
             The name of the database.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
              {database} is the database name in the instance.
         state:
           title: state
@@ -10790,7 +11455,7 @@ components:
           title: name
           description: |-
             The name of the database catalog.
-             Format: instances/{instance}/databases/{database}/catalog
+             Format: instances/{instance}/databases/{database}/catalog or projects/{project}/instances/{instance}/databases/{database}/catalog
         schemas:
           type: array
           items:
@@ -10876,7 +11541,7 @@ components:
           description: |-
             The database metadata name.
 
-             Format: instances/{instance}/databases/{database}/metadata
+             Format: instances/{instance}/databases/{database}/metadata or projects/{project}/instances/{instance}/databases/{database}/metadata
         schemas:
           type: array
           items:
@@ -10941,11 +11606,6 @@ components:
       title: DatabaseSchema
       additionalProperties: false
       description: DatabaseSchema is the metadata for databases.
-    bytebase.v1.DeleteCacheRequest:
-      type: object
-      title: DeleteCacheRequest
-      additionalProperties: false
-      description: Request message for deleting cache.
     bytebase.v1.DeleteDatabaseGroupRequest:
       type: object
       properties:
@@ -10989,11 +11649,14 @@ components:
           title: name
           description: |-
             The name of the instance to delete.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         force:
           type: boolean
           title: force
-          description: If set to true, any databases and sheets from this project will also be moved to default project, and all open issues will be closed.
+          description: |-
+            If set to true, a workspace instance's databases are moved to the default
+             project before the instance is soft-deleted. Project instances reject this
+             option because their databases must remain in the owning project.
         purge:
           type: boolean
           title: purge
@@ -11015,8 +11678,6 @@ components:
              Format: {resource name}/policies/{policy type}
              Workspace resource name: workspaces/{workspace-id}.
              Environment resource name: environments/environment-id.
-             Instance resource name: instances/instance-id.
-             Database resource name: instances/instance-id/databases/database-name.
       title: DeletePolicyRequest
       additionalProperties: false
     bytebase.v1.DeleteProjectRequest:
@@ -11070,7 +11731,7 @@ components:
           title: name
           description: |-
             The name of the revision to delete.
-             Format: instances/{instance}/databases/{database}/revisions/{revision}
+             Format: instances/{instance}/databases/{database}/revisions/{revision} or projects/{project}/instances/{instance}/databases/{database}/revisions/{revision}
       title: DeleteRevisionRequest
       additionalProperties: false
     bytebase.v1.DeleteRoleRequest:
@@ -11083,6 +11744,15 @@ components:
             The name of the role to delete.
              Format: roles/{role}
       title: DeleteRoleRequest
+      additionalProperties: false
+    bytebase.v1.DeleteSavedQueryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: 'Format: projects/{project}/savedQueries/{savedQuery}'
+      title: DeleteSavedQueryRequest
       additionalProperties: false
     bytebase.v1.DeleteServiceAccountRequest:
       type: object
@@ -11119,17 +11789,6 @@ components:
       title: DeleteWorkloadIdentityRequest
       additionalProperties: false
       description: Request message for deleting a workload identity.
-    bytebase.v1.DeleteWorksheetRequest:
-      type: object
-      properties:
-        name:
-          type: string
-          title: name
-          description: |-
-            The name of the worksheet to delete.
-             Format: projects/{project}/worksheets/{worksheet}
-      title: DeleteWorksheetRequest
-      additionalProperties: false
     bytebase.v1.DeleteWorkspaceRequest:
       type: object
       properties:
@@ -11178,7 +11837,7 @@ components:
           title: name
           description: |-
             The database whose current schema is the diff source.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         targetMetadata:
           title: target_metadata
           description: |-
@@ -11209,8 +11868,8 @@ components:
               description: |-
                 The name of the database or changelog.
                  Format:
-                 database: instances/{instance}/databases/{database}
-                 changelog: instances/{instance}/databases/{database}/changelogs/{changelog}
+                 database: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
+                 changelog: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
         - oneOf:
             - type: object
               properties:
@@ -11220,7 +11879,7 @@ components:
                   description: |-
                     The resource name of the changelog
                      Format:
-                     instances/{instance}/databases/{database}/changelogs/{changelog}
+                     instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
               title: changelog
               required:
                 - changelog
@@ -11294,6 +11953,24 @@ components:
       title: DimensionalConfig
       additionalProperties: false
       description: DimensionalConfig defines dimensional and constraint parameters for spatial indexes.
+    bytebase.v1.DisableMFARequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: |-
+            Format: users/{email}. The caller's own, or another user's with
+             bb.users.update.
+        credential:
+          title: credential
+          description: |-
+            Required for a self-service call against a live factor, and then only
+             otp_code or recovery_code. Unused on an admin-assisted call.
+          $ref: '#/components/schemas/bytebase.v1.CredentialProof'
+      title: DisableMFARequest
+      additionalProperties: false
     bytebase.v1.EmailSetting:
       type: object
       allOf:
@@ -11365,6 +12042,33 @@ components:
       enum:
         - TYPE_UNSPECIFIED
         - SMTP
+    bytebase.v1.EnableMFARequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+        otpCode:
+          type: string
+          title: otp_code
+          maxLength: 64
+          description: A code from the authenticator the pending secret was just added to.
+        pendingVersion:
+          title: pending_version
+          description: The pending_version this enrollment was minted with.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        credential:
+          title: credential
+          description: |-
+            Proof of the *existing* factor, not the new device above. Required for a
+             rotation, and for first-time enrollment on an account with a password.
+          $ref: '#/components/schemas/bytebase.v1.CredentialProof'
+      title: EnableMFARequest
+      required:
+        - pendingVersion
+      additionalProperties: false
     bytebase.v1.Engine:
       type: string
       title: Engine
@@ -11510,10 +12214,12 @@ components:
         token:
           type: string
           title: token
+          maxLength: 65536
           description: External OIDC token (JWT) from CI/CD platform.
         email:
           type: string
           title: email
+          maxLength: 254
           description: |-
             Workload Identity email for identifying which identity to authenticate as.
              Format: {name}@workload.bytebase.com
@@ -11607,10 +12313,8 @@ components:
           title: name
           description: |-
             The name is the resource name to execute the export against.
-             Format: instances/{instance}/databases/{database}
-             Format: instances/{instance}
-             Format: projects/{project}/plans/{plan}/rollout
-             Format: projects/{project}/plans/{plan}/rollout/stages/{stage}
+             Format: instances/{instance}/databases/{database} or
+             projects/{project}/instances/{instance}/databases/{database}
         statement:
           type: string
           title: statement
@@ -11651,6 +12355,14 @@ components:
           description: |-
             The default schema to search objects. Equals to the current schema in
              Oracle and search path in Postgres.
+        container:
+          type:
+            - string
+            - "null"
+          title: container
+          description: |-
+            Container is the container name to execute the query against, used for
+             CosmosDB only.
       title: ExportRequest
       additionalProperties: false
     bytebase.v1.ExportResponse:
@@ -11673,6 +12385,15 @@ components:
     bytebase.v1.ExportVCSProviderUsersRequest:
       type: object
       title: ExportVCSProviderUsersRequest
+      additionalProperties: false
+    bytebase.v1.ExportVCSProviderUsersResponse:
+      type: object
+      properties:
+        content:
+          type: string
+          title: content
+          format: byte
+      title: ExportVCSProviderUsersResponse
       additionalProperties: false
     bytebase.v1.ExtensionMetadata:
       type: object
@@ -11873,18 +12594,22 @@ components:
       additionalProperties: false
     bytebase.v1.GetActuatorInfoRequest:
       type: object
-      properties:
-        name:
-          type: string
-          title: name
-          description: |-
-            Optional. The workspace to scope the response to.
-             Format: workspaces/{workspace}
-             When unset, the workspace is resolved from the request context (self-hosted)
-             or no workspace-scoped fields are returned (SaaS).
       title: GetActuatorInfoRequest
       additionalProperties: false
       description: Request message for getting actuator information.
+    bytebase.v1.GetAuthenticationInfoRequest:
+      type: object
+      properties:
+        workspace:
+          type: string
+          title: workspace
+          description: |-
+            Optional. The workspace whose authentication policy should be returned.
+             Format: workspaces/{workspace}
+             When unset, self-hosted resolves the singleton workspace and SaaS uses
+             the deployment-level defaults.
+      title: GetAuthenticationInfoRequest
+      additionalProperties: false
     bytebase.v1.GetChangelogRequest:
       type: object
       properties:
@@ -11893,7 +12618,7 @@ components:
           title: name
           description: |-
             The name of the changelog to retrieve.
-             Format: instances/{instance}/databases/{database}/changelogs/{changelog}
+             Format: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
         view:
           title: view
           $ref: '#/components/schemas/bytebase.v1.ChangelogView'
@@ -11907,7 +12632,7 @@ components:
           title: name
           description: |-
             The name of the database catalog to retrieve.
-             Format: instances/{instance}/databases/{database}/catalog
+             Format: instances/{instance}/databases/{database}/catalog or projects/{project}/instances/{instance}/databases/{database}/catalog
       title: GetDatabaseCatalogRequest
       additionalProperties: false
       description: Request message for getting a database catalog.
@@ -11935,7 +12660,7 @@ components:
           title: name
           description: |-
             The name of the database to retrieve metadata.
-             Format: instances/{instance}/databases/{database}/metadata
+             Format: instances/{instance}/databases/{database}/metadata or projects/{project}/instances/{instance}/databases/{database}/metadata
         filter:
           type: string
           title: filter
@@ -11973,7 +12698,7 @@ components:
           title: name
           description: |-
             The name of the database to retrieve.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
       title: GetDatabaseRequest
       additionalProperties: false
     bytebase.v1.GetDatabaseSDLSchemaRequest:
@@ -11984,7 +12709,7 @@ components:
           title: name
           description: |-
             The name of the database to retrieve SDL schema.
-             Format: instances/{instance}/databases/{database}/sdlSchema
+             Format: instances/{instance}/databases/{database}/sdlSchema or projects/{project}/instances/{instance}/databases/{database}/sdlSchema
         format:
           title: format
           description: The format of the SDL schema output.
@@ -12007,7 +12732,7 @@ components:
           title: name
           description: |-
             The name of the database to retrieve schema.
-             Format: instances/{instance}/databases/{database}/schema
+             Format: instances/{instance}/databases/{database}/schema or projects/{project}/instances/{instance}/databases/{database}/schema
       title: GetDatabaseSchemaRequest
       additionalProperties: false
     bytebase.v1.GetGroupRequest:
@@ -12054,7 +12779,7 @@ components:
           title: name
           description: |-
             The name of the instance to retrieve.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
       title: GetInstanceRequest
       additionalProperties: false
     bytebase.v1.GetIssueRequest:
@@ -12159,7 +12884,7 @@ components:
           title: name
           description: |-
             The name of the revision.
-             Format: instances/{instance}/databases/{database}/revisions/{revision}
+             Format: instances/{instance}/databases/{database}/revisions/{revision} or projects/{project}/instances/{instance}/databases/{database}/revisions/{revision}
       title: GetRevisionRequest
       additionalProperties: false
     bytebase.v1.GetRoleRequest:
@@ -12185,6 +12910,24 @@ components:
              Format: projects/{project}/plans/{plan}/rollout
       title: GetRolloutRequest
       additionalProperties: false
+    bytebase.v1.GetSavedQueryPolicyRequest:
+      type: object
+      properties:
+        resource:
+          type: string
+          title: resource
+          description: 'Format: projects/{project}/savedQueries/{savedQuery}'
+      title: GetSavedQueryPolicyRequest
+      additionalProperties: false
+    bytebase.v1.GetSavedQueryRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: 'Format: projects/{project}/savedQueries/{savedQuery}'
+      title: GetSavedQueryRequest
+      additionalProperties: false
     bytebase.v1.GetSchemaStringRequest:
       type: object
       properties:
@@ -12193,7 +12936,7 @@ components:
           title: name
           description: |-
             The name of the database.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         type:
           title: type
           $ref: '#/components/schemas/bytebase.v1.GetSchemaStringRequest.ObjectType'
@@ -12334,17 +13077,6 @@ components:
       title: GetWorkloadIdentityRequest
       additionalProperties: false
       description: Request message for getting a workload identity.
-    bytebase.v1.GetWorksheetRequest:
-      type: object
-      properties:
-        name:
-          type: string
-          title: name
-          description: |-
-            The name of the worksheet to retrieve.
-             Format: projects/{project}/worksheets/{worksheet}
-      title: GetWorksheetRequest
-      additionalProperties: false
     bytebase.v1.GetWorkspaceRequest:
       type: object
       properties:
@@ -12447,9 +13179,10 @@ components:
           type: string
           title: etag
           description: |-
-            The current etag of the policy.
-             If an etag is provided and does not match the current etag of the policy,
-             the call will be blocked and an ABORTED error will be returned.
+            The current etag of the policy, returned by GetIamPolicy and SetIamPolicy.
+             Sending it back on SetIamPolicy makes the write conditional: if the policy
+             changed since the read, the call returns ABORTED. Omitting it applies the
+             write unconditionally, overwriting any concurrent change (AIP-154).
       title: IamPolicy
       additionalProperties: false
       description: IAM policy that binds members to roles.
@@ -12651,7 +13384,7 @@ components:
           title: name
           description: |-
             The name of the instance.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         state:
           title: state
           description: The lifecycle state of the instance.
@@ -12763,7 +13496,7 @@ components:
           title: name
           description: |-
             The name of the instance.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         environment:
           type:
             - string
@@ -12782,7 +13515,7 @@ components:
           title: name
           description: |-
             The name of the role.
-             Format: instances/{instance}/roles/{role}
+             Format: instances/{instance}/roles/{role} or projects/{project}/instances/{instance}/roles/{role}
              The role name is the unique name for the role.
         roleName:
           type: string
@@ -12931,7 +13664,6 @@ components:
         - TYPE_UNSPECIFIED
         - DATABASE_CHANGE
         - ROLE_GRANT
-        - DATABASE_EXPORT
         - ACCESS_GRANT
       description: The type of issue.
     bytebase.v1.IssueComment:
@@ -13196,6 +13928,19 @@ components:
         - SECURITY_PROTOCOL_UNSPECIFIED
         - START_TLS
         - LDAPS
+    bytebase.v1.LDAPIdentityProviderTestRequestContext:
+      type: object
+      properties:
+        username:
+          type: string
+          title: username
+          description: The username of a directory user, substituted into the user filter.
+        password:
+          type: string
+          title: password
+          description: The password of the directory user.
+      title: LDAPIdentityProviderTestRequestContext
+      additionalProperties: false
     bytebase.v1.Label:
       type: object
       properties:
@@ -13305,7 +14050,7 @@ components:
           title: parent
           description: |-
             The parent of the changelogs.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         pageSize:
           type: integer
           title: page_size
@@ -13335,12 +14080,13 @@ components:
 
              Supported filter:
              - status: the changelog status, support "==" operation. check Changelog.Status for available values.
-             - create_time: the changelog create time in "2006-01-02T15:04:05Z07:00" format, support ">=" or "<=" operator.
+             - has_schema_snapshot: filters to changelogs with a schema snapshot; only "has_schema_snapshot == true" is supported.
+             - create_time: the changelog create time in RFC 3339 format, supports ">=", "<=", or "<" operator.
 
              Example:
              status == "DONE"
-             status == "FAILED" && type == "SDL"
-             create_time >= "2024-01-01T00:00:00Z" && create_time <= "2024-01-02T00:00:00Z"
+             status == "FAILED"
+             has_schema_snapshot == true && create_time < "2024-01-02T00:00:00Z"
       title: ListChangelogsRequest
       additionalProperties: false
     bytebase.v1.ListChangelogsResponse:
@@ -13397,7 +14143,8 @@ components:
           description: |-
             - projects/{project}: list databases in a project, require "bb.projects.get" permission.
              - workspaces/{id}: list databases in the workspace, require "bb.databases.list" permission.
-             - instances/{instances}: list databases in a instance, require "bb.instances.get" permission
+             - instances/{instance}: list databases in an instance, require "bb.instances.get" permission.
+             - projects/{project}/instances/{instance}: list databases in a project instance, require "bb.instances.get" permission.
         pageSize:
           type: integer
           title: page_size
@@ -13427,7 +14174,7 @@ components:
              - environment: the environment full name in "environments/{id}" format, support "==" operator.
              - name: the database name, support ".contains()" operator.
              - project: the project full name in "projects/{id}" format, support "==" operator.
-             - instance: the instance full name in "instances/{id}" format, support "==" operator.
+             - instance: the instance full name in "instances/{id}" or "projects/{project}/instances/{id}" format, support "==" operator.
              - engine: the database engine, check Engine enum for values. Support "==", "in [xx]", "!(in [xx])" operator.
              - exclude_unassigned: should be "true" or "false", will not show unassigned databases if it's true, support "==" operator.
              - table: filter by the database table, support "==" and ".contains()" operator.
@@ -13438,6 +14185,7 @@ components:
              environment == "" (find databases which environment is not set)
              project == "projects/{project resource id}"
              instance == "instances/{instance resource id}"
+             instance == "projects/{project resource id}/instances/{instance resource id}"
              name.contains("database name")
              engine == "MYSQL"
              engine in ["MYSQL", "POSTGRES"]
@@ -13552,11 +14300,14 @@ components:
         parent:
           type: string
           title: parent
+          pattern: ^workspaces/[^/]+$
           description: |-
-            The parent workspace whose identity providers should be listed.
+            The parent workspace whose identity providers should be listed. It must be
+             the workspace the caller's credential belongs to.
              Format: workspaces/{workspace}
-             When unset, the workspace is resolved from the request context.
       title: ListIdentityProvidersRequest
+      required:
+        - parent
       additionalProperties: false
     bytebase.v1.ListIdentityProvidersResponse:
       type: object
@@ -13577,7 +14328,7 @@ components:
           title: name
           description: |-
             The name of the instance.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         instance:
           oneOf:
             - $ref: '#/components/schemas/bytebase.v1.Instance'
@@ -13605,7 +14356,7 @@ components:
           title: parent
           description: |-
             The parent, which owns this collection of roles.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         pageSize:
           type: integer
           title: page_size
@@ -13652,6 +14403,16 @@ components:
     bytebase.v1.ListInstancesRequest:
       type: object
       properties:
+        parent:
+          type:
+            - string
+            - "null"
+          title: parent
+          description: |-
+            The parent, which owns this collection of instances.
+             Format: projects/{project}. If omitted, only workspace instances are
+             returned. Wildcard project parents are not supported. When set, the
+             `project` filter must be omitted or match this parent.
         pageSize:
           type: integer
           title: page_size
@@ -13911,7 +14672,7 @@ components:
              - create_time: the plan create time in "2006-01-02T15:04:05Z07:00" format, support ">=" or "<=" operator.
              - has_rollout: whether the plan has rollout, support "==" operator, the value should be "true" or "false".
              - title: the plan title, support "==" operator for exact match and ".contains()" operator for case-insensitive substring match.
-             - spec_type: the plan spec config type, support "==" operator, the value should be "create_database_config", "change_database_config", or "export_data_config".
+             - spec_type: the plan spec config type, support "==" operator, the value should be "create_database_config" or "change_database_config".
              - state: the plan state, support "==" operator, the value should be "ACTIVE" or "DELETED".
 
              For example:
@@ -14207,7 +14968,7 @@ components:
           title: parent
           description: |-
             The parent of the revisions.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         pageSize:
           type: integer
           title: page_size
@@ -14304,7 +15065,7 @@ components:
 
              For example:
              update_time >= "2025-01-02T15:04:05Z07:00"
-             task_type in ["DATABASE_MIGRATE", "DATABASE_EXPORT"]
+             task_type in ["DATABASE_MIGRATE", "DATABASE_CREATE"]
       title: ListRolloutsRequest
       additionalProperties: false
     bytebase.v1.ListRolloutsResponse:
@@ -14323,6 +15084,68 @@ components:
             A token, which can be sent as `page_token` to retrieve the next page.
              If this field is omitted, there are no subsequent pages.
       title: ListRolloutsResponse
+      additionalProperties: false
+    bytebase.v1.ListSavedQueriesRequest:
+      type: object
+      properties:
+        parent:
+          type: string
+          title: parent
+          description: |-
+            The project to list saved queries in, or "projects/-" for every project.
+             Format: projects/{project}
+        filter:
+          type: string
+          title: filter
+          description: |-
+            Filter the result, in CEL. See https://github.com/google/cel-spec
+
+             Supported fields:
+             - creator: the creator in "users/{email}" format. Supports "==" and "!=".
+
+             For example:
+             creator == "users/alice@example.com"
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            The maximum number of saved queries to return. The service may return
+             fewer. Defaults to 10; values above 1000 are coerced to 1000.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            A page token from a previous ListSavedQueries call. Keep every other
+             parameter the same as the call that returned it.
+        orderBy:
+          type: string
+          title: order_by
+          description: |-
+            Sort the results, per https://google.aip.dev/132#ordering. Supported
+             fields: `update_time`, `create_time`, `title`; append " desc" for
+             descending, e.g. "update_time desc" for most recently modified first.
+             A modification is a title, content, database, or folder write; sharing
+             and stars do not count, and a never-modified saved query counts its
+             create time. Empty means `title` ascending. `resource_id` is always
+             appended as a final tiebreak so pages stay stable.
+      title: ListSavedQueriesRequest
+      additionalProperties: false
+    bytebase.v1.ListSavedQueriesResponse:
+      type: object
+      properties:
+        savedQueries:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+          title: saved_queries
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: |-
+            Pass to the next ListSavedQueries call to fetch the following page. Empty
+             on the last page.
+      title: ListSavedQueriesResponse
       additionalProperties: false
     bytebase.v1.ListServiceAccountsRequest:
       type: object
@@ -14419,6 +15242,24 @@ components:
             The parent, which owns this collection of taskRuns.
              Format: projects/{project}/plans/{plan}/rollout/stages/{stage}/tasks/{task}
              Use "projects/{project}/plans/{plan}/rollout/stages/-/tasks/-" to list all taskRuns from a rollout.
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            The maximum number of task runs to return. The service may return fewer
+             than this value.
+             If unspecified, at most 1000 task runs will be returned.
+             The maximum value is 1000; values above 1000 will be coerced to 1000.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            A page token, received from a previous `ListTaskRuns` call.
+             Provide this to retrieve the subsequent page.
+
+             When paginating, all other parameters provided to `ListTaskRuns` must match
+             the call that provided the page token.
       title: ListTaskRunsRequest
       additionalProperties: false
     bytebase.v1.ListTaskRunsResponse:
@@ -14430,6 +15271,12 @@ components:
             $ref: '#/components/schemas/bytebase.v1.TaskRun'
           title: task_runs
           description: The taskRuns from the specified request.
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: |-
+            A token, which can be sent as `page_token` to retrieve the next page.
+             If this field is omitted, there are no subsequent pages.
       title: ListTaskRunsResponse
       additionalProperties: false
     bytebase.v1.ListUsersRequest:
@@ -14569,67 +15416,6 @@ components:
       title: ListWorkloadIdentitiesResponse
       additionalProperties: false
       description: Response message for listing workload identities.
-    bytebase.v1.ListWorksheetsRequest:
-      type: object
-      properties:
-        parent:
-          type: string
-          title: parent
-          description: |-
-            The parent resource of the worksheets.
-             Format: projects/{project}
-             Use "projects/-" to list worksheets across all projects.
-        filter:
-          type: string
-          title: filter
-          description: |-
-            To filter the list result.
-             The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
-
-             Supported filter:
-             - creator: the worksheet creator in "users/{email}" format, support "==" and "!=" operator.
-
-             For example:
-             creator == "users/{email}"
-             creator != "users/{email}"
-        pageSize:
-          type: integer
-          title: page_size
-          format: int32
-          description: |-
-            The maximum number of worksheets to return. The service may return fewer than
-             this value.
-             If unspecified, at most 10 worksheets will be returned.
-             The maximum value is 1000; values above 1000 will be coerced to 1000.
-        pageToken:
-          type: string
-          title: page_token
-          description: |-
-            A page token, received from a previous `ListWorksheets` call.
-             Provide this to retrieve the subsequent page.
-
-             When paginating, all other parameters provided to `ListWorksheets` must match
-             the call that provided the page token.
-      title: ListWorksheetsRequest
-      additionalProperties: false
-    bytebase.v1.ListWorksheetsResponse:
-      type: object
-      properties:
-        worksheets:
-          type: array
-          items:
-            $ref: '#/components/schemas/bytebase.v1.Worksheet'
-          title: worksheets
-          description: The worksheets from the specified parent.
-        nextPageToken:
-          type: string
-          title: next_page_token
-          description: |-
-            A token to retrieve next page of worksheets.
-             Pass this value in the page_token field in the subsequent call to
-             `ListWorksheets` method to retrieve the next page of worksheets.
-      title: ListWorksheetsResponse
-      additionalProperties: false
     bytebase.v1.ListWorkspacesRequest:
       type: object
       title: ListWorkspacesRequest
@@ -14644,17 +15430,55 @@ components:
           title: workspaces
       title: ListWorkspacesResponse
       additionalProperties: false
+    bytebase.v1.LoginIdentityProvider:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: |-
+            The name of the identity provider.
+             Format: idps/{idp}
+        type:
+          title: type
+          description: The type of identity provider protocol.
+          $ref: '#/components/schemas/bytebase.v1.IdentityProviderType'
+        title:
+          type: string
+          title: title
+          description: The display title of the identity provider.
+        authorizationRequest:
+          title: authorization_request
+          description: |-
+            The parameters the browser needs to start the authorization redirect.
+             Set for OAUTH2 and OIDC, absent for LDAP, whose bind happens server-side.
+          $ref: '#/components/schemas/bytebase.v1.AuthorizationRequest'
+      title: LoginIdentityProvider
+      additionalProperties: false
+      description: |-
+        LoginIdentityProvider is an identity provider as the login page sees it.
+         Deliberately not a view of IdentityProvider: this message is served without
+         a credential, so every field it exposes is published by hand and no
+         provider configuration reaches it by default.
     bytebase.v1.LoginRequest:
       type: object
       properties:
         email:
           type: string
           title: email
-          description: User's email address.
+          maxLength: 254
+          description: |-
+            User's email address.
+             Bounded so an oversized identity is refused at the edge before any
+             handler runs; the login-attempt lockout keys rows by this value.
         password:
           type: string
           title: password
-          description: User's password for authentication.
+          description: |
+            User's password for authentication. Bounded for abuse only: LDAP
+             directories may accept passwords beyond bcrypt's 72-byte limit, and the
+             local-password path rejects longer inputs itself.
+            string.max_bytes = 512
         web:
           type: boolean
           title: web
@@ -14664,6 +15488,7 @@ components:
         idpName:
           type: string
           title: idp_name
+          maxLength: 256
           description: |-
             The name of the identity provider.
              Format: idps/{idp}
@@ -14676,24 +15501,28 @@ components:
             - string
             - "null"
           title: otp_code
+          maxLength: 64
           description: The otp_code is used to verify the user's identity by MFA.
         recoveryCode:
           type:
             - string
             - "null"
           title: recovery_code
+          maxLength: 64
           description: The recovery_code is used to recovery the user's identity with MFA.
         mfaTempToken:
           type:
             - string
             - "null"
           title: mfa_temp_token
+          maxLength: 4096
           description: The mfa_temp_token is used to verify the user's identity by MFA.
         emailCode:
           type:
             - string
             - "null"
           title: email_code
+          maxLength: 64
           description: |-
             6-digit code from email for passwordless login/signup.
              Pairs with `email`. Mutually exclusive with `password` and `idp_name`.
@@ -14702,6 +15531,7 @@ components:
             - string
             - "null"
           title: workspace
+          maxLength: 256
           description: |-
             Preferred workspace to land in after login. If the user is a member of this
              workspace, the token is issued for it; otherwise falls back to the default
@@ -14740,6 +15570,141 @@ components:
       title: LogoutRequest
       additionalProperties: false
       description: Request to logout current user session.
+    bytebase.v1.MCPDelegation:
+      type: object
+      properties:
+        scope:
+          type: string
+          title: scope
+          description: |-
+            The OAuth2 grant's consented scope, e.g. "mcp:read-only".
+             Empty when the grant recorded no scope.
+        resource:
+          type: string
+          title: resource
+          description: |-
+            The grant's stored MCP resource URI.
+             Empty for pre-grant legacy sessions.
+        clientId:
+          type: string
+          title: client_id
+          description: |-
+            The OAuth2 client the grant was consented to.
+             Empty for legacy web-session tokens at /mcp.
+        correlationId:
+          type: string
+          title: correlation_id
+          description: |-
+            Correlates the audit rows an MCP session produces. Minted at the /mcp
+             boundary and session-scoped: the MCP SDK hands tool handlers the
+             initialize-time context, so one MCP session carries one correlation ID
+             across all of its tool calls.
+      title: MCPDelegation
+      additionalProperties: false
+      description: |-
+        Provenance of a call that reached the API through the MCP (Model Context
+         Protocol) server's delegated credential. The values are copied verbatim from
+         the verified credential's grant state; empty fields record that the grant
+         stored nothing (legacy sessions), never a resolved or synthesized value.
+    bytebase.v1.MCPDenialReason:
+      type: string
+      title: MCPDenialReason
+      enum:
+        - MCP_DENIAL_REASON_UNSPECIFIED
+        - MINTS_CREDENTIAL
+        - RESETS_CREDENTIAL
+        - TAKES_OVER_ACCOUNT
+        - ENDS_SESSION
+        - ENDS_MEMBERSHIP
+        - MINTS_CREDENTIAL_FOR_OTHERS
+        - REWRITES_SESSION_BOUNDARY
+        - DRIVES_THE_APPROVAL_DECISION
+        - ADMINISTERS_THE_WORKSPACE
+        - READS_OTHER_USERS_SQL
+        - OPENS_AN_ADMIN_CONNECTION
+        - SENDS_DATA_TO_A_THIRD_PARTY
+        - RETURNS_A_STORED_SECRET
+      description: |-
+        Why an MCP session may not call an RPC. The mechanism, not the wording: each
+         value names what its methods actually do, and the serving side turns that
+         into a sentence. A denial whose stated reason has drifted from the mechanism
+         is worse than a bare refusal, because it is the thing the next reader trusts
+         — so a method changing what it does changes its reason here.
+
+         One enum covers both refused classes, and every value belongs to exactly one
+         of them: values 1-8 name a mechanism that breaks the MCP boundary, which is
+         what FORBIDDEN means, and values 9-13 name a scope decision this phase took,
+         which is what EXCLUDED means. The distinction is real and lives on the class
+         annotation — a FORBIDDEN mechanism is a durable never, an EXCLUDED scope
+         decision is what a future admin-capable ceiling would argue with, one
+         population at a time. Splitting it across two enums as well only made the
+         nonsense states representable: a method could carry both, or carry the kind
+         that contradicts its class. Neither is expressible now, and the one check
+         left — the reason belongs to the class it is used on — is a table the gate
+         already keeps for the wording.
+    bytebase.v1.MCPMethodClass:
+      type: string
+      title: MCPMethodClass
+      enum:
+        - MCP_METHOD_CLASS_UNSPECIFIED
+        - READ
+        - WRITE
+        - FORBIDDEN
+        - EXCLUDED
+      description: |-
+        Classification of an RPC for MCP (AI agent) sessions. The effective
+         authorization of an MCP session is this classification intersected with the
+         caller's own RBAC: it can only ever narrow what the human could do, never
+         widen it.
+         Every value is enforced, at the gate on the internal MCP chain. READ and
+         WRITE are the serving classes the workspace's MCP capability ceiling selects
+         between, EXCLUDED and FORBIDDEN are served by no ceiling, and an unclassified
+         method is refused rather than served. Annotating a method is therefore a
+         change to what an MCP session can reach, taking effect on the next request.
+    bytebase.v1.MCPSetting:
+      type: object
+      properties:
+        capability:
+          title: capability
+          description: |-
+            The maximum capability available to MCP sessions in this workspace, acting
+             as an admin-set ceiling. Enforced server-side at three points: the /mcp
+             endpoint decides whether a connection is admitted at all, the ceiling gate
+             on the internal MCP chain decides, per request, which method classes are
+             served, and under READ_ONLY the SQL clamp decides, per statement, whether
+             it only reads.
+          $ref: '#/components/schemas/bytebase.v1.MCPSetting.Capability'
+        ignoreMaskingExemptions:
+          type: boolean
+          title: ignore_masking_exemptions
+          description: |-
+            Whether a request that arrived over MCP stops applying the caller's own
+             unmasking provisioning. Two mechanisms let a user see a real value and this
+             suppresses both: the masking exemptions granted to them, and the unmask
+             carried by an access grant. The same user in the console is untouched.
+
+             It cannot force masking where there is none. Masking substitutes values in
+             query results, so this does not reach data copied into a column carrying no
+             masking policy, and it does nothing on the engines Bytebase does not mask.
+             It narrows what an agent reads through the paths Bytebase masks; it is not
+             a confidentiality boundary.
+      title: MCPSetting
+      additionalProperties: false
+      description: |-
+        MCPSetting is what an MCP (Model Context Protocol) session may do in this
+         workspace.
+    bytebase.v1.MCPSetting.Capability:
+      type: string
+      title: Capability
+      enum:
+        - CAPABILITY_UNSPECIFIED
+        - DISABLED
+        - READ_ONLY
+        - READ_WRITE
+      description: |-
+        Capability is the ceiling: a session runs at this level or lower.
+         Writing CAPABILITY_UNSPECIFIED explicitly is rejected; omit the update mask
+         path to leave the current ceiling unchanged.
     bytebase.v1.MaskingExemptionPolicy:
       type: object
       properties:
@@ -14916,6 +15881,38 @@ components:
       title: MaterializedViewMetadata
       additionalProperties: false
       description: MaterializedViewMetadata is the metadata for materialized views.
+    bytebase.v1.MoveMySavedQueriesRequest:
+      type: object
+      properties:
+        parent:
+          type: string
+          title: parent
+          description: 'Format: projects/{project}'
+        sourceFolder:
+          type: string
+          title: source_folder
+          maxLength: 256
+          minLength: 1
+          description: The folder to move, descendants included, e.g. "a/b".
+        targetFolder:
+          type: string
+          title: target_folder
+          maxLength: 256
+          description: |-
+            Where it lands. A path like "a/b/c"; empty drops the `source_folder`
+             prefix, promoting the folder's contents toward the root.
+      title: MoveMySavedQueriesRequest
+      additionalProperties: false
+    bytebase.v1.MoveMySavedQueriesResponse:
+      type: object
+      properties:
+        movedCount:
+          type: integer
+          title: moved_count
+          format: int32
+          description: How many moved.
+      title: MoveMySavedQueriesResponse
+      additionalProperties: false
     bytebase.v1.OAuth2AuthStyle:
       type: string
       title: OAuth2AuthStyle
@@ -14973,6 +15970,7 @@ components:
         code:
           type: string
           title: code
+          maxLength: 4096
           description: Authorization code from OAuth2 provider.
       title: OAuth2IdentityProviderContext
       additionalProperties: false
@@ -15036,6 +16034,7 @@ components:
         code:
           type: string
           title: code
+          maxLength: 4096
           description: Authorization code from OIDC provider.
       title: OIDCIdentityProviderContext
       additionalProperties: false
@@ -15283,6 +16282,13 @@ components:
             The lifecycle status of the linked issue.
              Unspecified when no linked issue exists.
           $ref: '#/components/schemas/bytebase.v1.IssueStatus'
+        lastPlanEditor:
+          type: string
+          title: last_plan_editor
+          description: |-
+            The user who last created or updated the Plan specs.
+             Format: users/hello@world.com. For legacy Plans without stored attribution,
+             this falls back to the Plan creator.
       title: Plan
       additionalProperties: false
     bytebase.v1.Plan.ChangeDatabaseConfig:
@@ -15323,7 +16329,7 @@ components:
           title: target
           description: |-
             The resource name of the instance on which the database is created.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         database:
           type: string
           title: database
@@ -15357,38 +16363,6 @@ components:
             The environment resource.
              Format: environments/prod where prod is the environment resource ID.
       title: CreateDatabaseConfig
-      additionalProperties: false
-    bytebase.v1.Plan.ExportDataConfig:
-      type: object
-      properties:
-        targets:
-          type: array
-          items:
-            type: string
-          title: targets
-          description: |-
-            The list of targets.
-             Multi-database format: [instances/{instance-id}/databases/{database-name}].
-             Single database group format: [projects/{project}/databaseGroups/{databaseGroup}].
-        sheet:
-          type: string
-          title: sheet
-          description: |-
-            The resource name of the sheet.
-             Format: projects/{project}/sheets/{sheet}
-        format:
-          title: format
-          description: The format of the exported file.
-          $ref: '#/components/schemas/bytebase.v1.ExportFormat'
-        password:
-          type:
-            - string
-            - "null"
-          title: password
-          description: |-
-            The zip password provide by users.
-             Leave it empty if no needs to encrypt the zip file.
-      title: ExportDataConfig
       additionalProperties: false
     bytebase.v1.Plan.PlanCheckRunStatusCountEntry:
       type: object
@@ -15444,14 +16418,6 @@ components:
               title: create_database_config
               required:
                 - createDatabaseConfig
-            - type: object
-              properties:
-                exportDataConfig:
-                  title: export_data_config
-                  $ref: '#/components/schemas/bytebase.v1.Plan.ExportDataConfig'
-              title: export_data_config
-              required:
-                - exportDataConfig
       title: Spec
       additionalProperties: false
     bytebase.v1.Plan.TaskStatusCount:
@@ -15514,7 +16480,7 @@ components:
               title: target
               description: |-
                 Target identification for consolidated results.
-                 Format: instances/{instance}/databases/{database}
+                 Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
             type:
               title: type
               $ref: '#/components/schemas/bytebase.v1.PlanCheckRun.Result.Type'
@@ -15718,8 +16684,6 @@ components:
                  Format: {resource name}/policies/{policy type}
                  Workspace resource name: workspaces/{workspace-id}.
                  Environment resource name: environments/environment-id.
-                 Instance resource name: instances/instance-id.
-                 Database resource name: instances/instance-id/databases/database-name.
             inheritFromParent:
               type: boolean
               title: inherit_from_parent
@@ -15843,6 +16807,17 @@ components:
          - If only line is known, set line and leave column as 0 (e.g., line=5, column=0)
          - If only column is known (rare), set column and leave line as 0
          Frontends should check for nil/undefined/zero values and handle them appropriately.
+    bytebase.v1.PrepareSampleProjectInstanceRequest:
+      type: object
+      properties:
+        parent:
+          type: string
+          title: parent
+          description: |-
+            The project that owns the sample instance.
+             Format: projects/{project}
+      title: PrepareSampleProjectInstanceRequest
+      additionalProperties: false
     bytebase.v1.PreviewTaskRunRollbackRequest:
       type: object
       properties:
@@ -15999,6 +16974,10 @@ components:
           type: boolean
           title: allow_just_in_time_access
           description: Once enabled, users can request and use the just-in-time access in the SQL Editor.
+        allowLastPlanEditorApproval:
+          type: boolean
+          title: allow_last_plan_editor_approval
+          description: Whether to allow the last Plan editor to approve a database change issue.
       title: Project
       additionalProperties: false
     bytebase.v1.Project.ExecutionRetryPolicy:
@@ -16172,7 +17151,7 @@ components:
           title: database
           description: |-
             The database name to execute the query.
-             Format: instances/{instance}/databases/{databaseName}
+             Format: instances/{instance}/databases/{databaseName} or projects/{project}/instances/{instance}/databases/{databaseName}
         creator:
           type: string
           title: creator
@@ -16234,8 +17213,9 @@ components:
           type: string
           title: name
           description: |-
-            The name is the instance name to execute the query against.
-             Format: instances/{instance}/databases/{databaseName}
+            The name is the database resource name to execute the query against.
+             Format: instances/{instance}/databases/{databaseName} or
+             projects/{project}/instances/{instance}/databases/{databaseName}
         statement:
           type: string
           title: statement
@@ -16542,6 +17522,31 @@ components:
       title: RefreshResponse
       additionalProperties: false
       description: Response from refreshing the access token.
+    bytebase.v1.RegenerateRecoveryCodesRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+      title: RegenerateRecoveryCodesRequest
+      additionalProperties: false
+    bytebase.v1.RegenerateRecoveryCodesResponse:
+      type: object
+      properties:
+        recoveryCodes:
+          type: array
+          items:
+            type: string
+          title: recovery_codes
+          description: The pending recovery codes, shown once for the caller to save.
+        pendingVersion:
+          title: pending_version
+          description: Identifies this mint; see StartMFAEnrollmentResponse.pending_version.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: RegenerateRecoveryCodesResponse
+      additionalProperties: false
     bytebase.v1.RejectIssueRequest:
       type: object
       properties:
@@ -16659,7 +17664,7 @@ components:
           title: name
           description: |-
             The name of the instance to remove a data source from.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         dataSource:
           title: data_source
           description: |-
@@ -16714,12 +17719,17 @@ components:
         email:
           type: string
           title: email
-          description: The email address of the account to reset.
+          maxLength: 254
+          description: |-
+            The email address of the account to reset.
+             Bounded so an oversized identity is refused at the edge before any
+             handler runs; the login-attempt lockout keys rows by this value.
         workspace:
           type:
             - string
             - "null"
           title: workspace
+          maxLength: 256
           description: |-
             Optional workspace context captured at send time, used to locate the EMAIL setting,
              and later (at verify time) for signup gate checks and workspace assignment.
@@ -16727,21 +17737,38 @@ components:
              Format: workspaces/{workspace}
       title: RequestPasswordResetRequest
       additionalProperties: false
+    bytebase.v1.RequestReauthCodeRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+      title: RequestReauthCodeRequest
+      additionalProperties: false
     bytebase.v1.ResetPasswordRequest:
       type: object
       properties:
         email:
           type: string
           title: email
-          description: The email address of the account.
+          maxLength: 254
+          description: |-
+            The email address of the account.
+             Bounded so an oversized identity is refused at the edge before any
+             handler runs; the login-attempt lockout keys rows by this value.
         code:
           type: string
           title: code
+          maxLength: 64
           description: The 6-digit code from the reset email.
         newPassword:
           type: string
           title: new_password
-          description: The new password to set.
+          description: |
+            The new password to set.
+            string.max_bytes = 72
       title: ResetPasswordRequest
       additionalProperties: false
     bytebase.v1.Restriction:
@@ -16754,7 +17781,7 @@ components:
         disallowPasswordSignin:
           type: boolean
           title: disallow_password_signin
-          description: Whether password-based signin is disabled (except for workspace admins).
+          description: Whether password sign-in is disabled for all end users.
         passwordRestriction:
           title: password_restriction
           description: Password complexity and restriction requirements.
@@ -16816,13 +17843,69 @@ components:
              Format: {resource}/{resource id}, e.g., environments/test.
       title: ReviewConfig
       additionalProperties: false
+    bytebase.v1.ReviewRun:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: |-
+            Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun}
+             The {reviewRun} id is the reviewer: "rule" or "guideline". The name
+             addresses a slot, not an execution.
+        type:
+          title: type
+          description: Derived from the name.
+          $ref: '#/components/schemas/bytebase.v1.ReviewRun.Type'
+        status:
+          title: status
+          $ref: '#/components/schemas/bytebase.v1.ReviewRun.Status'
+        createTime:
+          title: create_time
+          description: When the current run was triggered. Reset on every re-run.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        endTime:
+          title: end_time
+          description: |-
+            When the run reached a terminal status. Unset while AVAILABLE or
+             RUNNING.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        error:
+          type: string
+          title: error
+          description: |-
+            Fatal execution error, set if and only if status is FAILED: the review
+             failed to execute (a platform problem, never the SQL — SQL problems are
+             review results on a DONE run).
+      title: ReviewRun
+      additionalProperties: false
+    bytebase.v1.ReviewRun.Status:
+      type: string
+      title: Status
+      enum:
+        - STATUS_UNSPECIFIED
+        - AVAILABLE
+        - RUNNING
+        - DONE
+        - FAILED
+      description: |-
+        States follow task_run, minus PENDING (review needs no admission
+         control) and minus CANCELED (runs are side-effect-free until the fenced
+         completion transaction, so re-running supersedes instead of canceling).
+    bytebase.v1.ReviewRun.Type:
+      type: string
+      title: Type
+      enum:
+        - TYPE_UNSPECIFIED
+        - RULE
+        - GUIDELINE
     bytebase.v1.Revision:
       type: object
       properties:
         name:
           type: string
           title: name
-          description: 'Format: instances/{instance}/databases/{database}/revisions/{revision}'
+          description: 'Format: instances/{instance}/databases/{database}/revisions/{revision} or projects/{project}/instances/{instance}/databases/{database}/revisions/{revision}'
         release:
           type: string
           title: release
@@ -17011,6 +18094,26 @@ components:
       title: RolloutPolicy
       additionalProperties: false
       description: Rollout policy configuration.
+    bytebase.v1.RotateDirectorySyncTokenRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: |-
+            The workspace whose directory sync token is rotated.
+             Format: workspaces/{workspace}
+      title: RotateDirectorySyncTokenRequest
+      additionalProperties: false
+    bytebase.v1.RotateDirectorySyncTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          title: token
+          description: The new token, in plaintext. This is the only time it is ever returned.
+      title: RotateDirectorySyncTokenResponse
+      additionalProperties: false
     bytebase.v1.RowValue:
       type: object
       oneOf:
@@ -17202,6 +18305,15 @@ components:
     bytebase.v1.RunPlanChecksResponse:
       type: object
       title: RunPlanChecksResponse
+      additionalProperties: false
+    bytebase.v1.RunReviewRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: 'Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun}'
+      title: RunReviewRequest
       additionalProperties: false
     bytebase.v1.SASLConfig:
       type: object
@@ -17495,6 +18607,156 @@ components:
         - BUILTIN_WALK_THROUGH_CHECK
         - STATEMENT_DISALLOW_TRUNCATE
         - BUILTIN_STATEMENT_MAXIMUM_SQL_SIZE
+    bytebase.v1.SampleInfo:
+      type: object
+      properties:
+        available:
+          type: boolean
+          title: available
+          description: Whether sample setup is currently available.
+        instances:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.SampleInfo.Instance'
+          title: instances
+          description: The provisioned sample instances.
+      title: SampleInfo
+      additionalProperties: false
+      description: SampleInfo describes sample setup availability and provisioned resources.
+    bytebase.v1.SampleInfo.Instance:
+      type: object
+      properties:
+        instance:
+          type: string
+          title: instance
+          description: |-
+            The provisioned sample instance.
+             Format: instances/{instance} or projects/{project}/instances/{instance}
+        expireTime:
+          title: expire_time
+          description: The time when the provisioned sample instance expires.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: Instance
+      additionalProperties: false
+      description: Instance describes one provisioned sample instance.
+    bytebase.v1.SavedQuery:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: |-
+            Server-generated.
+             Format: projects/{project}/savedQueries/{savedQuery}
+        project:
+          type: string
+          title: project
+          description: 'Format: projects/{project}'
+        database:
+          type: string
+          title: database
+          description: |-
+            The connected database, which must belong to the saved query's own
+             project. Empty when none is connected, or when the database no longer
+             exists.
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
+        title:
+          type: string
+          title: title
+          maxLength: 200
+          description: The title of the saved query.
+        creator:
+          type: string
+          title: creator
+          description: |-
+            The owner. Ownership does not transfer.
+             Format: users/{email}
+        createTime:
+          title: create_time
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        updateTime:
+          title: update_time
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        content:
+          type: string
+          title: content
+          format: byte
+          description: |-
+            The SQL text. SearchSavedQueries returns a truncated preview;
+             GetSavedQuery returns the full text.
+        contentSize:
+          type:
+            - integer
+            - string
+          title: content_size
+          format: int64
+          description: The full size of the content, which may exceed the `content` returned.
+        starred:
+          type: boolean
+          title: starred
+          description: Whether the calling user starred it.
+        folder:
+          type: string
+          title: folder
+          maxLength: 256
+          description: |-
+            The folder holding this saved query. A path like "a/b/c"; empty means
+             unfiled.
+      title: SavedQuery
+      additionalProperties: false
+    bytebase.v1.SavedQueryBinding:
+      type: object
+      properties:
+        level:
+          title: level
+          $ref: '#/components/schemas/bytebase.v1.SavedQueryBinding.Level'
+        members:
+          type: array
+          items:
+            type: string
+          title: members
+          minItems: 1
+          description: |-
+            The members granted `level`: "user:{email}" or "group:{email}" only.
+
+             Service accounts cannot be grantees — they reach their own saved queries
+             as the creator. Naming one under "user:" grants nothing rather than
+             failing. Groups are stored as references, so membership stays live.
+      title: SavedQueryBinding
+      additionalProperties: false
+      description: Binds members to one access level on one saved query.
+    bytebase.v1.SavedQueryBinding.Level:
+      type: string
+      title: Level
+      enum:
+        - LEVEL_UNSPECIFIED
+        - VIEWER
+        - EDITOR
+      description: |-
+        Nested to avoid colliding with the package-scoped EDITOR in
+         DatabaseChangeMode.
+    bytebase.v1.SavedQueryPolicy:
+      type: object
+      properties:
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.SavedQueryBinding'
+          title: bindings
+          description: |-
+            At most one binding per level. A member listed under two levels is
+             rejected rather than resolved to the higher one.
+        etag:
+          type: string
+          title: etag
+          description: |-
+            The etag of the policy as read. SetSavedQueryPolicy requires it and fails
+             with ABORTED when it no longer matches.
+      title: SavedQueryPolicy
+      additionalProperties: false
+      description: |-
+        Who a saved query is shared with, and at what level. No bindings means
+         private. The creator is never a binding member; ownership cannot be granted.
     bytebase.v1.SchemaCatalog:
       type: object
       properties:
@@ -17636,16 +18898,21 @@ components:
              The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
 
              Supported filter:
-             - method: the API name, can be found in the docs, should start with "/bytebase.v1." prefix. For example "/bytebase.v1.UserService/CreateUser". Support "==" operator.
+             - method: the API name, can be found in the docs. Usually "/bytebase.v1.…", for example "/bytebase.v1.UserService/CreateUser"; entries written outside the v1 API carry their own prefix, such as "/bytebase.mcp.Session/Authorize" or "/bytebase.cli.Recovery/ResetUserPassword". Support "==" operator.
+             - resource: the resource the entry is about, support "==" operator.
              - severity: support "==" operator, check Severity enum in AuditLog message for values.
              - user: the actor, should in "users/{email}" format, support "==" operator.
              - create_time: support ">=" and "<=" operator.
+             - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support "==" operator.
+             - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry's mcp_delegation.correlation_id. Support "==" operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here.
 
              For example:
               - filter = "method == '/bytebase.v1.SQLService/Query'"
               - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR'"
               - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && user == 'users/bb@bytebase.com'"
               - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && create_time <= '2021-01-01T00:00:00Z' && create_time >= '2020-01-01T00:00:00Z'"
+              - filter = "mcp == true"
+              - filter = "mcp_correlation_id == '0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60'"
         orderBy:
           type: string
           title: order_by
@@ -17700,7 +18967,10 @@ components:
           description: |-
             The parent, which owns this collection of issues.
              Format: projects/{project}
-             Use "projects/-" to list all issues from all projects.
+             Use the wildcard "projects/-" to search across collections (AIP-159); the
+             result is restricted to the projects where the caller holds
+             bb.issues.get. For a concrete project, the caller must hold bb.issues.get
+             on that project or the request is denied.
         pageSize:
           type: integer
           title: page_size
@@ -17922,10 +19192,10 @@ components:
 
              Supported filter:
              - project: the project full name in "projects/{id}" format, support "==" operator.
-             - database: the database full name in "instances/{id}/databases/{name}" format, support "==" operator.
-             - instance: the instance full name in "instances/{id}" format, support "==" operator.
+             - database: the database full name in "instances/{id}/databases/{name}" or "projects/{project}/instances/{id}/databases/{name}" format, support "==" operator.
+             - instance: the instance full name in "instances/{id}" or "projects/{project}/instances/{id}" format, support "==" operator.
              - type: the type, should be "QUERY" or "EXPORT", support "==" operator.
-             - statement: the SQL statement, support ".contains()" operator.
+             - statement: the SQL statement, support "==" and ".contains()" operators.
 
              For example:
              project == "projects/{project}"
@@ -17933,6 +19203,7 @@ components:
              instance == "instances/{instance}"
              type == "QUERY"
              type == "EXPORT"
+             statement == "SELECT 1;"
              statement.contains("select")
              type == "QUERY" && statement.contains("select")
       title: SearchQueryHistoriesRequest
@@ -17955,46 +19226,99 @@ components:
              `ListQueryHistory` method to retrieve the next page of history.
       title: SearchQueryHistoriesResponse
       additionalProperties: false
-    bytebase.v1.SearchWorksheetsRequest:
+    bytebase.v1.SearchSavedQueriesRequest:
       type: object
       properties:
         parent:
           type: string
           title: parent
-          description: |-
-            The parent resource of the worksheets.
-             Format: projects/{project}
+          description: 'Format: projects/{project}'
         filter:
           type: string
           title: filter
           description: |-
-            To filter the search result.
-             The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
+            Filter the result, in CEL. See https://github.com/google/cel-spec
 
-             Supported filter:
-             - creator: the worksheet creator in "users/{email}" format, support "==" and "!=" operator.
-             - starred: should be "true" or "false", filter starred/unstarred sheets, support "==" operator.
-             - visibility: check Visibility enum in the Worksheet message for values, support "==" and "in [xx]" operator.
+             Supported fields:
+             - name: the saved query name. Supports "==" and "in [...]".
+             - title: the title. Supports "contains".
+             - creator: the creator in "users/{email}" format. Supports "==" and "!=".
+             - shared: whether a binding shares the saved query with the caller. Their
+               own saved queries, and ones visible only through a project-level
+               bb.savedQueries.get, are not "shared". Supports "==".
+             - starred: whether the caller starred it. Supports "==".
+             - folder: the exact folder path. Supports "==".
+
+             Use `creator == "users/{me}"` for a My view and `shared == true` for a
+             Shared view. Prefer `shared` over `creator !=`: with a project-level
+             bb.savedQueries.get, `creator !=` also matches saved queries nobody
+             shared with the caller.
 
              For example:
-             creator == "users/{email}"
-             creator != "users/{email}"
+             creator == "users/alice@example.com"
+             shared == true
              starred == true
-             starred == false
-             visibility in ["PRIVATE", "PROJECT_READ", "PROJECT_WRITE"]
-             visibility == "PRIVATE"
-      title: SearchWorksheetsRequest
+             title.contains("weekly report")
+             folder == "foo/bar"
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            The maximum number of saved queries to return. The service may return
+             fewer. Defaults to 10; values above 1000 are coerced to 1000.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            A page token from a previous SearchSavedQueries call. Keep every other
+             parameter the same as the call that returned it.
+      title: SearchSavedQueriesRequest
       additionalProperties: false
-    bytebase.v1.SearchWorksheetsResponse:
+    bytebase.v1.SearchSavedQueriesResponse:
       type: object
       properties:
-        worksheets:
+        savedQueries:
           type: array
           items:
-            $ref: '#/components/schemas/bytebase.v1.Worksheet'
-          title: worksheets
-          description: The worksheets that matched the search criteria.
-      title: SearchWorksheetsResponse
+            $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+          title: saved_queries
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: |-
+            Pass to the next SearchSavedQueries call to fetch the following page.
+             Empty on the last page.
+      title: SearchSavedQueriesResponse
+      additionalProperties: false
+    bytebase.v1.SearchSavedQueryFoldersRequest:
+      type: object
+      properties:
+        parent:
+          type: string
+          title: parent
+          description: 'Format: projects/{project}'
+        filter:
+          type: string
+          title: filter
+          description: |-
+            Filter folders by the saved queries they hold. Takes the same fields and
+             syntax as SearchSavedQueries.filter, except `title`. A folder is returned
+             when at least one saved query the caller can read matches.
+      title: SearchSavedQueryFoldersRequest
+      additionalProperties: false
+    bytebase.v1.SearchSavedQueryFoldersResponse:
+      type: object
+      properties:
+        folders:
+          type: array
+          items:
+            type: string
+          title: folders
+          description: |-
+            Folder paths, every ancestor prefix included, sorted. A folder is a path
+             on saved queries ("a/b/c"), so empty folders cannot exist.
+      title: SearchSavedQueryFoldersResponse
       additionalProperties: false
     bytebase.v1.SemanticTypeSetting:
       type: object
@@ -18036,12 +19360,17 @@ components:
         email:
           type: string
           title: email
-          description: The email address to send the code to.
+          maxLength: 254
+          description: |-
+            The email address to send the code to.
+             Bounded so an oversized identity is refused at the edge before any
+             handler runs; the login-attempt lockout keys rows by this value.
         workspace:
           type:
             - string
             - "null"
           title: workspace
+          maxLength: 256
           description: |-
             Optional workspace context captured at send time, used to locate the EMAIL setting,
              and later (at verify time) for signup gate checks and workspace assignment.
@@ -18158,10 +19487,27 @@ components:
         etag:
           type: string
           title: etag
-          description: The current etag of the policy.
+          description: |-
+            The current etag of the policy. Equivalent to setting `policy.etag`;
+             supplying both with different values returns INVALID_ARGUMENT.
       title: SetIamPolicyRequest
       additionalProperties: false
       description: Request message for setting an IAM policy.
+    bytebase.v1.SetSavedQueryPolicyRequest:
+      type: object
+      properties:
+        resource:
+          type: string
+          title: resource
+          description: 'Format: projects/{project}/savedQueries/{savedQuery}'
+        policy:
+          title: policy
+          description: |-
+            The new policy, replacing the stored one in full. Empty `bindings` makes
+             the saved query private again.
+          $ref: '#/components/schemas/bytebase.v1.SavedQueryPolicy'
+      title: SetSavedQueryPolicyRequest
+      additionalProperties: false
     bytebase.v1.Setting:
       type: object
       properties:
@@ -18192,6 +19538,7 @@ components:
         - SEMANTIC_TYPES
         - ENVIRONMENT
         - EMAIL
+        - MCP
     bytebase.v1.SettingValue:
       type: object
       oneOf:
@@ -18237,6 +19584,14 @@ components:
             - environment
         - type: object
           properties:
+            mcp:
+              title: mcp
+              $ref: '#/components/schemas/bytebase.v1.MCPSetting'
+          title: mcp
+          required:
+            - mcp
+        - type: object
+          properties:
             semanticType:
               title: semantic_type
               $ref: '#/components/schemas/bytebase.v1.SemanticTypeSetting'
@@ -18262,11 +19617,6 @@ components:
       title: SettingValue
       additionalProperties: false
       description: The data in setting value.
-    bytebase.v1.SetupSampleRequest:
-      type: object
-      title: SetupSampleRequest
-      additionalProperties: false
-      description: Request message for setting up sample data.
     bytebase.v1.Sheet:
       type: object
       properties:
@@ -18300,14 +19650,21 @@ components:
         email:
           type: string
           title: email
-          description: The email for the new account.
+          maxLength: 254
+          description: |-
+            The email for the new account.
+             Bounded so an oversized identity is refused at the edge before any
+             handler runs; the login-attempt lockout keys rows by this value.
         password:
           type: string
           title: password
-          description: The password for the new account.
+          description: |
+            The password for the new account.
+            string.max_bytes = 72
         title:
           type: string
           title: title
+          maxLength: 200
           description: The display name of the user.
       title: SignupRequest
       additionalProperties: false
@@ -18363,6 +19720,45 @@ components:
           description: The tasks within this stage.
       title: Stage
       additionalProperties: false
+    bytebase.v1.StartMFAEnrollmentRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          maxLength: 260
+          description: 'Format: users/{email}. Must be the caller''s own name.'
+      title: StartMFAEnrollmentRequest
+      additionalProperties: false
+    bytebase.v1.StartMFAEnrollmentResponse:
+      type: object
+      properties:
+        otpSecret:
+          type: string
+          title: otp_secret
+          description: |-
+            The pending TOTP secret. The only response that carries it — it is never
+             readable from the User resource.
+        recoveryCodes:
+          type: array
+          items:
+            type: string
+          title: recovery_codes
+          description: The pending recovery codes, shown once for the caller to save.
+        expireTime:
+          title: expire_time
+          description: When this enrollment stops being confirmable.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+        pendingVersion:
+          title: pending_version
+          description: |-
+            Identifies this mint. Echo it back to EnableMFA and
+             ConfirmRecoveryCodes; a mint from another tab or device replaces the
+             pending state, and those methods refuse a version that is no longer the
+             pending one rather than promoting something this caller never saw.
+          $ref: '#/components/schemas/google.protobuf.Timestamp'
+      title: StartMFAEnrollmentResponse
+      additionalProperties: false
     bytebase.v1.State:
       type: string
       title: State
@@ -18416,6 +19812,7 @@ components:
         - INSERT
         - UPDATE
         - DELETE
+        - MERGE
       description: StatementType represents the type of SQL statement.
     bytebase.v1.StorageConfig:
       type: object
@@ -18569,6 +19966,7 @@ components:
         workspace:
           type: string
           title: workspace
+          maxLength: 256
           description: |-
             The target workspace to switch to.
              Format: workspaces/{workspace}
@@ -18581,18 +19979,21 @@ components:
             - string
             - "null"
           title: otp_code
+          maxLength: 64
           description: OTP code for MFA verification. Required if the target workspace enforces MFA.
         recoveryCode:
           type:
             - string
             - "null"
           title: recovery_code
+          maxLength: 64
           description: Recovery code for MFA verification (alternative to otp_code).
         mfaTempToken:
           type:
             - string
             - "null"
           title: mfa_temp_token
+          maxLength: 4096
           description: Temporary MFA token from a previous SwitchWorkspace call that returned mfa_temp_token.
       title: SwitchWorkspaceRequest
       additionalProperties: false
@@ -18604,7 +20005,7 @@ components:
           title: name
           description: |-
             The name of the database to sync.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
       title: SyncDatabaseRequest
       additionalProperties: false
     bytebase.v1.SyncDatabaseResponse:
@@ -18629,7 +20030,7 @@ components:
           title: name
           description: |-
             The name of instance.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         enableFullSync:
           type: boolean
           title: enable_full_sync
@@ -18961,8 +20362,8 @@ components:
               type: string
               title: target
               description: |-
-                Format: instances/{instance} if the task is DatabaseCreate.
-                 Format: instances/{instance}/databases/{database}
+                Format: instances/{instance} or projects/{project}/instances/{instance} if the task is DatabaseCreate.
+                 Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
             updateTime:
               oneOf:
                 - $ref: '#/components/schemas/google.protobuf.Timestamp'
@@ -18990,14 +20391,6 @@ components:
                 - databaseCreate
             - type: object
               properties:
-                databaseDataExport:
-                  title: database_data_export
-                  $ref: '#/components/schemas/bytebase.v1.Task.DatabaseDataExport'
-              title: database_data_export
-              required:
-                - databaseDataExport
-            - type: object
-              properties:
                 databaseUpdate:
                   title: database_update
                   $ref: '#/components/schemas/bytebase.v1.Task.DatabaseUpdate'
@@ -19016,18 +20409,6 @@ components:
       title: DatabaseCreate
       additionalProperties: false
       description: Payload for creating a new database.
-    bytebase.v1.Task.DatabaseDataExport:
-      type: object
-      properties:
-        sheet:
-          type: string
-          title: sheet
-          description: |-
-            The resource name of the sheet.
-             Format: projects/{project}/sheets/{sheet}
-      title: DatabaseDataExport
-      additionalProperties: false
-      description: Payload for exporting database data.
     bytebase.v1.Task.DatabaseUpdate:
       type: object
       oneOf:
@@ -19072,7 +20453,6 @@ components:
         - GENERAL
         - DATABASE_CREATE
         - DATABASE_MIGRATE
-        - DATABASE_EXPORT
     bytebase.v1.TaskMetadata:
       type: object
       properties:
@@ -19160,10 +20540,6 @@ components:
           title: start_time
           description: The time when the task run started execution.
           $ref: '#/components/schemas/google.protobuf.Timestamp'
-        exportArchiveStatus:
-          title: export_archive_status
-          description: The export archive status for data export tasks.
-          $ref: '#/components/schemas/bytebase.v1.TaskRun.ExportArchiveStatus'
         hasPriorBackup:
           type: boolean
           title: has_prior_backup
@@ -19185,13 +20561,6 @@ components:
              This can only be set when creating the task run calling BatchRunTasks.
       title: TaskRun
       additionalProperties: false
-    bytebase.v1.TaskRun.ExportArchiveStatus:
-      type: string
-      title: ExportArchiveStatus
-      enum:
-        - EXPORT_ARCHIVE_STATUS_UNSPECIFIED
-        - READY
-        - EXPORTED
     bytebase.v1.TaskRun.SchedulerInfo:
       type: object
       properties:
@@ -19475,7 +20844,7 @@ components:
           title: database
           description: |-
             The database information.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
         schema:
           type: string
           title: schema
@@ -19762,6 +21131,15 @@ components:
         - oneOf:
             - type: object
               properties:
+                ldapContext:
+                  title: ldap_context
+                  description: LDAP credentials context for test connection.
+                  $ref: '#/components/schemas/bytebase.v1.LDAPIdentityProviderTestRequestContext'
+              title: ldap_context
+              required:
+                - ldapContext
+            - type: object
+              properties:
                 oauth2Context:
                   title: oauth2_context
                   $ref: '#/components/schemas/bytebase.v1.OAuth2IdentityProviderTestRequestContext'
@@ -19831,7 +21209,12 @@ components:
              Format: projects/{project}
         webhook:
           title: webhook
-          description: The webhook to test. Identified by its url.
+          description: |-
+            The webhook to test.
+
+             The url is what gets posted to. Reads do not return a saved webhook's url,
+             so leave url empty and set name to test the one already stored; set url to
+             test a url before saving it.
           $ref: '#/components/schemas/bytebase.v1.Webhook'
       title: TestWebhookRequest
       additionalProperties: false
@@ -19895,7 +21278,7 @@ components:
           title: name
           description: |-
             The name of the deleted instance.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
       title: UndeleteInstanceRequest
       additionalProperties: false
     bytebase.v1.UndeleteProjectRequest:
@@ -19963,7 +21346,7 @@ components:
           title: name
           description: |-
             The name of the instance to update a data source.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
         dataSource:
           title: data_source
           description: Identified by data source ID.
@@ -19990,17 +21373,13 @@ components:
         catalog:
           title: catalog
           description: |-
-            The database catalog to update.
+            The database catalog to update, identified by its `name` field.
+             Format: instances/{instance}/databases/{database}/catalog or projects/{project}/instances/{instance}/databases/{database}/catalog
 
-             The catalog's `name` field is used to identify the database catalog to update.
-             Format: instances/{instance}/databases/{database}/catalog
+             Replaces the whole catalog: send the complete value, since anything omitted
+             is erased. There is no `update_mask` because `schemas` is a repeated field,
+             and AIP-161 forbids addressing one element of one.
           $ref: '#/components/schemas/bytebase.v1.DatabaseCatalog'
-        allowMissing:
-          type: boolean
-          title: allow_missing
-          description: |-
-            If set to true, and the database catalog is not found, a new database catalog will be created.
-             In this situation, `update_mask` is ignored.
       title: UpdateDatabaseCatalogRequest
       additionalProperties: false
       description: Request message for updating a database catalog.
@@ -20037,18 +21416,12 @@ components:
             The database to update.
 
              The database's `name` field is used to identify the database to update.
-             Format: instances/{instance}/databases/{database}
+             Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
           $ref: '#/components/schemas/bytebase.v1.Database'
         updateMask:
           title: update_mask
           description: The list of fields to update.
           $ref: '#/components/schemas/google.protobuf.FieldMask'
-        allowMissing:
-          type: boolean
-          title: allow_missing
-          description: |-
-            If set to true, and the database is not found, a new database will be created.
-             In this situation, `update_mask` is ignored.
       title: UpdateDatabaseRequest
       additionalProperties: false
     bytebase.v1.UpdateEmailRequest:
@@ -20064,6 +21437,7 @@ components:
         email:
           type: string
           title: email
+          maxLength: 254
           description: The new email address.
       title: UpdateEmailRequest
       additionalProperties: false
@@ -20123,7 +21497,7 @@ components:
             The instance to update.
 
              The instance's `name` field is used to identify the instance to update.
-             Format: instances/{instance}
+             Format: instances/{instance} or projects/{project}/instances/{instance}
           $ref: '#/components/schemas/bytebase.v1.Instance'
         updateMask:
           title: update_mask
@@ -20134,7 +21508,9 @@ components:
           title: allow_missing
           description: |-
             If set to true, and the instance is not found, a new instance will be created.
-             In this situation, `update_mask` is ignored.
+             In this situation, `update_mask` is ignored. A project-nested name creates
+             the instance only under its encoded active, non-default project; it never
+             falls back to a workspace instance.
       title: UpdateInstanceRequest
       additionalProperties: false
     bytebase.v1.UpdateIssueCommentRequest:
@@ -20220,8 +21596,6 @@ components:
              Format: {resource name}/policies/{policy type}
              Workspace resource name: workspaces/{workspace-id}.
              Environment resource name: environments/environment-id.
-             Instance resource name: instances/instance-id.
-             Database resource name: instances/instance-id/databases/database-name.
           $ref: '#/components/schemas/bytebase.v1.Policy'
         updateMask:
           title: update_mask
@@ -20330,6 +21704,37 @@ components:
              In this situation, `update_mask` is ignored.
       title: UpdateRoleRequest
       additionalProperties: false
+    bytebase.v1.UpdateSavedQueryRequest:
+      type: object
+      properties:
+        savedQuery:
+          title: saved_query
+          description: |-
+            `saved_query.name` identifies the saved query to update.
+             Format: projects/{project}/savedQueries/{savedQuery}
+          $ref: '#/components/schemas/bytebase.v1.SavedQuery'
+        updateMask:
+          title: update_mask
+          description: |-
+            Fields to update, relative to the saved query (`title`, not
+             `saved_query.title`). Supported: `title`, `content`, `database`, `folder`.
+             At least one path is required.
+          $ref: '#/components/schemas/google.protobuf.FieldMask'
+      title: UpdateSavedQueryRequest
+      additionalProperties: false
+    bytebase.v1.UpdateSavedQueryStarRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: 'Format: projects/{project}/savedQueries/{savedQuery}'
+        starred:
+          type: boolean
+          title: starred
+          description: Whether the caller stars the saved query.
+      title: UpdateSavedQueryStarRequest
+      additionalProperties: false
     bytebase.v1.UpdateServiceAccountRequest:
       type: object
       properties:
@@ -20387,22 +21792,6 @@ components:
           title: update_mask
           description: The list of fields to update.
           $ref: '#/components/schemas/google.protobuf.FieldMask'
-        otpCode:
-          type:
-            - string
-            - "null"
-          title: otp_code
-          description: The otp_code is used to verify the user's identity by MFA.
-        regenerateTempMfaSecret:
-          type: boolean
-          title: regenerate_temp_mfa_secret
-          description: |-
-            The regenerate_temp_mfa_secret flag means to regenerate temporary MFA secret for user.
-             This is used for MFA setup. The temporary MFA secret and recovery codes will be returned in the response.
-        regenerateRecoveryCodes:
-          type: boolean
-          title: regenerate_recovery_codes
-          description: The regenerate_recovery_codes flag means to regenerate recovery codes for user.
         allowMissing:
           type: boolean
           title: allow_missing
@@ -20450,58 +21839,6 @@ components:
       title: UpdateWorkloadIdentityRequest
       additionalProperties: false
       description: Request message for updating a workload identity.
-    bytebase.v1.UpdateWorksheetOrganizerRequest:
-      type: object
-      properties:
-        organizer:
-          title: organizer
-          description: |-
-            The organizer to update.
-
-             The organizer's `worksheet` field is used to identify the worksheet.
-             Format: projects/{project}/worksheets/{worksheet}
-          $ref: '#/components/schemas/bytebase.v1.WorksheetOrganizer'
-        updateMask:
-          title: update_mask
-          description: |-
-            The list of fields to be updated.
-             Fields are specified relative to the worksheet organizer.
-             Only support update the following fields for now:
-             - `starred`
-          $ref: '#/components/schemas/google.protobuf.FieldMask'
-        allowMissing:
-          type: boolean
-          title: allow_missing
-          description: |-
-            If set to true, and the worksheet organizer is not found, a new worksheet organizer will be created.
-             In this situation, `update_mask` is ignored.
-      title: UpdateWorksheetOrganizerRequest
-      additionalProperties: false
-    bytebase.v1.UpdateWorksheetRequest:
-      type: object
-      properties:
-        worksheet:
-          title: worksheet
-          description: |-
-            The worksheet to update.
-
-             The worksheet's `name` field is used to identify the worksheet to update.
-             Format: projects/{project}/worksheets/{worksheet}
-          $ref: '#/components/schemas/bytebase.v1.Worksheet'
-        updateMask:
-          title: update_mask
-          description: |-
-            The list of fields to be updated.
-             Fields are specified relative to the worksheet.
-             (e.g., `title`, `statement`; *not* `worksheet.title` or `worksheet.statement`)
-             Only support update the following fields for now:
-             - `title`
-             - `statement`
-             - `starred`
-             - `visibility`
-          $ref: '#/components/schemas/google.protobuf.FieldMask'
-      title: UpdateWorksheetRequest
-      additionalProperties: false
     bytebase.v1.UpdateWorkspaceRequest:
       type: object
       properties:
@@ -20537,6 +21874,7 @@ components:
         email:
           type: string
           title: email
+          maxLength: 254
           description: The email address of the user, used for login and notifications.
         title:
           type: string
@@ -20546,29 +21884,15 @@ components:
         password:
           type: string
           title: password
-          description: The password for authentication. Only used during user creation or password updates.
-        serviceKey:
-          type: string
-          title: service_key
-          description: The service key for service account authentication.
+          description: |
+            The password for authentication. Only used during user creation or password updates.
+            string.max_bytes = 72
         mfaEnabled:
           type: boolean
           title: mfa_enabled
-          description: The mfa_enabled flag means if the user has enabled MFA.
-        tempOtpSecret:
-          type: string
-          title: temp_otp_secret
-          description: Temporary OTP secret used during MFA setup and regeneration.
-        tempRecoveryCodes:
-          type: array
-          items:
-            type: string
-          title: temp_recovery_codes
-          description: Temporary recovery codes used during MFA setup and regeneration.
-        tempOtpSecretCreatedTime:
-          title: temp_otp_secret_created_time
-          description: Timestamp when temp_otp_secret was created. Used by frontend to show countdown timer.
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
+          description: |-
+            Whether the user has a live MFA factor. Set by ConfirmRecoveryCodes and
+             DisableMFA, never by an update.
         phone:
           type: string
           title: phone
@@ -20645,6 +21969,12 @@ components:
         sessionId:
           type: string
           title: session_id
+          description: |-
+            The same Stripe Checkout Session ID PurchaseResponse mints, arriving back
+             the other way, so it carries the same classification. VerifyCheckoutSession
+             is EXCLUDED, and the MCP gate records a row for every method it refuses, so
+             leaving this unannotated would write the id into a denial row while the
+             response that produced it was redacted.
       title: VerifyCheckoutSessionRequest
       additionalProperties: false
     bytebase.v1.VerifyCheckoutSessionResponse:
@@ -20717,7 +22047,29 @@ components:
         url:
           type: string
           title: url
-          description: url is the url of the webhook, should be unique within the project.
+          description: |-
+            url is the url of the webhook, should be unique within the project.
+
+             Write-only: an incoming-webhook url is the whole credential for posting
+             into the customer's chat, so reads leave it empty, the same way a data
+             source's password and SSL material are left empty. Set it to change it.
+
+             Required to create a webhook. Not required on TestWebhook, where an empty
+             url on a request that names a webhook means the one already stored, so the
+             field carries no REQUIRED behavior it would contradict there.
+        urlSupportsDirectMessage:
+          type: boolean
+          title: url_supports_direct_message
+          description: |-
+            Whether the stored url's endpoint form can carry a direct message to the
+             users an event mentions, rather than only a post to the channel the url
+             names. False for a Microsoft Teams Power Automate workflow endpoint, which
+             direct messages bypass entirely: a webhook with direct_message set sends
+             them and returns, so the workflow post never happens.
+
+             Reads do not return the url, so a client editing a saved webhook cannot
+             work this out for itself. It is a fact about the stored url and says
+             nothing about what the url is.
         directMessage:
           type: boolean
           title: direct_message
@@ -20797,7 +22149,7 @@ components:
       properties:
         providerType:
           title: provider_type
-          description: Platform type (currently only GITHUB is supported)
+          description: Provider configuration mode.
           $ref: '#/components/schemas/bytebase.v1.WorkloadIdentityConfig.ProviderType'
         issuerUrl:
           type: string
@@ -20813,6 +22165,10 @@ components:
           type: string
           title: subject_pattern
           description: Subject pattern to match (e.g., "repo:owner/repo:ref:refs/heads/main")
+        jwksUrl:
+          type: string
+          title: jwks_url
+          description: Optional JWKS endpoint. When empty, use OIDC discovery from issuer_url.
       title: WorkloadIdentityConfig
       additionalProperties: false
       description: WorkloadIdentityConfig for API layer
@@ -20823,106 +22179,8 @@ components:
         - PROVIDER_TYPE_UNSPECIFIED
         - GITHUB
         - GITLAB
-      description: ProviderType identifies the CI/CD platform.
-    bytebase.v1.Worksheet:
-      type: object
-      properties:
-        name:
-          type: string
-          title: name
-          description: |-
-            The name of the worksheet resource, generated by the server.
-             Canonical parent is project.
-             Format: projects/{project}/worksheets/{worksheet}
-        project:
-          type: string
-          title: project
-          description: |-
-            The project resource name.
-             Format: projects/{project}
-        database:
-          type: string
-          title: database
-          description: |-
-            The database resource name.
-             Format: instances/{instance}/databases/{database}
-             If the database parent doesn't exist, the database field is empty.
-        title:
-          type: string
-          title: title
-          maxLength: 200
-          description: The title of the worksheet.
-        creator:
-          type: string
-          title: creator
-          description: |-
-            The creator of the Worksheet.
-             Format: users/{email}
-        createTime:
-          title: create_time
-          description: The create time of the worksheet.
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        updateTime:
-          title: update_time
-          description: The last update time of the worksheet.
-          $ref: '#/components/schemas/google.protobuf.Timestamp'
-        content:
-          type: string
-          title: content
-          format: byte
-          description: |-
-            The content of the worksheet.
-             By default, it will be cut off in SearchWorksheet() method. If it doesn't match the `content_size`, you can
-             use GetWorksheet() request to retrieve the full content.
-        contentSize:
-          type:
-            - integer
-            - string
-          title: content_size
-          format: int64
-          description: content_size is the full size of the content, may not match the size of the `content` field.
-        visibility:
-          title: visibility
-          $ref: '#/components/schemas/bytebase.v1.Worksheet.Visibility'
-        starred:
-          type: boolean
-          title: starred
-          description: starred indicates whether the worksheet is starred by the current authenticated user.
-        folders:
-          type: array
-          items:
-            type: string
-          title: folders
-      title: Worksheet
-      additionalProperties: false
-    bytebase.v1.Worksheet.Visibility:
-      type: string
-      title: Visibility
-      enum:
-        - VISIBILITY_UNSPECIFIED
-        - PROJECT_READ
-        - PROJECT_WRITE
-        - PRIVATE
-    bytebase.v1.WorksheetOrganizer:
-      type: object
-      properties:
-        worksheet:
-          type: string
-          title: worksheet
-          description: |-
-            The name of the worksheet.
-             Format: projects/{project}/worksheets/{worksheet}
-        starred:
-          type: boolean
-          title: starred
-          description: starred means if the worksheet is starred.
-        folders:
-          type: array
-          items:
-            type: string
-          title: folders
-      title: WorksheetOrganizer
-      additionalProperties: false
+        - OIDC
+      description: ProviderType identifies the workload identity configuration mode.
     bytebase.v1.Workspace:
       type: object
       properties:
@@ -21044,7 +22302,7 @@ components:
         disallowPasswordSignin:
           type: boolean
           title: disallow_password_signin
-          description: Whether to disallow password signin. (Except workspace admins)
+          description: Whether password sign-in is disabled for all end users.
         enableMetricCollection:
           type: boolean
           title: enable_metric_collection
@@ -21065,10 +22323,6 @@ components:
           description: |-
             Whether to display watermark on pages.
              Requires ENTERPRISE license.
-        directorySyncToken:
-          type: string
-          title: directory_sync_token
-          description: The token for directory sync authentication.
         passwordRestriction:
           title: password_restriction
           description: Password restriction settings.
@@ -21118,30 +22372,15 @@ components:
             The max expiration duration for request role.
              Deprecated: use just-in-time access request flows instead.
           $ref: '#/components/schemas/google.protobuf.Duration'
-        mcpCapability:
-          title: mcp_capability
+        directorySyncTokenConfigured:
+          type: boolean
+          title: directory_sync_token_configured
           description: |-
-            The maximum capability available to MCP (Model Context Protocol) sessions in
-             this workspace, acting as an admin-set ceiling. Unset is treated as
-             READ_WRITE for backward compatibility; DISABLED rejects all MCP
-             connections. Writing MCP_CAPABILITY_UNSPECIFIED explicitly is rejected —
-             omit the update mask path to leave the ceiling unset.
-          $ref: '#/components/schemas/bytebase.v1.WorkspaceProfileSetting.MCPCapability'
+            Whether a directory sync token has been generated for this workspace.
+             The token itself is never returned; this only lets the UI decide between
+             offering "generate" and "regenerate".
       title: WorkspaceProfileSetting
       additionalProperties: false
-    bytebase.v1.WorkspaceProfileSetting.MCPCapability:
-      type: string
-      title: MCPCapability
-      enum:
-        - MCP_CAPABILITY_UNSPECIFIED
-        - DISABLED
-        - READ_ONLY
-        - READ_WRITE
-      description: |-
-        MCPCapability is the maximum capability an MCP (Model Context Protocol)
-         session may have in the workspace. It is a ceiling: a session runs at this
-         level or lower. Unset (UNSPECIFIED) is treated as READ_WRITE so existing
-         workspaces are unaffected.
     bytebase.v1.WorkspaceProfileSetting.PasswordRestriction:
       type: object
       properties:
@@ -21245,72 +22484,6 @@ components:
           description: Deserialized error detail payload. The 'type' field indicates the schema. This field is for easier debugging and should not be relied upon for application logic.
       additionalProperties: true
       description: Contains an arbitrary serialized message along with a @type that describes the type of the serialized message, with an additional debug field for ConnectRPC error details.
-    google.api.HttpBody:
-      type: object
-      properties:
-        contentType:
-          type: string
-          title: content_type
-          description: The HTTP Content-Type header value specifying the content type of the body.
-        data:
-          type: string
-          title: data
-          format: byte
-          description: The HTTP request/response body as raw binary.
-        extensions:
-          type: array
-          items:
-            $ref: '#/components/schemas/google.protobuf.Any'
-          title: extensions
-          description: |-
-            Application specific response metadata. Must be set in the first response
-             for streaming APIs.
-      title: HttpBody
-      additionalProperties: false
-      description: |-
-        Message that represents an arbitrary HTTP body. It should only be used for
-         payload formats that can't be represented as JSON, such as raw binary or
-         an HTML page.
-
-
-         This message can be used both in streaming and non-streaming API methods in
-         the request as well as the response.
-
-         It can be used as a top-level request field, which is convenient if one
-         wants to extract parameters from either the URL or HTTP template into the
-         request fields and also want access to the raw HTTP body.
-
-         Example:
-
-             message GetResourceRequest {
-               // A unique request id.
-               string request_id = 1;
-
-               // The raw HTTP body is bound to this field.
-               google.api.HttpBody http_body = 2;
-
-             }
-
-             service ResourceService {
-               rpc GetResource(GetResourceRequest)
-                 returns (google.api.HttpBody);
-               rpc UpdateResource(google.api.HttpBody)
-                 returns (google.protobuf.Empty);
-
-             }
-
-         Example with streaming methods:
-
-             service CaldavService {
-               rpc GetCalendar(stream google.api.HttpBody)
-                 returns (stream google.api.HttpBody);
-               rpc UpdateCalendar(stream google.api.HttpBody)
-                 returns (stream google.api.HttpBody);
-
-             }
-
-         Use of this type only changes how the request and response bodies are
-         handled, all other features will continue to work unchanged.
     google.api.expr.v1alpha1.Constant:
       type: object
       oneOf:
@@ -22543,6 +23716,8 @@ tags:
     description: AIService provides AI chat capabilities for the page agent.
   - name: bytebase.v1.AuditLogService
     description: AuditLogService manages audit logs for system activities and API calls.
+  - name: bytebase.v1.IdentityProviderService
+    description: IdentityProviderService manages external identity providers for SSO authentication.
   - name: bytebase.v1.UserService
     description: UserService manages user accounts and authentication.
   - name: bytebase.v1.AuthService
@@ -22563,8 +23738,6 @@ tags:
     description: DatabaseService manages databases and their schemas.
   - name: bytebase.v1.GroupService
     description: GroupService manages user groups for organizing users and permissions.
-  - name: bytebase.v1.IdentityProviderService
-    description: IdentityProviderService manages external identity providers for SSO authentication.
   - name: bytebase.v1.OrgPolicyService
     description: OrgPolicyService manages organizational policies at various resource levels.
   - name: bytebase.v1.ProjectService
@@ -22577,6 +23750,20 @@ tags:
     description: RevisionService manages schema revision history.
   - name: bytebase.v1.RoleService
     description: RoleService manages workspace roles and permissions.
+  - name: bytebase.v1.SavedQueryService
+    description: |-
+      SavedQueryService manages saved queries in the SQL Editor.
+
+       A saved query is private to its creator until shared. Permissions come from
+       three places:
+       - The creator owns the saved query and holds every permission on it.
+       - A VIEWER binding grants bb.savedQueries.get and getIamPolicy; an EDITOR
+         binding adds update.
+       - Permissions granted on the project or workspace apply to every saved
+         query in the project, private ones included.
+       A caller without a method's permission gets NotFound, not
+       PermissionDenied, so private names stay unprobeable. Running a saved query
+       is governed by the SQL Editor's database permissions, not by this service.
   - name: bytebase.v1.ServiceAccountService
     description: ServiceAccountService manages service accounts for API integrations.
   - name: bytebase.v1.SheetService
@@ -22585,7 +23772,5 @@ tags:
     description: SubscriptionService manages enterprise subscriptions and licensing.
   - name: bytebase.v1.WorkloadIdentityService
     description: WorkloadIdentityService manages workload identities for external CI/CD integrations.
-  - name: bytebase.v1.WorksheetService
-    description: WorksheetService manages SQL worksheets for query development.
   - name: bytebase.v1.WorkspaceService
     description: WorkspaceService manages workspace-level operations and profile.

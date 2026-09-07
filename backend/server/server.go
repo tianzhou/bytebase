@@ -25,8 +25,11 @@ import (
 	"github.com/bytebase/bytebase/backend/component/config"
 	"github.com/bytebase/bytebase/backend/component/dbfactory"
 	"github.com/bytebase/bytebase/backend/component/iam"
+	"github.com/bytebase/bytebase/backend/component/productmetrics"
 	"github.com/bytebase/bytebase/backend/component/review"
-	"github.com/bytebase/bytebase/backend/component/sampleinstance"
+	"github.com/bytebase/bytebase/backend/component/sample"
+	"github.com/bytebase/bytebase/backend/component/sample/saas"
+	"github.com/bytebase/bytebase/backend/component/sample/selfhost"
 	"github.com/bytebase/bytebase/backend/component/sheet"
 	"github.com/bytebase/bytebase/backend/component/telemetry"
 	"github.com/bytebase/bytebase/backend/component/webhook"
@@ -40,6 +43,8 @@ import (
 	"github.com/bytebase/bytebase/backend/runner/monitor"
 	"github.com/bytebase/bytebase/backend/runner/notifylistener"
 	"github.com/bytebase/bytebase/backend/runner/plancheck"
+	"github.com/bytebase/bytebase/backend/runner/reviewrun"
+	samplerunner "github.com/bytebase/bytebase/backend/runner/sample"
 	"github.com/bytebase/bytebase/backend/runner/schemasync"
 	"github.com/bytebase/bytebase/backend/runner/taskrun"
 	"github.com/bytebase/bytebase/backend/store"
@@ -59,16 +64,18 @@ type Server struct {
 	// Asynchronous runners.
 	taskScheduler      *taskrun.Scheduler
 	planCheckScheduler *plancheck.Scheduler
+	reviewRunScheduler *reviewrun.Scheduler
 	schemaSyncer       *schemasync.Syncer
 	approvalRunner     *review.Runner
 	notifyListener     *notifylistener.Listener
 	dataCleaner        *cleaner.DataCleaner
 	heartbeatRunner    *heartbeat.Runner
+	sampleRunner       *samplerunner.Runner
 	runnerWG           sync.WaitGroup
 
-	webhookManager        *webhook.Manager
-	iamManager            *iam.Manager
-	sampleInstanceManager *sampleinstance.Manager
+	webhookManager *webhook.Manager
+	iamManager     *iam.Manager
+	sampleManager  sample.Manager
 
 	licenseService *enterprise.LicenseService
 
@@ -154,16 +161,10 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 	}
 	var workspaceID string
 	if !s.profile.SaaS {
-		s.sampleInstanceManager = sampleinstance.NewManager(stores, profile)
-
 		// Load workspace-dependent settings if workspace exists.
 		// On first boot (no workspace yet), these remain at defaults and get
 		// initialized when the workspace is created and settings are updated via API.
 		if workspaceID, _ = stores.GetWorkspaceID(ctx); workspaceID != "" {
-			if err := s.sampleInstanceManager.StartIfExist(ctx, workspaceID); err != nil {
-				slog.Warn("failed to start sample instances", log.BBError(err))
-			}
-
 			if workspaceProfileSetting, err := s.store.GetWorkspaceProfileSetting(ctx, workspaceID); err == nil {
 				logSetup = workspaceProfileSetting
 				if logSetup.GetEnableAuditLogStdout() && s.licenseService.IsFeatureEnabled(ctx, workspaceID, v1pb.PlanFeature_FEATURE_AUDIT_LOG) == nil {
@@ -213,16 +214,39 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 	// Configure echo server.
 	s.echoServer = echo.New()
 
-	s.schemaSyncer = schemasync.NewSyncer(stores, s.dbFactory, s.licenseService)
+	productMetrics := productmetrics.New(stores, s.licenseService)
+	s.schemaSyncer = schemasync.NewSyncer(stores, s.dbFactory, s.licenseService, productMetrics)
+	if profile.SaaS {
+		s.sampleManager = configureSampleManager(
+			ctx,
+			profile.SampleProjectInstancePgURL,
+			stores,
+			s.schemaSyncer,
+			profile.ReplicaID,
+		)
+	} else {
+		s.sampleManager = selfhost.NewManager(stores, profile, s.schemaSyncer, sample.ManagerOptions{ReplicaID: profile.ReplicaID})
+	}
+	if s.sampleManager != nil {
+		s.sampleRunner = samplerunner.NewRunner(s.sampleManager)
+		if workspaceID != "" {
+			if err := s.sampleManager.Start(ctx, workspaceID); err != nil {
+				slog.Warn("failed to start sample instances", log.BBError(err))
+			}
+		}
+	}
 	s.approvalRunner = review.NewRunner(stores, s.bus, s.webhookManager, s.licenseService)
 
-	s.taskScheduler = taskrun.NewScheduler(stores, s.bus, s.webhookManager, s.licenseService, profile)
+	s.taskScheduler = taskrun.NewScheduler(stores, s.bus, s.webhookManager, s.licenseService, profile, productMetrics)
 	s.taskScheduler.Register(storepb.Task_DATABASE_CREATE, taskrun.NewDatabaseCreateExecutor(stores, s.dbFactory, s.schemaSyncer))
 	s.taskScheduler.Register(storepb.Task_DATABASE_MIGRATE, taskrun.NewDatabaseMigrateExecutor(stores, s.dbFactory, s.bus, s.schemaSyncer, profile))
-	s.taskScheduler.Register(storepb.Task_DATABASE_EXPORT, taskrun.NewDataExportExecutor(stores, s.dbFactory, s.licenseService))
 
 	combinedExecutor := plancheck.NewCombinedExecutor(stores, sheetManager, s.dbFactory)
-	s.planCheckScheduler = plancheck.NewScheduler(stores, s.bus, combinedExecutor, s.licenseService)
+	s.planCheckScheduler = plancheck.NewScheduler(stores, s.bus, combinedExecutor, s.licenseService, productMetrics)
+
+	s.reviewRunScheduler = reviewrun.NewScheduler(stores, s.bus, profile, s.licenseService, productMetrics)
+	s.reviewRunScheduler.Register(store.ReviewRunTypeRule, reviewrun.NewRuleExecutor(stores, sheetManager, s.dbFactory))
+	s.reviewRunScheduler.Register(store.ReviewRunTypeGuideline, reviewrun.NewGuidelineExecutor())
 	s.notifyListener = notifylistener.NewListener(stores.GetDB(), s.bus)
 
 	// Data cleaner
@@ -236,20 +260,47 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 
 	directorySyncServer := directorysync.NewService(s.store, s.licenseService, s.iamManager, profile)
 	oauth2Service := oauth2.NewService(stores, profile, secret)
-	mcpServer, err := mcp.NewServer(stores, profile, secret)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to create MCP server")
-	}
 
 	stripeWebhookHandler := stripeapi.NewWebhookHandler(s.store, s.licenseService, profile.StripeWebhookSecret)
 
-	if err := configureGrpcRouters(ctx, s.echoServer, s.store, sheetManager, s.dbFactory, s.licenseService, s.profile, s.bus, s.schemaSyncer, s.webhookManager, s.iamManager, secret, s.sampleInstanceManager); err != nil {
+	internalMCPHandler, err := configureGrpcRouters(ctx, s.echoServer, s.store, sheetManager, s.dbFactory, s.licenseService, s.profile, s.bus, s.schemaSyncer, s.webhookManager, s.iamManager, secret, s.sampleManager)
+	if err != nil {
 		return nil, errors.Wrapf(err, "failed to configure gRPC routers")
 	}
-	configureEchoRouters(s.echoServer, s.lspServer, directorySyncServer, oauth2Service, mcpServer, stripeWebhookHandler, profile)
+	mcpServer, err := mcp.NewServer(stores, profile, secret, internalMCPHandler)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to create MCP server")
+	}
+	configureEchoRouters(s.echoServer, s.lspServer, directorySyncServer, oauth2Service, mcpServer, stripeWebhookHandler, productMetrics, profile)
 
 	serverStarted = true
 	return s, nil
+}
+
+func configureSampleManager(
+	ctx context.Context,
+	targetURL string,
+	stores *store.Store,
+	syncer *schemasync.Syncer,
+	replicaID string,
+) sample.Manager {
+	if targetURL == "" {
+		return nil
+	}
+	manager, err := saas.NewManager(
+		stores,
+		targetURL,
+		syncer,
+		sample.ManagerOptions{ReplicaID: replicaID},
+	)
+	if err != nil {
+		slog.Warn("invalid SAMPLE_PROJECT_INSTANCE_PG_URL; Sample Project Instance is disabled", log.BBError(err))
+		return nil
+	}
+	if err := manager.CheckAvailable(ctx); err != nil {
+		slog.Warn("Sample Project Instance target is temporarily unavailable", log.BBError(err))
+	}
+	return manager
 }
 
 // Run will run the server.
@@ -268,10 +319,18 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	go s.planCheckScheduler.Run(ctx, &s.runnerWG)
 
 	s.runnerWG.Add(1)
+	go s.reviewRunScheduler.Run(ctx, &s.runnerWG)
+
+	s.runnerWG.Add(1)
 	go s.dataCleaner.Run(ctx, &s.runnerWG)
 
 	s.runnerWG.Add(1)
 	go s.heartbeatRunner.Run(ctx, &s.runnerWG)
+
+	if s.sampleRunner != nil {
+		s.runnerWG.Add(1)
+		go s.sampleRunner.Run(ctx, &s.runnerWG)
+	}
 
 	s.runnerWG.Add(1)
 	go s.notifyListener.Run(ctx, &s.runnerWG)
@@ -338,8 +397,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	// Shutdown sample instances
-	if s.sampleInstanceManager != nil {
-		s.sampleInstanceManager.Stop()
+	if s.sampleManager != nil {
+		s.sampleManager.Stop()
 	}
 
 	// Shutdown postgres instances.

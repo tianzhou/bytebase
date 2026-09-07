@@ -2,14 +2,13 @@ import { create } from "@bufbuild/protobuf";
 import { Code, createContextValues } from "@connectrpc/connect";
 import { uniqueId } from "lodash-es";
 import { authServiceClientConnect, userServiceClientConnect } from "@/api";
-import { ignoredCodesContextKey } from "@/api/context-key";
+import { ignoredCodesContextKey, silentContextKey } from "@/api/context-key";
 import {
   AUTH_MFA_MODULE,
   AUTH_PASSWORD_RESET_MODULE,
-  AUTH_PROFILE_SETUP_MODULE,
+  AUTH_SETUP_MODULE,
   AUTH_SIGNIN_MODULE,
-  SETUP_MODULE,
-  SQL_EDITOR_HOME_MODULE,
+  WORKSPACE_ROUTE_LANDING,
 } from "@/app/router/handles";
 import {
   navigateByName,
@@ -21,7 +20,6 @@ import {
   SendEmailLoginCodeRequestSchema,
   SignupRequestSchema,
 } from "@/types/proto-es/v1/auth_service_pb";
-import { DatabaseChangeMode } from "@/types/proto-es/v1/setting_service_pb";
 import type { User } from "@/types/proto-es/v1/user_service_pb";
 import { UNKNOWN_USER_NAME } from "@/types/v1/user";
 import { storageKeyResetPassword } from "@/utils/storage-keys";
@@ -63,6 +61,30 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
   unauthenticatedOccurred: false,
   authSessionKey: uniqueId(),
   isSelfEmailUpdate: false,
+
+  loadAuthenticationInfo: async () => {
+    const existing = get().authenticationInfo;
+    if (existing) return existing;
+    const pending = get().authenticationInfoRequest;
+    if (pending) return pending;
+    const request = get()
+      .fetchAuthenticationInfo()
+      .finally(() => set({ authenticationInfoRequest: undefined }));
+    set({ authenticationInfoRequest: request });
+    return request;
+  },
+
+  fetchAuthenticationInfo: async (workspace) => {
+    try {
+      const info = await authServiceClientConnect.getAuthenticationInfo({
+        workspace: workspace ?? get().currentUser?.workspace ?? "",
+      });
+      set({ authenticationInfo: info });
+      return info;
+    } catch {
+      return undefined;
+    }
+  },
 
   isLoggedIn: () => {
     const name = get().currentUserName;
@@ -121,15 +143,21 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
 
   // Force re-fetch (mirrors the Pinia `fetchCurrentUser`, which always hits
   // the server — login/signup need the fresh authenticated user).
-  fetchCurrentUser: async () => {
+  fetchCurrentUser: async (silent = false) => {
     try {
-      const user = await userServiceClientConnect.getCurrentUser({});
+      const user = await userServiceClientConnect.getCurrentUser(
+        {},
+        { contextValues: createContextValues().set(silentContextKey, silent) }
+      );
       set({ currentUser: user, currentUserName: user.name });
       return user;
     } catch {
       return undefined;
     }
   },
+
+  setCurrentUser: (user) =>
+    set({ currentUser: user, currentUserName: user.name }),
 
   // sometimes we have to redirect users even if we don't want to redirect them.
   // for example, the user is forced to reset their password,
@@ -143,9 +171,11 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
         ]),
       }
     );
-    const getRedirectQuery = () =>
-      new URLSearchParams(window.location.search).get("redirect");
-    let nextPage = redirectUrl ?? (getRedirectQuery() || "/");
+    const redirectQuery = new URLSearchParams(window.location.search).get(
+      "redirect"
+    );
+    const explicitRedirect = redirectUrl ?? redirectQuery;
+    const nextPage = explicitRedirect || "/";
     if (resp.mfaTempToken) {
       set({ unauthenticatedOccurred: false });
       navigateByName(AUTH_MFA_MODULE, {
@@ -161,29 +191,39 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
     }
 
     get().setRequireResetPassword(resp.requireResetPassword);
-    await get().fetchServerInfo(user?.workspace);
+    await get().fetchServerInfo();
     // Re-fetch the current workspace now that we're authenticated.
     await get().loadWorkspace();
+    // `rootGuard` decides where "/" goes, and it reads the workspace change
+    // mode from this store. The profile is only fetchable once authenticated,
+    // so a boot that started signed out left `appFeatures` at its PIPELINE
+    // default and an EDITOR workspace would fall through to the landing page.
+    // `force` because a previous user's profile must not survive a re-auth.
+    await get().loadWorkspaceProfile(true);
 
     // After user login, reset the auth session key.
     set({ authSessionKey: uniqueId() });
 
-    if (
-      get().appFeatures["bb.feature.database-change-mode"] ===
-      DatabaseChangeMode.EDITOR
-    ) {
-      nextPage = resolvePath(SQL_EDITOR_HOME_MODULE);
-    }
     if (resp.requireResetPassword) {
       navigateByName(AUTH_PASSWORD_RESET_MODULE, {
         query: { redirect: nextPage },
       });
       return;
     }
-    if (get().isSaaSMode() && resp.user && needsProfileSetup(resp.user)) {
-      navigateByName(AUTH_PROFILE_SETUP_MODULE, {
-        query: { redirect: nextPage },
-      });
+    if (resp.user && needsProfileSetup(resp.user)) {
+      set({ workspacePolicy: undefined });
+      await get()
+        .fetchWorkspaceIamPolicy(true)
+        .catch(() => undefined);
+      if (get().enableOnboarding()) {
+        navigateByName(AUTH_SETUP_MODULE, {
+          query: { redirect: nextPage },
+        });
+      } else if (explicitRedirect) {
+        navigateToPath(nextPage, { replace: true });
+      } else {
+        navigateByName(WORKSPACE_ROUTE_LANDING, { replace: true });
+      }
       return;
     }
     if (redirect) {
@@ -208,24 +248,29 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
       return;
     }
 
-    await get().fetchServerInfo(user?.workspace);
+    await get().fetchServerInfo();
+    set({ workspacePolicy: undefined });
+    await Promise.all([
+      get().loadWorkspaceProfile(true),
+      get()
+        .fetchWorkspaceIamPolicy(true)
+        .catch(() => undefined),
+    ]);
     set({ authSessionKey: uniqueId() });
 
     if (get().enableOnboarding()) {
-      navigateByName(SETUP_MODULE, { replace: true });
+      navigateByName(AUTH_SETUP_MODULE, { replace: true });
       return;
     }
 
-    const getRedirectQuery = () =>
-      new URLSearchParams(window.location.search).get("redirect");
-    let nextPage = getRedirectQuery() || "/";
-    if (
-      get().appFeatures["bb.feature.database-change-mode"] ===
-      DatabaseChangeMode.EDITOR
-    ) {
-      nextPage = resolvePath(SQL_EDITOR_HOME_MODULE);
+    const redirectQuery = new URLSearchParams(window.location.search).get(
+      "redirect"
+    );
+    if (redirectQuery) {
+      navigateToPath(redirectQuery, { replace: true });
+      return;
     }
-    navigateToPath(nextPage, { replace: true });
+    navigateByName(WORKSPACE_ROUTE_LANDING, { replace: true });
   },
 
   logout: async () => {
@@ -235,15 +280,15 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
       // nothing
     } finally {
       set({ unauthenticatedOccurred: false });
-      const pathname = location.pathname;
+      const fullPath = `${location.pathname}${location.search}${location.hash}`;
       const getRedirectQuery = () =>
         new URLSearchParams(window.location.search).get("redirect");
       // Replace and reload the page to clear frontend state directly.
-      window.location.href = resolvePath(AUTH_SIGNIN_MODULE, {
+      location.href = resolvePath(AUTH_SIGNIN_MODULE, {
         query: {
           redirect:
             getRedirectQuery() ||
-            (pathname.startsWith("/auth") ? undefined : pathname),
+            (location.pathname.startsWith("/auth") ? undefined : fullPath),
         },
       });
     }

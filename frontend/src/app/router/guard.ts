@@ -7,14 +7,14 @@ import {
   workspaceCacheScope,
 } from "@/utils/storage-keys";
 import {
+  ACCOUNT_ROUTE,
   AUTH_2FA_SETUP_MODULE,
   AUTH_MFA_MODULE,
   AUTH_OAUTH_CALLBACK_MODULE,
   AUTH_OIDC_CALLBACK_MODULE,
   AUTH_PASSWORD_FORGOT_MODULE,
   AUTH_PASSWORD_RESET_MODULE,
-  AUTH_PROFILE_SETUP_MODULE,
-  AUTH_SIGNIN_ADMIN_MODULE,
+  AUTH_SETUP_MODULE,
   AUTH_SIGNIN_MODULE,
   AUTH_SIGNUP_MODULE,
   DATABASE_ROUTE_DASHBOARD,
@@ -23,7 +23,6 @@ import {
   OAUTH2_CONSENT_MODULE,
   PROJECT_V1_ROUTE_DASHBOARD,
   SETTING_ROUTE,
-  SETUP_MODULE,
   SQL_EDITOR_HOME_MODULE,
   WORKSPACE_ROOT_MODULE,
   WORKSPACE_ROUTE_403,
@@ -45,7 +44,6 @@ const SIGNIN_QUERY_PARAMS = [
 export function isAuthRelatedRoute(routeName: string): boolean {
   return [
     AUTH_SIGNIN_MODULE,
-    AUTH_SIGNIN_ADMIN_MODULE,
     AUTH_SIGNUP_MODULE,
     AUTH_MFA_MODULE,
     AUTH_PASSWORD_RESET_MODULE,
@@ -78,14 +76,42 @@ export function buildSigninRedirectQuery(url: URL): Record<string, string> {
   return query;
 }
 
+export async function workspaceSetupGuard(url: URL): Promise<Response | null> {
+  const store = useAppStore.getState();
+  if (!store.isLoggedIn()) {
+    return null;
+  }
+
+  try {
+    await Promise.all([
+      store.fetchServerInfo(),
+      store.fetchWorkspaceIamPolicy(true),
+    ]);
+  } catch {
+    return redirect(resolvePath(WORKSPACE_ROUTE_LANDING));
+  }
+  if (store.enableOnboarding()) {
+    return null;
+  }
+
+  const redirectParam = url.searchParams.get("redirect");
+  const target =
+    redirectParam?.startsWith("/") &&
+    !redirectParam.startsWith("//") &&
+    !redirectParam.includes("\\")
+      ? redirectParam
+      : resolvePath(WORKSPACE_ROUTE_LANDING);
+  return redirect(target);
+}
+
 // Route-name prefixes that an authenticated user may always access.
 const ALLOWED_ROUTE_PATTERNS = [
+  ACCOUNT_ROUTE,
   ENVIRONMENT_V1_ROUTE_DASHBOARD,
   INSTANCE_ROUTE_DASHBOARD,
   PROJECT_V1_ROUTE_DASHBOARD,
   DATABASE_ROUTE_DASHBOARD,
   SETTING_ROUTE,
-  SETUP_MODULE,
   "workspace",
   "sql-editor",
 ];
@@ -95,8 +121,13 @@ const ALLOWED_ROUTE_PATTERNS = [
 //   - EDITOR change-mode workspaces go to the SQL Editor home
 //   - otherwise the user's last meaningful visit, if any
 //   - falling back to the landing page
-// `loadWorkspaceProfile()` is awaited before the router mounts (see main.ts),
-// so `appFeatures` is populated by the time this runs.
+// It reads `appFeatures`, so every caller that navigates here must have loaded
+// the workspace profile first:
+// `main.ts` awaits it before mounting when the boot already had a session, and
+// `login()`/`signup()` await it before navigating when it did not (a signed-out
+// boot cannot load it, the setting is authenticated-only). Miss that and an
+// EDITOR workspace silently falls through to the landing page. This loader
+// resolves synchronously (see AppRoot), so it does not fetch the profile
 function resolveRootRedirect(
   store: ReturnType<typeof useAppStore.getState>
 ): string {
@@ -191,7 +222,10 @@ export function rootGuard({
   const store = useAppStore.getState();
   const isLoggedIn = store.isLoggedIn();
 
-  if (toName === AUTH_SIGNUP_MODULE && store.isSaaSMode()) {
+  if (
+    toName === AUTH_SIGNUP_MODULE &&
+    store.authenticationInfo?.restriction?.disallowSignup
+  ) {
     return redirect(
       resolvePath(AUTH_SIGNIN_MODULE, {
         query: Object.fromEntries(url.searchParams),
@@ -199,12 +233,12 @@ export function rootGuard({
     );
   }
 
-  // Allow 2FA setup / password reset / profile setup for logged-in users.
+  // Allow 2FA setup / password reset / workspace setup for logged-in users.
   if (
     isLoggedIn &&
     (toName === AUTH_2FA_SETUP_MODULE ||
       toName === AUTH_PASSWORD_RESET_MODULE ||
-      toName === AUTH_PROFILE_SETUP_MODULE)
+      toName === AUTH_SETUP_MODULE)
   ) {
     return null;
   }

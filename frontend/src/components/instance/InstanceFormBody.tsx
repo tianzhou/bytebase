@@ -9,8 +9,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trans, useTranslation } from "react-i18next";
-import { router } from "@/app/router";
+import { useTranslation } from "react-i18next";
 import { EngineIcon } from "@/components/EngineIcon";
 import { EnvironmentSelect } from "@/components/EnvironmentSelect";
 import { FeatureBadge } from "@/components/FeatureBadge";
@@ -18,7 +17,6 @@ import { LabelListEditor } from "@/components/LabelListEditor";
 import { LearnMoreLink } from "@/components/LearnMoreLink";
 import { ResourceIdField } from "@/components/ResourceIdField";
 import { RouterLink } from "@/components/RouterLink";
-import { ResourceLink } from "@/components/sql-review/ResourceLink";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -30,18 +28,17 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { useProjectByName } from "@/hooks/useProjectByName";
 import { cn } from "@/lib/utils";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import {
   environmentNamePrefix,
   instanceNamePrefix,
-  projectNamePrefix,
 } from "@/stores/modules/v1/common";
 import {
   isValidEnvironmentName,
   UNKNOWN_ID,
+  UNKNOWN_INSTANCE_NAME,
   type ValidatedMessage,
 } from "@/types";
 import { Engine } from "@/types/proto-es/v1/common_pb";
@@ -493,7 +490,6 @@ function SyncDatabases({
   const { t } = useTranslation();
   const ctx = useInstanceFormContext();
   const { hideAdvancedFeatures, instance, pendingCreateInstance } = ctx;
-  const project = useProjectByName(projectName ?? "");
 
   const [syncAll, setSyncAll] = useState(syncDatabases === undefined);
   const [selectedSet, setSelectedSet] = useState<Set<string>>(
@@ -568,8 +564,6 @@ function SyncDatabases({
   const visibleDatabases = filteredDatabases.slice(0, visibleDatabaseCount);
   const hasMore = filteredDatabases.length > visibleDatabaseCount;
   const hasProjectContext = !!projectName && isCreatingProp;
-  const projectTitle =
-    project.name === projectName ? project.title || projectName : projectName;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.nativeEvent.isComposing) return;
@@ -624,26 +618,6 @@ function SyncDatabases({
       }
     >
       <div className="flex flex-col gap-y-2">
-        {hasProjectContext && (
-          <Alert variant="info">
-            <Trans
-              t={t}
-              i18nKey="instance.sync-databases.project-description"
-              values={{ project: projectTitle }}
-              components={{
-                project: (
-                  <ResourceLink
-                    resource={projectName || ""}
-                    showResourceType={false}
-                    className="underline underline-offset-2"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  />
-                ),
-              }}
-            />
-          </Alert>
-        )}
         <label className="flex items-center gap-x-2 cursor-pointer">
           <Checkbox
             checked={syncAll}
@@ -722,6 +696,14 @@ interface InstanceFormBodyProps {
   onOpenInfoPanel?: (section: InfoSection) => void;
 }
 
+// Engines without a host field (or with a non-local default) drop the local
+// development placeholder host when the user switches to them.
+const clearLocalPlaceholderHost = (ds: EditDataSource) => {
+  if (ds.host === "127.0.0.1" || ds.host === "host.docker.internal") {
+    ds.host = "";
+  }
+};
+
 export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
   const { t } = useTranslation();
   const ctx = useInstanceFormContext();
@@ -747,6 +729,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
     showConnectionOptionsEvent,
     emitShowConnectionOptions,
     setResourceIdValidated,
+    parent,
   } = ctx;
   const { isEngineBeta, defaultPort, instanceLink, allowEditPort } = specs;
 
@@ -848,30 +831,14 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
     return id;
   }, [basicInfo.name]);
 
-  const routeProjectId = useMemo(() => {
-    const projectId = router.currentRoute.value.query.project;
-    return typeof projectId === "string" && projectId ? projectId : undefined;
-  }, []);
-  const routeProjectName = routeProjectId
-    ? `${projectNamePrefix}${routeProjectId}`
-    : "";
-
-  useEffect(() => {
-    if (!routeProjectName) return;
-    useAppStore
-      .getState()
-      .fetchProject(routeProjectName, true)
-      .catch(() => {
-        // Ignore prefetch failure. The instance creation request still uses the
-        // route project name directly.
-      });
-  }, [routeProjectName]);
-
   const setResourceId = useCallback(
     (id: string) => {
-      setBasicInfo((prev) => ({ ...prev, name: `instances/${id}` }));
+      setBasicInfo((prev) => ({
+        ...prev,
+        name: parent ? `${parent}/instances/${id}` : `instances/${id}`,
+      }));
     },
-    [setBasicInfo]
+    [parent, setBasicInfo]
   );
 
   // Duplicate-instance check used by the shared ResourceIdField's `validate`
@@ -884,10 +851,10 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
         const existing = await useAppStore
           .getState()
           .getOrFetchInstanceByName(
-            `${instanceNamePrefix}${id}`,
+            parent ? `${parent}/instances/${id}` : `${instanceNamePrefix}${id}`,
             true /* silent */
           );
-        if (existing) {
+        if (existing.name !== UNKNOWN_INSTANCE_NAME) {
           return [
             {
               type: "error",
@@ -902,7 +869,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
       }
       return [];
     },
-    [isCreating, t]
+    [isCreating, parent, t]
   );
 
   const currentMongoDBConnectionSchema = useMemo(() => {
@@ -991,26 +958,21 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
           if (ds.type !== DataSourceType.ADMIN) return ds;
           const updated = { ...ds };
           switch (engine) {
-            case Engine.SNOWFLAKE:
+            case Engine.SNOWFLAKE: {
+              clearLocalPlaceholderHost(updated);
+              break;
+            }
             case Engine.DYNAMODB: {
-              if (
-                updated.host === "127.0.0.1" ||
-                updated.host === "host.docker.internal"
-              ) {
-                updated.host = "";
-              }
+              updated.authenticationType =
+                DataSource_AuthenticationType.AWS_RDS_IAM;
+              clearLocalPlaceholderHost(updated);
               break;
             }
             case Engine.SPANNER:
             case Engine.BIGQUERY: {
               updated.authenticationType =
                 DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM;
-              if (
-                updated.host === "127.0.0.1" ||
-                updated.host === "host.docker.internal"
-              ) {
-                updated.host = "";
-              }
+              clearLocalPlaceholderHost(updated);
               break;
             }
             case Engine.COSMOSDB: {
@@ -1019,7 +981,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
               break;
             }
             default: {
-              if (!updated.host) {
+              if (!updated.host && !isSaaSMode) {
                 updated.host = isDev() ? "127.0.0.1" : "host.docker.internal";
               }
               break;
@@ -1031,7 +993,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
       });
       setBasicInfo((prev) => ({ ...prev, engine }));
     },
-    [resetDataSource, setDataSourceEditState, setBasicInfo]
+    [resetDataSource, setDataSourceEditState, setBasicInfo, isSaaSMode]
   );
 
   const handleSelectInstanceEngine = useCallback(
@@ -1149,9 +1111,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
           .getState()
           .updateInstance(instancePatch, ["activation"]);
         useAppStore.getState().updateDatabaseInstance(updated);
-        await useAppStore
-          .getState()
-          .fetchServerInfo(useAppStore.getState().workspaceResourceName());
+        await useAppStore.getState().fetchServerInfo();
         pushNotification({
           module: "bytebase",
           style: "SUCCESS",
@@ -1251,7 +1211,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
       <div className="w-full flex flex-col gap-y-6">
         {/* Engine Selector (create only) */}
         {isCreating && (
-          <div className="rounded-lg border border-block-border bg-background">
+          <div className="rounded-sm border border-block-border bg-background">
             <button
               type="button"
               className="w-full flex items-center justify-between gap-x-3 px-4 py-3 text-left transition-colors hover:bg-control-bg"
@@ -1307,7 +1267,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
         )}
 
         {/* Basic Info Card */}
-        <div className="border border-block-border rounded-lg p-5">
+        <div className="border border-block-border rounded-sm p-5">
           <h3 className="text-base font-medium text-main">
             {t("instance.section.basic-info")}
           </h3>
@@ -1481,7 +1441,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
         </div>
 
         {/* Connection Card */}
-        <div className="border border-block-border rounded-lg p-5">
+        <div className="border border-block-border rounded-sm p-5">
           <h3 className="text-base font-medium text-main">
             {t("instance.section.connection")}
           </h3>
@@ -1579,7 +1539,9 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
                     placeholder={
                       basicInfo.engine === Engine.SNOWFLAKE
                         ? t("instance.your-snowflake-account-locator")
-                        : t("instance.sentence.host.none-snowflake")
+                        : isSaaSMode
+                          ? t("instance.sentence.host.saas")
+                          : t("instance.sentence.host.none-snowflake")
                     }
                     className="mt-1 w-full"
                     disabled={!allowEdit}
@@ -1777,33 +1739,26 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
           </div>
 
           {/* Credentials (auth method, username, password) */}
-          {basicInfo.engine !== Engine.DYNAMODB && (
-            <>
-              <DataSourceSection
-                hideOptions
-                onOpenInfoPanel={onOpenInfoPanel}
-              />
+          <DataSourceSection hideOptions onOpenInfoPanel={onOpenInfoPanel} />
 
-              <div className="mt-6">
-                <SyncDatabases
-                  isCreating={isCreating}
-                  showLabel
-                  allowEdit={
-                    isCreating ? allowEdit && !!allowCreate : allowEdit
-                  }
-                  projectName={routeProjectName}
-                  onOpenInfoPanel={onOpenInfoPanel}
-                  syncDatabases={basicInfo.syncDatabases}
-                  onSyncDatabasesChange={handleChangeSyncDatabases}
-                />
-              </div>
-            </>
+          {basicInfo.engine !== Engine.DYNAMODB && (
+            <div className="mt-6">
+              <SyncDatabases
+                isCreating={isCreating}
+                showLabel
+                allowEdit={isCreating ? allowEdit && !!allowCreate : allowEdit}
+                projectName={parent}
+                onOpenInfoPanel={onOpenInfoPanel}
+                syncDatabases={basicInfo.syncDatabases}
+                onSyncDatabasesChange={handleChangeSyncDatabases}
+              />
+            </div>
           )}
         </div>
 
         {/* Connection Options Card */}
         {basicInfo.engine !== Engine.DYNAMODB && editingDataSource && (
-          <div className="border border-block-border rounded-lg bg-background">
+          <div className="border border-block-border rounded-sm bg-background">
             <button
               type="button"
               className="w-full flex items-center justify-between gap-x-3 px-5 py-4 text-left transition-colors hover:bg-control-bg"
@@ -1856,7 +1811,7 @@ export function InstanceFormBody({ onOpenInfoPanel }: InstanceFormBodyProps) {
               }}
             >
               {state.isTestingConnection
-                ? `${t("instance.test-connection")}...`
+                ? t("instance.testing-connection")
                 : t("instance.test-connection")}
             </Button>
             {testConnectionFailure && (

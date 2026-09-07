@@ -30,6 +30,35 @@ This repo uses a single-context domain-doc layout. See `docs/agents/domain.md`.
   - `./backend/migrator/migration/LATEST.sql` should be updated for DDL migrations
 - Files in `./backend/store` are mappings to the database tables
 
+Anything that writes SQL against the metadata database is governed by
+[`backend/store/AGENTS.md`](backend/store/AGENTS.md): composite-primary-key
+predicates, pagination ordering, and transaction row-lock ordering. That means
+all of `backend/store/` — including the CEL-to-SQL filter builders, which live
+there and not in the service layer — plus the raw metadata reads in the
+`backend/tests/` collision tests. Read it before adding or modifying a query, a
+paginated list, or a multi-row transaction.
+
+## Testing
+
+Test API and workflow behavior against Postgres only — engine dialects and DDL
+fidelity belong in [omni](https://github.com/bytebase/omni), so never write
+`TestFooForMySQL` beside `TestFooForPostgreSQL`. A test earns a Bytebase server
+boot only if it needs a background runner, a real rollout, or the audit trail —
+those live in `backend/tests`, the only package that may start one; everything
+else asserts in `backend/api/v1` or `backend/store`.
+
+A package needing a real metadata Postgres shares one through
+`testcontainer.Main` and `testcontainer.NewMetadataDB`, never its own
+container; a package needing a target engine shares one the same way through
+`testcontainer.SharedPgContainer` and its siblings, with `NewPgDatabase` for
+a database per test. Prefer needing none: extract the
+decide-and-convert half of a handler as functions over plain data, and where
+state is genuinely read declare an interface beside the handler and fake it, as
+`backend/api/mcp` does with `serverStore` — never one interface over the whole
+store, which has 305 methods.
+Every fake needs a contract test run against the real store too, or it drifts
+into testing itself.
+
 ## Development Workflow
 
 **ALWAYS follow these steps after making code changes:**
@@ -130,6 +159,7 @@ psql -U bbdev bbdev
 - Write clean, minimal code; fewer lines is better
 - Prioritize simplicity for effective and maintainable software
 - Only include comments that are essential to understanding functionality or convey non-obvious information
+- Keep comments short while preserving necessary information
 
 ### Go
 
@@ -153,6 +183,11 @@ psql -U bbdev bbdev
 ### React
 
 The product frontend is built in React. **All product UI code is React** — use the stack and component patterns below. The only Vue runtime is the isolated `pev2` adapter under `frontend/src/apps/explain-visualizer/`.
+
+The canonical design foundations and workflow recipes are in
+[`docs/agents/frontend-ux.md`](docs/agents/frontend-ux.md). New and directly
+modified UI must follow it; unrelated legacy UI is governed by its incremental
+baseline and must not gain new violations.
 
 The canonical frontend ownership map is in `./frontend/AGENTS.md`. In summary:
 
@@ -189,51 +224,6 @@ The canonical frontend ownership map is in `./frontend/AGENTS.md`. In summary:
 - React app state lives under `./frontend/src/stores/` — the core slices are in `stores/app/`, consumed via the `useAppStore` hook. Routing helpers live in `./frontend/src/app/router/`
 - React `.tsx` is compiled by esbuild (`react-tsx-transform` Vite plugin) and type-checked with `tsc --build` via `pnpm --dir frontend type-check`
 
-## Naming
-
-- Use American English
-- Avoid plurals like "xxxList" for simplicity and to prevent singular/plural ambiguity stemming from poor design
-
-## Composite Primary Keys
-
-Several tables use composite primary keys (e.g., `(project, id)`). Check
-`backend/migrator/migration/LATEST.sql` for the full list — any table with a
-multi-column PRIMARY KEY.
-
-When writing or modifying queries on these tables:
-- Every WHERE, JOIN, USING, DELETE, and UPDATE predicate must include every
-  project/tenant scope column. Identify rows with either the full primary key or
-  a full declared non-partial UNIQUE key that contains the same scope columns;
-  verify alternate keys in `LATEST.sql`. Never filter by `id` or another locally
-  unique identifier alone
-- When adding a new store method touching a composite-PK table, add a corresponding
-  `TestCollision_*` test in `backend/tests/`. The existing `setupCollidingProjects`
-  fixture and `assertProjectUnchanged` helper cover `plan`, `issue`, `task`, `task_run`,
-  and `plan_check_run`. For tables not in that set (e.g., `plan_webhook_delivery`,
-  `task_run_log`, `db_group`, `release`), write table-specific seed and assertion
-  helpers — or extend the shared helper first
-- Collision tests use `setupCollidingProjects` + `fixture.completeRolloutB` for setup
-  and `snapshotProject` / `assertProjectUnchanged` for assertions — all going through
-  the public gRPC API, no store access. Run with:
-  `go test -v -count=1 ./backend/tests/ -run "^(TestClaim|TestCollision)" -timeout 5m`
-
-## Transaction Lock Ordering
-
-Before adding or modifying a transaction that locks multiple rows or tables, follow the canonical [store row-lock ordering](backend/store/README.md#transaction-row-lock-ordering). Lock existing child rows before parents, lock batches in full primary-key order, and treat upserts as existing-row locks. Add the deterministic real-PostgreSQL regression tests required below for new multi-row or multi-table coordination paths.
-
-Row ordering prevents wait-for cycles on existing rows, but it cannot protect a
-child row that does not exist yet. `nextProjectID` closes that gap for its callers:
-it locks the project and requires the project to be active before allocating an ID,
-so creation is rejected when the project is missing or deleted. This is not a
-repository-wide purge fence because some writers bypass `nextProjectID`.
-
-Every new or modified writer of purge-managed data must define whether its
-lifecycle policy requires an active project or merely an existing project, then
-serialize and validate that policy against project deletion. Add deterministic
-real-PostgreSQL tests for both lock-acquisition directions. Assert the terminal
-outcomes, including that neither direction ends in a foreign-key failure; merely
-checking for the absence of SQLSTATE `40P01` is insufficient.
-
 ### Imports
 
 - Use organized imports (sorted by the import path)
@@ -246,9 +236,14 @@ checking for the absence of SQLSTATE `40P01` is insufficient.
 
 - Be explicit but concise about error cases
 
+## Naming
+
+- Use American English
+- Avoid plurals like "xxxList" for simplicity and to prevent singular/plural ambiguity stemming from poor design
+
 ## Pull Request Guidelines
 
-**Before running `gh pr create`, walk through [`docs/pre-pr-checklist.md`](docs/pre-pr-checklist.md).** It covers the breaking-change review, composite-PK query safety, lint/test gates, and SonarCloud properties — the checks that lint and CI can't catch on their own.
+**Before running `gh pr create`, walk through [`docs/pre-pr-checklist.md`](docs/pre-pr-checklist.md).** It covers the breaking-change review, composite-PK query safety, and lint/test gates — the checks that lint and CI can't catch on their own.
 
 - **Code Review** — Follow [Google's Code Review Guideline](https://google.github.io/eng-practices/)
 - **Author Responsibility** — Authors are responsible for driving discussions, resolving comments, and promptly merging pull requests

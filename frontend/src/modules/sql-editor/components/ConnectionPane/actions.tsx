@@ -7,11 +7,13 @@ import {
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "@/app/router";
-import { PROJECT_V1_ROUTE_DATABASE_DETAIL } from "@/app/router/handles";
 import { useSQLEditorAllowAdmin } from "@/modules/sql-editor/hooks/useSQLEditorState";
 import { sqlEditorEvents } from "@/modules/sql-editor/model/events";
 import { useSQLEditorStore } from "@/modules/sql-editor/store";
-import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
+import {
+  getSQLEditorEditorState,
+  useSQLEditorEditorState,
+} from "@/modules/sql-editor/store/editor";
 import { getSQLEditorTabsState } from "@/modules/sql-editor/store/tab";
 import type {
   BatchQueryContext,
@@ -25,9 +27,9 @@ import {
 } from "@/types";
 import type { Database } from "@/types/proto-es/v1/database_service_pb";
 import {
+  autoDatabaseRoute,
+  canCreateSavedQueryInProject,
   extractDatabaseResourceName,
-  extractInstanceResourceName,
-  extractProjectResourceName,
   getInstanceResource,
   instanceV1HasAlterSchema,
   instanceV1HasReadonlyMode,
@@ -47,11 +49,11 @@ export type ConnectionMenuItem = {
   readonly onSelect: () => void;
 };
 
-const DEFAULT_TAB_MODE: SQLEditorTabMode = "WORKSHEET";
+const DEFAULT_TAB_MODE: SQLEditorTabMode = "SAVED_QUERY";
 
 /**
  * Replaces frontend/src/views/sql-editor/ConnectionPanel/ConnectionPane/actions.tsx's `setConnection`.
- * Connects the current tab or creates a new worksheet, then sets the tab
+ * Connects the current tab or creates a new saved query, then sets the tab
  * mode + batch-query context and flips the aside panel to `SCHEMA`.
  */
 export function setConnection(options: {
@@ -70,7 +72,9 @@ export function setConnection(options: {
 
   const tabsState = getSQLEditorTabsState();
   const currentTab = tabsState.tabsById.get(tabsState.currentTabId);
-  const { maybeUpdateWorksheet, createWorksheet } =
+  const nextMode = mode === "DATA_EXPLORER" ? DEFAULT_TAB_MODE : mode;
+  const shouldCreateNewTab = newTab || currentTab?.mode === "DATA_EXPLORER";
+  const { maybeUpdateSavedQuery, createSavedQuery } =
     useSQLEditorStore.getState();
 
   const batchQueryContext: BatchQueryContext = Object.assign(
@@ -80,23 +84,31 @@ export function setConnection(options: {
   );
 
   const createOrUpdate = () => {
-    if (!newTab && currentTab) {
-      return maybeUpdateWorksheet({
+    if (!shouldCreateNewTab && currentTab) {
+      return maybeUpdateSavedQuery({
         tabId: currentTab.id,
-        worksheet: currentTab.worksheet,
+        savedQuery: currentTab.savedQuery,
         title: currentTab.title,
         database: connection.database,
         statement: currentTab.statement,
       });
     }
-    return createWorksheet({
+    if (!canCreateSavedQueryInProject(getSQLEditorEditorState().project)) {
+      // Same fallback as the tab bar's "+": open the tab locally rather than
+      // failing the request, so the connection the user picked still opens.
+      return Promise.resolve(getSQLEditorTabsState().addTab({ connection }));
+    }
+    return createSavedQuery({
       database: connection.database,
     });
   };
 
   void createOrUpdate().then((tab) => {
     if (tab) {
-      getSQLEditorTabsState().updateTab(tab.id, { mode, batchQueryContext });
+      getSQLEditorTabsState().updateTab(tab.id, {
+        mode: nextMode,
+        batchQueryContext,
+      });
       useSQLEditorStore.getState().setAsidePanelTab("SCHEMA");
     }
   });
@@ -159,22 +171,12 @@ export function useConnectionMenu(node: SQLEditorTreeNode | null) {
 
     if (type === "database") {
       const database = target as Database;
-      const { instance, databaseName } = extractDatabaseResourceName(
-        database.name
-      );
       out.push({
         key: "view-database-detail",
         label: t("sql-editor.view-database-detail"),
         icon: <ExternalLink className="size-4" />,
         onSelect: () => {
-          const route = router.resolve({
-            name: PROJECT_V1_ROUTE_DATABASE_DETAIL,
-            params: {
-              projectId: extractProjectResourceName(database.project),
-              instanceId: extractInstanceResourceName(instance),
-              databaseName,
-            },
-          });
+          const route = router.resolve(autoDatabaseRoute(database));
           window.open(route.href, "_blank");
         },
       });

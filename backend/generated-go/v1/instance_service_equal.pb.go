@@ -28,6 +28,9 @@ func (x *ListInstancesRequest) Equal(y *ListInstancesRequest) bool {
 	if x == nil || y == nil {
 		return x == nil && y == nil
 	}
+	if p, q := x.Parent, y.Parent; (p == nil && q != nil) || (p != nil && (q == nil || *p != *q)) {
+		return false
+	}
 	if x.PageSize != y.PageSize {
 		return false
 	}
@@ -74,6 +77,9 @@ func (x *CreateInstanceRequest) Equal(y *CreateInstanceRequest) bool {
 	if x == nil || y == nil {
 		return x == nil && y == nil
 	}
+	if p, q := x.Parent, y.Parent; (p == nil && q != nil) || (p != nil && (q == nil || *p != *q)) {
+		return false
+	}
 	if !x.Instance.Equal(y.Instance) {
 		return false
 	}
@@ -83,7 +89,17 @@ func (x *CreateInstanceRequest) Equal(y *CreateInstanceRequest) bool {
 	if x.ValidateOnly != y.ValidateOnly {
 		return false
 	}
-	if x.InitialDatabaseProject != y.InitialDatabaseProject {
+	return true
+}
+
+func (x *PrepareSampleProjectInstanceRequest) Equal(y *PrepareSampleProjectInstanceRequest) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.Parent != y.Parent {
 		return false
 	}
 	return true
@@ -219,6 +235,9 @@ func (x *BatchSyncInstancesRequest) Equal(y *BatchSyncInstancesRequest) bool {
 	if x == nil || y == nil {
 		return x == nil && y == nil
 	}
+	if p, q := x.Parent, y.Parent; (p == nil && q != nil) || (p != nil && (q == nil || *p != *q)) {
+		return false
+	}
 	if len(x.Requests) != len(y.Requests) {
 		return false
 	}
@@ -246,6 +265,9 @@ func (x *BatchUpdateInstancesRequest) Equal(y *BatchUpdateInstancesRequest) bool
 	}
 	if x == nil || y == nil {
 		return x == nil && y == nil
+	}
+	if p, q := x.Parent, y.Parent; (p == nil && q != nil) || (p != nil && (q == nil || *p != *q)) {
+		return false
 	}
 	if len(x.Requests) != len(y.Requests) {
 		return false
@@ -727,9 +749,6 @@ func (x *DataSource) Equal(y *DataSource) bool {
 		return false
 	}
 	if x.RedisType != y.RedisType {
-		return false
-	}
-	if x.Cluster != y.Cluster {
 		return false
 	}
 	if len(x.ExtraConnectionParameters) != len(y.ExtraConnectionParameters) {

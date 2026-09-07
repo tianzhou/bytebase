@@ -16,7 +16,6 @@ import type { ReactNode } from "react";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "@/app/router";
-import { SQL_EDITOR_DATABASE_MODULE } from "@/app/router/handles";
 import { formatSQL } from "@/components/monaco/sqlFormatter";
 import { useExecuteSQL } from "@/hooks/useExecuteSQL";
 import { writeTextToClipboard } from "@/lib/clipboard";
@@ -41,10 +40,9 @@ import {
 } from "@/types/proto-es/v1/database_service_pb";
 import { defaultViewState } from "@/types/sqlEditor/tabViewState";
 import {
+  autoSQLEditorDatabaseRoute,
   defaultSQLEditorTab,
   extractDatabaseResourceName,
-  extractInstanceResourceName,
-  extractProjectResourceName,
   generateSimpleDeleteStatement,
   generateSimpleInsertStatement,
   generateSimpleSelectAllStatement,
@@ -273,6 +271,49 @@ export function useSchemaPaneActions() {
     [getDatabaseByName, execute]
   );
 
+  const openDataExplorer = useCallback((node: TreeNode) => {
+    const { target, type } = (node as TreeNode<"table" | "view">).meta;
+    if (type !== "table" && type !== "view") return;
+
+    const table = readableTextForNodeTarget(type, target);
+    if (!table) return;
+
+    const { database, schema } = target;
+    const connection: SQLEditorConnection = {
+      instance: extractDatabaseResourceName(database).instance,
+      database,
+      schema: schema ?? "",
+      table,
+    };
+    const tabsState = getSQLEditorTabsState();
+    const existing = [...tabsState.tabsById.values()].find(
+      (tab) =>
+        tab.mode === "DATA_EXPLORER" &&
+        tab.connection.instance === connection.instance &&
+        tab.connection.database === connection.database &&
+        (tab.connection.schema ?? "") === connection.schema &&
+        tab.connection.table === connection.table
+    );
+    if (existing) {
+      tabsState.setCurrentTabId(existing.id);
+      return;
+    }
+
+    tabsState.addTab(
+      {
+        title: table,
+        status: "CLEAN",
+        mode: "DATA_EXPLORER",
+        connection,
+        dataExplorer: {
+          filter: "",
+          initialized: false,
+        },
+      },
+      true
+    );
+  }, []);
+
   const viewDetail = useCallback(
     async (node: TreeNode) => {
       const { type, target } = node.meta;
@@ -337,7 +378,12 @@ export function useSchemaPaneActions() {
     [openNewTab]
   );
 
-  return { selectAllFromTableOrView, viewDetail, openNewTab };
+  return {
+    selectAllFromTableOrView,
+    openDataExplorer,
+    viewDetail,
+    openNewTab,
+  };
 }
 
 export type SchemaMenuItem = {
@@ -392,8 +438,7 @@ export function useSchemaPaneContextMenu(
   // metadata at call time via `useAppStore.getState()` so we don't
   // subscribe (and re-derive the menu) on every metadata cache update.
   const getTableMetadata = useAppStore((s) => s.getTableMetadata);
-  const { selectAllFromTableOrView, viewDetail, openNewTab } =
-    useSchemaPaneActions();
+  const { openDataExplorer, viewDetail, openNewTab } = useSchemaPaneActions();
 
   const notify = useCallback(
     (key: string) => {
@@ -523,16 +568,9 @@ export function useSchemaPaneContextMenu(
           label: t("sql-editor.copy-url"),
           icon: <LinkIcon className="size-4" />,
           onSelect: () => {
-            const { instance, databaseName } = extractDatabaseResourceName(
-              db.name
-            );
+            const databaseRoute = autoSQLEditorDatabaseRoute(db);
             const route = router.resolve({
-              name: SQL_EDITOR_DATABASE_MODULE,
-              params: {
-                project: extractProjectResourceName(db.project),
-                instance: extractInstanceResourceName(instance),
-                database: databaseName,
-              },
+              ...databaseRoute,
               query: { table, schema },
             });
             const url = new URL(route.href, window.location.origin).href;
@@ -544,10 +582,10 @@ export function useSchemaPaneContextMenu(
       if (targetSupportsGenerateSQL(target)) {
         items.push({
           key: "preview-table-data",
-          label: t("sql-editor.preview-table-data"),
+          label: t("sql-editor.explore-data"),
           icon: <TableIcon className="size-4" />,
           onSelect: () => {
-            void selectAllFromTableOrView(node);
+            openDataExplorer(node);
           },
         });
       }
@@ -663,8 +701,8 @@ export function useSchemaPaneContextMenu(
     getDatabaseByName,
     getTableMetadata,
     notify,
+    openDataExplorer,
     openNewTab,
-    selectAllFromTableOrView,
     t,
     viewDetail,
   ]);

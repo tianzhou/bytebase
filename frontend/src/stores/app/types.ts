@@ -7,7 +7,10 @@ import type { Permission } from "@/types/iam/permission";
 import type { NotificationCreate } from "@/types/notification";
 import type { AccessGrant } from "@/types/proto-es/v1/access_grant_service_pb";
 import type { ActuatorInfo } from "@/types/proto-es/v1/actuator_service_pb";
-import type { LoginRequest } from "@/types/proto-es/v1/auth_service_pb";
+import type {
+  AuthenticationInfo,
+  LoginRequest,
+} from "@/types/proto-es/v1/auth_service_pb";
 import type {
   Changelog,
   ChangelogView,
@@ -63,6 +66,11 @@ import type { Release } from "@/types/proto-es/v1/release_service_pb";
 import type { Revision } from "@/types/proto-es/v1/revision_service_pb";
 import type { Role } from "@/types/proto-es/v1/role_service_pb";
 import type { Rollout } from "@/types/proto-es/v1/rollout_service_pb";
+import type {
+  SavedQuery,
+  SavedQueryBinding_Level,
+  SavedQueryPolicy,
+} from "@/types/proto-es/v1/saved_query_service_pb";
 import type { ServiceAccount } from "@/types/proto-es/v1/service_account_service_pb";
 import type {
   DataClassificationSetting_DataClassificationConfig,
@@ -89,10 +97,6 @@ import type {
   User,
 } from "@/types/proto-es/v1/user_service_pb";
 import type { WorkloadIdentity } from "@/types/proto-es/v1/workload_identity_service_pb";
-import type {
-  Worksheet,
-  WorksheetOrganizer,
-} from "@/types/proto-es/v1/worksheet_service_pb";
 import type { Workspace } from "@/types/proto-es/v1/workspace_service_pb";
 import type { Environment } from "@/types/v1/environment";
 import type { IssueFilter } from "@/types/v1/issue/issue";
@@ -135,6 +139,7 @@ export type ListServiceAccountsParams = {
   pageToken?: string;
   showDeleted: boolean;
   filter?: AccountFilter;
+  skipCache?: boolean;
 };
 
 export type ListWorkloadIdentitiesParams = {
@@ -143,6 +148,7 @@ export type ListWorkloadIdentitiesParams = {
   pageToken?: string;
   showDeleted: boolean;
   filter?: AccountFilter;
+  skipCache?: boolean;
 };
 
 export type AccessGrantFilter = {
@@ -176,6 +182,8 @@ export type ListAccessGrantsParams = {
 };
 
 export type AuthSlice = {
+  authenticationInfo?: AuthenticationInfo;
+  authenticationInfoRequest?: Promise<AuthenticationInfo | undefined>;
   currentUser?: User;
   currentUserRequest?: Promise<User | undefined>;
   // Resource name `users/{email}` of the signed-in user. Mirrors the legacy
@@ -184,12 +192,20 @@ export type AuthSlice = {
   unauthenticatedOccurred: boolean;
   authSessionKey: string;
   isSelfEmailUpdate: boolean;
+  loadAuthenticationInfo: () => Promise<AuthenticationInfo | undefined>;
+  fetchAuthenticationInfo: (
+    workspace?: string
+  ) => Promise<AuthenticationInfo | undefined>;
   loadCurrentUser: () => Promise<User | undefined>;
   isLoggedIn: () => boolean;
   requireResetPassword: () => boolean;
   setRequireResetPassword: (value: boolean) => void;
   setUnauthenticatedOccurred: (value: boolean) => void;
-  fetchCurrentUser: () => Promise<User | undefined>;
+  fetchCurrentUser: (silent?: boolean) => Promise<User | undefined>;
+  // Adopt a user a mutation just returned. Preferred over refetching when the
+  // caller already holds the authoritative row: a refetch can fail, and
+  // fetchCurrentUser swallows that, leaving guards reading stale state.
+  setCurrentUser: (user: User) => void;
   login: (params: {
     request: LoginRequest;
     redirect?: boolean;
@@ -227,11 +243,7 @@ export type WorkspaceSlice = {
   paymentInfo?: PaymentInfo;
   loadServerInfo: () => Promise<ActuatorInfo | undefined>;
   refreshServerInfo: () => Promise<ActuatorInfo | undefined>;
-  // Alias for the legacy Pinia `actuatorStore.fetchServerInfo(workspace?)`
-  // so consumers map 1:1. Delegates to the slice's refresh path.
-  fetchServerInfo: (
-    workspaceResourceName?: string
-  ) => Promise<ActuatorInfo | undefined>;
+  fetchServerInfo: () => Promise<ActuatorInfo | undefined>;
   loadWorkspace: () => Promise<Workspace | undefined>;
   loadWorkspaceList: () => Promise<Workspace[]>;
   updateWorkspace: (
@@ -301,10 +313,8 @@ export type WorkspaceSlice = {
   totalInstanceCount: () => number;
   userCountInIam: () => number;
   activeVcsUserCount: () => number;
-  activeUserCount: () => number;
   enableOnboarding: () => boolean;
-  quickStartEnabled: () => boolean;
-  setupSample: () => Promise<void>;
+  workspaceSetupGuideEnabled: (allowMultipleMembers?: boolean) => boolean;
   // Always returns a profile (never undefined), mirroring the Pinia
   // `workspaceProfile` getter so consumers read fields without null checks.
   getWorkspaceProfile: () => WorkspaceProfileSetting;
@@ -363,7 +373,7 @@ export type IamSlice = {
     project: string,
     policy: IamPolicy
   ) => Promise<IamPolicy>;
-  fetchWorkspaceIamPolicy: () => Promise<IamPolicy>;
+  fetchWorkspaceIamPolicy: (silent?: boolean) => Promise<IamPolicy>;
   patchWorkspaceIamPolicy: (
     batchPatch: { member: string; roles: string[] }[]
   ) => Promise<void>;
@@ -373,6 +383,10 @@ export type IamSlice = {
   getWorkspaceRolesByName: (name: string) => Set<string>;
   hasWorkspacePermission: (permission: Permission) => boolean;
   hasProjectPermission: (project: Project, permission: Permission) => boolean;
+  hasProjectWidePermission: (
+    project: Project,
+    permission: Permission
+  ) => boolean;
 };
 
 export interface ProjectFilter {
@@ -446,8 +460,9 @@ export type InstanceSlice = {
   createInstance: (
     instance: Instance,
     validateOnly?: boolean,
-    options?: { initialDatabaseProject?: string }
+    options?: { parent?: string }
   ) => Promise<Instance>;
+  prepareSampleProjectInstance: (parent: string) => Promise<Instance>;
   updateInstance: (
     instance: Instance,
     updateMask: string[]
@@ -461,10 +476,12 @@ export type InstanceSlice = {
   ) => Promise<SyncInstanceResponse>;
   batchSyncInstances: (
     instanceNameList: string[],
-    enableFullSync: boolean
+    enableFullSync: boolean,
+    parent?: string
   ) => Promise<void>;
   batchUpdateInstances: (
-    requests: UpdateInstanceRequest[]
+    requests: UpdateInstanceRequest[],
+    parent?: string
   ) => Promise<Instance[]>;
   createDataSource: (params: {
     instance: string;
@@ -486,6 +503,7 @@ export type InstanceSlice = {
     instance?: Instance
   ) => Promise<ListInstanceDatabaseResponse>;
   fetchInstanceList: (params: {
+    parent?: string;
     pageSize?: number;
     pageToken?: string;
     orderBy?: string;
@@ -611,38 +629,92 @@ export type SheetSlice = {
   getOrFetchSheetByName: (name: string) => Promise<Sheet | undefined>;
 };
 
-export type WorksheetView = "FULL" | "BASIC";
+export type SavedQueryView = "FULL" | "BASIC";
 
-export type WorksheetSlice = {
+export type SavedQuerySlice = {
   // Keyed by `${uid}:${view}` (mirrors the legacy Pinia cache, which kept
   // FULL and BASIC views separately — BASIC list entries omit the
   // statement, FULL entries carry it).
-  worksheetsByKey: Record<string, Worksheet>;
-  worksheetRequests: Record<string, Promise<Worksheet | undefined>>;
-  getWorksheetByName: (
+  savedQueriesByKey: Record<string, SavedQuery>;
+  savedQueryRequests: Record<string, Promise<SavedQuery | undefined>>;
+  getSavedQueryByName: (
     name: string,
-    view?: WorksheetView
-  ) => Worksheet | undefined;
-  getOrFetchWorksheetByName: (
+    view?: SavedQueryView
+  ) => SavedQuery | undefined;
+  getOrFetchSavedQueryByName: (
     name: string,
     silent?: boolean
-  ) => Promise<Worksheet | undefined>;
-  fetchWorksheetList: (parent: string, filter: string) => Promise<Worksheet[]>;
-  createWorksheet: (worksheet: Worksheet) => Promise<Worksheet>;
-  patchWorksheet: (
-    worksheet: Worksheet,
+  ) => Promise<SavedQuery | undefined>;
+  fetchSavedQueryList: (
+    parent: string,
+    filter: string,
+    params?: {
+      pageSize?: number;
+      pageToken?: string;
+    }
+  ) => Promise<{ savedQueries: SavedQuery[]; nextPageToken: string }>;
+  searchSavedQueryFolders: (
+    parent: string,
+    filter?: string
+  ) => Promise<string[]>;
+  createSavedQuery: (savedQuery: SavedQuery) => Promise<SavedQuery>;
+  patchSavedQuery: (
+    savedQuery: SavedQuery,
     updateMask: string[],
     signal?: AbortSignal
-  ) => Promise<Worksheet | undefined>;
-  deleteWorksheetByName: (name: string) => Promise<void>;
-  upsertWorksheetOrganizer: (
-    organizer: Partial<WorksheetOrganizer>,
-    updateMask: string[]
-  ) => Promise<void>;
-  batchUpsertWorksheetOrganizers: (
-    requests: { organizer: Partial<WorksheetOrganizer>; updateMask: string[] }[]
-  ) => Promise<void>;
-  worksheetList: () => Worksheet[];
+  ) => Promise<SavedQuery | undefined>;
+  deleteSavedQueryByName: (name: string) => Promise<void>;
+  updateSavedQueryStar: (name: string, starred: boolean) => Promise<void>;
+  /**
+   * Move the caller's saved queries filed under `sourceFolder`, descendants
+   * included, into `targetFolder`. Only the caller's own saved queries move;
+   * the returned count reports how many did. Re-filing a single saved query
+   * is `patchSavedQuery` with the `folder` field.
+   */
+  moveMySavedQueries: (
+    parent: string,
+    params: {
+      sourceFolder: string;
+      targetFolder: string;
+    }
+  ) => Promise<number>;
+  /**
+   * Mirror a completed server-side folder move onto the cached rows. The
+   * batch RPC answers with a count, not the moved resources, so the caller
+   * names the rows it already holds.
+   */
+  patchSavedQueryFolderInCache: (names: string[], folder: string) => void;
+  savedQueryList: () => SavedQuery[];
+  /**
+   * The calling user's grant level per saved query, keyed by resource name.
+   * Nothing caller-relative rides on the SavedQuery resource, so this is
+   * resolved from the policy when a saved query somebody else created is
+   * fetched, and read back synchronously by the readable/writable predicates.
+   */
+  savedQueryLevelByName: Record<string, SavedQueryBinding_Level>;
+  /**
+   * Resolve and cache the caller's level on a saved query by reading its
+   * policy and matching the bindings against the caller's own principals
+   * (themselves plus their groups), the same set the server uses.
+   */
+  fetchSavedQueryLevel: (
+    savedQuery: SavedQuery
+  ) => Promise<SavedQueryBinding_Level>;
+  /**
+   * Read a saved query's grants. Anyone who can read the saved query can read
+   * its policy, so this is also how a grantee learns whether they may edit —
+   * nothing caller-relative rides on the resource itself.
+   */
+  getSavedQueryPolicy: (name: string) => Promise<SavedQueryPolicy>;
+  /**
+   * Replace a saved query's grants. `policy.etag` must carry the etag from the
+   * last read; the server aborts on a mismatch rather than clobbering a
+   * concurrent revocation.
+   */
+  setSavedQueryPolicy: (
+    name: string,
+    policy: SavedQueryPolicy
+  ) => Promise<SavedQueryPolicy>;
 };
 
 export type InstanceRoleSlice = {
@@ -728,7 +800,7 @@ export type IdentityProviderSlice = {
     Promise<IdentityProvider | undefined>
   >;
   identityProviderList: () => IdentityProvider[];
-  listIdentityProviders: (parent?: string) => Promise<IdentityProvider[]>;
+  listIdentityProviders: (parent: string) => Promise<IdentityProvider[]>;
   fetchIdentityProvider: (
     name: string,
     silent?: boolean
@@ -784,7 +856,7 @@ export type UserSlice = {
 
 export type RoleSlice = {
   roleList: Role[];
-  listRoles: () => Promise<Role[]>;
+  listRoles: (silent?: boolean) => Promise<Role[]>;
   getRoleByName: (name: string) => Role | undefined;
   upsertRole: (role: Role) => Promise<Role>;
   deleteRole: (role: Role) => Promise<void>;
@@ -885,7 +957,7 @@ export type PreferencesSlice = {
   setRecentProject: (name: string) => void;
   recordRecentVisit: (path: string, workspaceName?: string) => void;
   removeRecentVisit: (path: string) => void;
-  resetQuickstartProgress: () => void;
+  resumeWorkspaceSetupGuide: () => void;
   getIntroStateByKey: (key: string) => boolean;
   saveIntroStateByKey: (params: { key: string; newState: boolean }) => void;
 };
@@ -1090,7 +1162,7 @@ export type AppStoreState = AuthSlice &
   DatabaseSlice &
   DBGroupSlice &
   SheetSlice &
-  WorksheetSlice &
+  SavedQuerySlice &
   InstanceRoleSlice &
   GroupSlice &
   ServiceAccountSlice &

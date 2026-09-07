@@ -2,7 +2,10 @@ import { Archive, Check, EllipsisVertical, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { router, useCurrentRoute } from "@/app/router";
-import { PROJECT_V1_ROUTE_ISSUES } from "@/app/router/handles";
+import {
+  PROJECT_V1_ROUTE_DATABASES,
+  PROJECT_V1_ROUTE_ISSUES,
+} from "@/app/router/handles";
 import {
   markListScrollRestorationEntry,
   useListScrollRestorationLoadMore,
@@ -50,9 +53,15 @@ import {
   useURLSearchParam,
 } from "@/hooks/useURLSearchParam";
 import {
+  CONNECT_DATABASE_PRODUCT_INTRO,
   CREATE_PROJECT_PRODUCT_INTRO,
+  PRODUCT_INTRO_QUERY_KEY,
   useProductIntro,
 } from "@/lib/productIntro";
+import {
+  defaultActiveStateSearchParams,
+  getResourceStateFilter,
+} from "@/lib/resourceStateFilter";
 import { cn } from "@/lib/utils";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
@@ -64,10 +73,6 @@ import {
   hasProjectPermissionV2,
   hasWorkspacePermissionV2,
 } from "@/utils";
-import {
-  defaultActiveStateSearchParams,
-  getResourceStateFilter,
-} from "./resourceStateFilter";
 
 const parseProjectSearch = createAdvancedSearchParser(["state", "label"]);
 
@@ -314,17 +319,6 @@ export function ProjectsPage() {
     [searchParams]
   );
 
-  // Mark project visit on mount
-  useEffect(() => {
-    const store = useAppStore.getState();
-    if (!store.getIntroStateByKey("project.visit")) {
-      store.saveIntroStateByKey({
-        key: "project.visit",
-        newState: true,
-      });
-    }
-  }, []);
-
   // Data fetching state
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -413,21 +407,15 @@ export function ProjectsPage() {
     [isLoggedIn, pageSize, searchText, selectedState, selectedLabels, orderBy]
   );
 
-  // Fetch on mount + re-fetch on filter/sort/pageSize changes (debounced after first load)
+  // AdvancedSearch owns text debounce; settled filter and table changes fetch immediately.
   const prevDepsRef = useRef<string>("");
-  const isFirstLoad = useRef(true);
   useEffect(() => {
     const depsKey = `${searchText}|${stateFilter}|${selectedLabels.join(",")}|${pageSize}|${orderBy}`;
     if (prevDepsRef.current === depsKey) return;
     prevDepsRef.current = depsKey;
 
-    if (isFirstLoad.current) {
-      isFirstLoad.current = false;
-      fetchProjects(true);
-      return () => abortRef.current?.abort();
-    }
-    const timer = setTimeout(() => fetchProjects(true), 300);
-    return () => clearTimeout(timer);
+    fetchProjects(true);
+    return () => abortRef.current?.abort();
   }, [
     searchText,
     stateFilter,
@@ -594,7 +582,11 @@ export function ProjectsPage() {
   });
 
   const handleCreated = useCallback((project: Project) => {
-    router.push(projectIssuesRoute(project));
+    router.push({
+      name: PROJECT_V1_ROUTE_DATABASES,
+      params: { projectId: getProjectName(project.name) },
+      query: { [PRODUCT_INTRO_QUERY_KEY]: CONNECT_DATABASE_PRODUCT_INTRO },
+    });
   }, []);
 
   const handleRowClick = useCallback(

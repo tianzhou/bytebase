@@ -1,4 +1,11 @@
 import { Code, ConnectError } from "@connectrpc/connect";
+
+// The per-resource failures the all-or-nothing BatchGet contract introduces.
+// Only these are worth a per-name retry; anything else is a real error.
+export const isMissingOrForbidden = (error: unknown) =>
+  error instanceof ConnectError &&
+  (error.code === Code.NotFound || error.code === Code.PermissionDenied);
+
 import type { DatabaseFilter } from "@/lib/databaseFilter";
 import {
   getProjectName,
@@ -17,6 +24,8 @@ import {
 } from "@/types/v1/environment";
 import { isValidInstanceName } from "@/types/v1/instance";
 import { workspaceCacheScope } from "@/utils/storage-keys";
+import { celMapField, celString, celStringList } from "@/utils/v1/celLiteral";
+import { bindingScopesResources } from "@/utils/v1/iam";
 import type { AppStoreState } from "./types";
 
 export const MAX_RECENT_PROJECT = 5;
@@ -28,6 +37,18 @@ export function getCurrentUserEmail(get: () => AppStoreState): string {
   return get().currentUser?.email ?? "";
 }
 
+export function getWorkspaceResourceScope(
+  get: () => AppStoreState,
+  workspaceName?: string
+): string {
+  return (
+    workspaceName ||
+    get().currentUser?.workspace ||
+    get().serverInfo?.workspace ||
+    ""
+  );
+}
+
 // Workspace segment for localStorage cache keys — "" for self-host (keys stay
 // shared/unchanged), the workspace name for SaaS (keys are workspace-isolated).
 // Fall back to serverInfo while the current user is still hydrating.
@@ -35,11 +56,7 @@ export function getWorkspaceCacheScope(
   get: () => AppStoreState,
   workspaceName?: string
 ): string {
-  const scope =
-    workspaceName ||
-    get().currentUser?.workspace ||
-    get().serverInfo?.workspace ||
-    "";
+  const scope = getWorkspaceResourceScope(get, workspaceName);
   return workspaceCacheScope(get().isSaaSMode(), scope);
 }
 
@@ -61,16 +78,15 @@ export function buildProjectFilter(query: string | undefined) {
   const filters = ["exclude_default == true"];
   const search = query?.trim().toLowerCase();
   if (search) {
-    filters.push(
-      `(name.contains("${search}") || resource_id.contains("${search}"))`
-    );
+    const value = celString(search);
+    filters.push(`(name.contains(${value}) || resource_id.contains(${value}))`);
   }
   return filters.join(" && ");
 }
 
 // Converts label selectors like "{key}:{v1},{v2}" into API filter clauses
-// (`labels.{key} == "v"` or `labels.{key} in [...]`). Ported verbatim from
-// the legacy Pinia database store.
+// (`labels["{key}"] == "v"` or `labels["{key}"] in [...]`). Index syntax, not
+// `labels.{key}` — label keys allow dashes, which CEL parses as subtraction.
 export function getLabelFilter(labels: string[]): string[] {
   const labelMap = new Map<string, string[]>();
   for (const label of labels) {
@@ -86,16 +102,15 @@ export function getLabelFilter(labels: string[]): string[] {
     labelMap.get(key)?.push(...values);
   }
   return [...labelMap.entries()].reduce((result, [key, values]) => {
+    const field = celMapField("labels", key);
     switch (values.length) {
       case 0:
         return result;
       case 1:
-        result.push(`labels.${key} == "${values[0]}"`);
+        result.push(`${field} == ${celString(values[0])}`);
         return result;
       default:
-        result.push(
-          `labels.${key} in [${values.map((v) => `"${v}"`).join(", ")}]`
-        );
+        result.push(`${field} in ${celStringList(values)}`);
         return result;
     }
   }, [] as string[]);
@@ -107,39 +122,37 @@ export function getLabelFilter(labels: string[]): string[] {
 export function buildDatabaseFilter(filter: DatabaseFilter): string {
   const params: string[] = [];
   if (isValidProjectName(filter.project)) {
-    params.push(`project == "${filter.project}"`);
+    params.push(`project == ${celString(filter.project)}`);
   }
   if (isValidInstanceName(filter.instance)) {
-    params.push(`instance == "${filter.instance}"`);
+    params.push(`instance == ${celString(filter.instance)}`);
   }
   if (filter.environment === unknownEnvironment().name) {
     params.push(`environment == ""`);
   } else if (isValidEnvironmentName(filter.environment)) {
-    params.push(`environment == "${filter.environment}"`);
+    params.push(`environment == ${celString(filter.environment)}`);
   }
   if (filter.excludeUnassigned) {
     params.push(`exclude_unassigned == true`);
   }
   if (filter.engines && filter.engines.length > 0) {
     params.push(
-      `engine in [${filter.engines.map((e) => `"${Engine[e]}"`).join(", ")}]`
+      `engine in ${celStringList(filter.engines.map((e) => Engine[e]))}`
     );
   } else if (filter.excludeEngines && filter.excludeEngines.length > 0) {
     params.push(
-      `!(engine in [${filter.excludeEngines
-        .map((e) => `"${Engine[e]}"`)
-        .join(", ")}])`
+      `!(engine in ${celStringList(filter.excludeEngines.map((e) => Engine[e]))})`
     );
   }
   const keyword = filter.query?.trim()?.toLowerCase();
   if (keyword) {
-    params.push(`name.contains("${keyword}")`);
+    params.push(`name.contains(${celString(keyword)})`);
   }
   if (filter.labels) {
     params.push(...getLabelFilter(filter.labels));
   }
   if (filter.table) {
-    params.push(`table.contains("${filter.table}")`);
+    params.push(`table.contains(${celString(filter.table)})`);
   }
   return params.join(" && ");
 }
@@ -192,6 +205,65 @@ export function bindingMatchesUser(
         (name) =>
           name === user.name ||
           name === ALL_USERS_NAME ||
+          (name.startsWith("groups/") && userGroups.has(name))
+      );
+    });
+  });
+}
+
+// The canonical expiry condition is the only non-empty form the client
+// evaluates, and the whole expression must be it — matching a substring would
+// let a lower-bounded window ("not before") read as already granting.
+const CANONICAL_EXPIRY_CONDITION =
+  /^\s*request\.time\s*<\s*timestamp\(\s*"([^"]+)"\s*\)\s*$/;
+
+// Whether the client can positively evaluate the binding's condition as
+// granting right now. The server evaluates the full CEL expression; the
+// client recognizes the empty condition and the canonical expiry form, and
+// treats everything else as not granting — the affordance hides rather than
+// dangling on an RPC the server will deny. An unparsable timestamp compares
+// as NaN, which also reads as not granting.
+function conditionGrantsNow(binding: Binding): boolean {
+  const expression = binding.condition?.expression ?? "";
+  if (expression.trim() === "") {
+    return true;
+  }
+  const match = expression.match(CANONICAL_EXPIRY_CONDITION);
+  if (!match) {
+    return false;
+  }
+  return new Date(match[1]) > new Date();
+}
+
+// Mirrors the server's project-wide binding filter (iam.Manager's check with
+// projectWideOnly): the member must match explicitly — allUsers is skipped
+// for the workspace policy in SaaS mode, where workspace members must be
+// explicit, while a project-level allUsers means "all workspace members" —
+// a condition that scopes resources confers nothing, and a condition the
+// client cannot positively evaluate hides the grant instead of showing an
+// affordance the server denies.
+export function projectWideBindings(
+  policy: AppStoreState["workspacePolicy"],
+  user: User,
+  { skipAllUsers }: { skipAllUsers: boolean }
+): Binding[] {
+  if (!policy || !user.name) {
+    return [];
+  }
+  const userGroups = new Set(user.groups);
+  return policy.bindings.filter((binding) => {
+    if (bindingScopesResources(binding)) {
+      return false;
+    }
+    if (!conditionGrantsNow(binding)) {
+      return false;
+    }
+    return binding.members.some((member) => {
+      const names = bindingMemberToNames(member);
+      return names.some(
+        (name) =>
+          name === user.name ||
+          (name === ALL_USERS_NAME && !skipAllUsers) ||
           (name.startsWith("groups/") && userGroups.has(name))
       );
     });

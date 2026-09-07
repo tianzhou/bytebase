@@ -82,6 +82,7 @@ const agentFiles = [
   resolve(repoRoot, "AGENTS.md"),
   resolve(repoRoot, "CLAUDE.md"),
   resolve(repoRoot, "docs/superpowers/AGENTS.md"),
+  resolve(repoRoot, "docs/agents/frontend-ux.md"),
   resolve(frontendRoot, "AGENTS.md"),
   resolve(frontendRoot, "CLAUDE.md"),
   resolve(frontendRoot, "components.json"),
@@ -92,7 +93,6 @@ const agentFiles = [
   resolve(frontendRoot, "tests/e2e/AGENTS.md"),
   resolve(frontendRoot, "src/modules/agent/AGENTS.md"),
   resolve(frontendRoot, "src/modules/sql-editor/AGENTS.md"),
-  resolve(repoRoot, ".sonarcloud.properties"),
 ];
 const retiredDocumentationTokens = [
   ["src", "react"].join("/"),

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/type/expr"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
@@ -538,8 +539,7 @@ func TestVCSProviderUserActuatorAndExport(t *testing.T) {
 
 	body, err := ctl.subscriptionServiceClient.ExportVCSProviderUsers(ctx, connect.NewRequest(&v1pb.ExportVCSProviderUsersRequest{}))
 	a.NoError(err)
-	a.Equal("text/csv; charset=utf-8", body.Msg.ContentType)
-	csv := string(body.Msg.Data)
+	csv := string(body.Msg.Content)
 	a.Contains(csv, "vcs_type,user_id,user_name,display_name,last_seen_at")
 	a.Contains(csv, "GITHUB,1001,alice,Alice,")
 	a.Contains(csv, "GITHUB,1002,bob,,")
@@ -572,7 +572,7 @@ func TestVCSProviderUserExportEscapesSpreadsheetFormulas(t *testing.T) {
 
 	body, err := ctl.subscriptionServiceClient.ExportVCSProviderUsers(ctx, connect.NewRequest(&v1pb.ExportVCSProviderUsersRequest{}))
 	a.NoError(err)
-	rows, err := csv.NewReader(strings.NewReader(string(body.Msg.Data))).ReadAll()
+	rows, err := csv.NewReader(strings.NewReader(string(body.Msg.Content))).ReadAll()
 	a.NoError(err)
 	a.Len(rows, 2)
 	a.Equal([]string{"vcs_type", "user_id", "user_name", "display_name", "last_seen_at"}, rows[0])
@@ -717,6 +717,25 @@ func TestGitOpsRollout(t *testing.T) {
 	a.NotNil(changeDatabaseConfig)
 	a.Equal(createReleaseResp.Msg.Name, changeDatabaseConfig.Release)
 
+	// A release-backed plan's specs are the release's: editing them here would
+	// desynchronize the plan from what was released, so the update is refused
+	// and the plan's editor attribution stays with its creator.
+	_, err = ctl.planServiceClient.UpdatePlan(ctx, connect.NewRequest(&v1pb.UpdatePlanRequest{
+		Plan: &v1pb.Plan{
+			Name: plan.Name,
+			Specs: []*v1pb.Plan_Spec{{
+				Id:     uuid.NewString(),
+				Config: &v1pb.Plan_Spec_ChangeDatabaseConfig{ChangeDatabaseConfig: &v1pb.Plan_ChangeDatabaseConfig{}},
+			}},
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"specs"}},
+	}))
+	a.Equal(connect.CodeInvalidArgument, connect.CodeOf(err))
+	a.ErrorContains(err, "created from a release")
+	unchanged, err := ctl.planServiceClient.GetPlan(ctx, connect.NewRequest(&v1pb.GetPlanRequest{Name: plan.Name}))
+	a.NoError(err)
+	a.Equal(plan.LastPlanEditor, unchanged.Msg.LastPlanEditor)
+
 	// Step 3: Create a rollout from the plan.
 	rolloutResp, err := ctl.rolloutServiceClient.CreateRollout(ctx, connect.NewRequest(&v1pb.CreateRolloutRequest{
 		Parent: plan.Name,
@@ -778,6 +797,10 @@ func TestGitOpsRollout(t *testing.T) {
 	a.Equal(rollout.Name, rolloutResp2.Msg.Name)
 }
 
+// TestGitOpsRolloutGhostDirective keeps MySQL deliberately. gh-ost is a MySQL-only
+// online schema change tool, so the engine is the workflow here rather than a
+// substitutable backing store, and no Postgres equivalent can prove it.
+// Everything else in this package tests workflows against Postgres.
 func TestGitOpsRolloutGhostDirective(t *testing.T) {
 	t.Parallel()
 	a := require.New(t)

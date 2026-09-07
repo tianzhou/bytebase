@@ -9,6 +9,7 @@ import type { NodeTarget, NodeType, TreeNode } from "./schemaTree";
 
 const mocks = vi.hoisted(() => {
   return {
+    resolve: vi.fn(() => ({ href: "/sql-editor/db" })),
     getDatabaseByName: vi.fn(() => ({
       name: "instances/i/databases/db",
       project: "projects/p",
@@ -26,6 +27,9 @@ const mocks = vi.hoisted(() => {
     getInstanceResource: vi.fn(() => ({ engine: 1 })),
     instanceV1HasAlterSchema: vi.fn(() => true),
     supportGetStringSchema: vi.fn(() => true),
+    tabsById: new Map<string, unknown>(),
+    addTab: vi.fn(),
+    setCurrentTabId: vi.fn(),
     sortByDictionary: vi.fn(
       <T,>(arr: T[], order: string[], keyFn: (i: T) => string) => {
         arr.sort((a, b) => {
@@ -74,10 +78,10 @@ vi.mock("@/modules/sql-editor/store/tab", () => ({
   // invoked handler stays a no-op.
   getSQLEditorTabsState: () => ({
     currentTabId: "t1",
-    tabsById: new Map([["t1", { id: "t1", viewState: { schema: "" } }]]),
+    tabsById: mocks.tabsById,
     openTmpTabList: [],
-    addTab: vi.fn(),
-    setCurrentTabId: vi.fn(),
+    addTab: mocks.addTab,
+    setCurrentTabId: mocks.setCurrentTabId,
     updateCurrentTab: vi.fn(),
     updateTab: vi.fn(),
   }),
@@ -87,6 +91,14 @@ vi.mock("@/utils", () => ({
   // Stub everything actions.tsx imports. We don't `importOriginal` here
   // because the real `@/utils` transitively pulls in monaco / vue
   // surfaces that vitest can't load.
+  autoSQLEditorDatabaseRoute: () => ({
+    name: "sql-editor.database",
+    params: {
+      project: "p",
+      instance: "i",
+      database: "db",
+    },
+  }),
   defaultSQLEditorTab: () => ({
     id: "new",
     title: "Untitled",
@@ -94,7 +106,7 @@ vi.mock("@/utils", () => ({
     viewState: { view: "CODE" },
     treeState: {},
     editorState: { selection: null },
-    mode: "WORKSHEET",
+    mode: "SAVED_QUERY",
     status: "NEW",
   }),
   extractDatabaseResourceName: (n: string) => ({
@@ -116,14 +128,14 @@ vi.mock("@/utils", () => ({
 }));
 
 vi.mock("@/types", () => ({
-  DEFAULT_SQL_EDITOR_TAB_MODE: "WORKSHEET",
+  DEFAULT_SQL_EDITOR_TAB_MODE: "SAVED_QUERY",
   dialectOfEngineV1: () => "MYSQL",
   languageOfEngineV1: () => "sql",
   typeToView: (type: string) => type.toUpperCase(),
 }));
 
 vi.mock("@/types/proto-es/v1/common_pb", () => ({
-  Engine: { REDIS: 7, MYSQL: 1 },
+  Engine: { REDIS: 7, MYSQL: 1, COSMOSDB: 20 },
 }));
 
 vi.mock("@/types/proto-es/v1/database_service_pb", () => ({
@@ -133,7 +145,7 @@ vi.mock("@/types/proto-es/v1/database_service_pb", () => ({
 vi.mock("@/app/router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/router")>()),
   router: {
-    resolve: () => ({ href: "/sql-editor/db" }),
+    resolve: mocks.resolve,
   },
 }));
 
@@ -161,6 +173,14 @@ let useSchemaPaneContextMenu: typeof import("./actions").useSchemaPaneContextMen
 type SchemaMenuItem = import("./actions").SchemaMenuItem;
 
 beforeEach(async () => {
+  vi.clearAllMocks();
+  mocks.tabsById.clear();
+  mocks.tabsById.set("t1", {
+    id: "t1",
+    mode: "SAVED_QUERY",
+    viewState: { schema: "" },
+  });
+  mocks.getInstanceResource.mockReturnValue({ engine: 1 });
   ({ useSchemaPaneContextMenu } = await import("./actions"));
 });
 
@@ -240,6 +260,19 @@ describe("useSchemaPaneContextMenu", () => {
       "generate-sql--update",
       "generate-sql--delete",
     ]);
+    items.find((item) => item.key === "copy-url")?.onSelect?.();
+    expect(mocks.resolve).toHaveBeenCalledWith({
+      name: "sql-editor.database",
+      params: {
+        project: "p",
+        instance: "i",
+        database: "db",
+      },
+      query: {
+        table: "users",
+        schema: "public",
+      },
+    });
   });
 
   test("view node yields copy-name + view-schema-text + preview-table + generate-sql(SELECT only) + view-detail", () => {
@@ -317,5 +350,57 @@ describe("useSchemaPaneContextMenu", () => {
       mocks.supportGetStringSchema.mockReturnValue(true);
       mocks.instanceV1HasAlterSchema.mockReturnValue(true);
     }
+  });
+
+  test("preview opens a data explorer tab for a supported engine", () => {
+    const node = makeNode("table", {
+      database: DATABASE,
+      schema: "",
+      table: "users",
+    });
+
+    captureItems(node, noopDeps)
+      .find((item) => item.key === "preview-table-data")
+      ?.onSelect?.();
+
+    expect(mocks.addTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "users",
+        mode: "DATA_EXPLORER",
+        connection: {
+          instance: "instances/i",
+          database: DATABASE,
+          schema: "",
+          table: "users",
+        },
+        dataExplorer: { filter: "", initialized: false },
+      }),
+      true
+    );
+  });
+
+  test("preview reuses an explorer for the same database object", () => {
+    mocks.tabsById.set("explorer", {
+      id: "explorer",
+      mode: "DATA_EXPLORER",
+      connection: {
+        instance: "instances/i",
+        database: DATABASE,
+        schema: "",
+        table: "users",
+      },
+    });
+    const node = makeNode("table", {
+      database: DATABASE,
+      schema: "",
+      table: "users",
+    });
+
+    captureItems(node, noopDeps)
+      .find((item) => item.key === "preview-table-data")
+      ?.onSelect?.();
+
+    expect(mocks.setCurrentTabId).toHaveBeenCalledWith("explorer");
+    expect(mocks.addTab).not.toHaveBeenCalled();
   });
 });

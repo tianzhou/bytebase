@@ -4,7 +4,6 @@
 export const WORKSPACE_ROOT_MODULE = "workspace.root";
 export const WORKSPACE_ROUTE_LANDING = "workspace.landing";
 export const WORKSPACE_ROUTE_MY_ISSUES = "workspace.my-issues";
-export const WORKSPACE_ROUTE_USER_PROFILE = "workspace.user-profile";
 export const DATABASE_ROUTE_DASHBOARD = "workspace.database";
 export const INSTANCE_ROUTE_DASHBOARD = "workspace.instance";
 export const PROJECT_V1_ROUTE_DASHBOARD = "workspace.project";
@@ -37,33 +36,29 @@ export const WORKSPACE_ROUTE_404 = "error.404";
 
 // --- auth.ts ---
 export const AUTH_SIGNIN_MODULE = "auth.signin";
-export const AUTH_SIGNIN_ADMIN_MODULE = "auth.signin.admin";
 export const AUTH_SIGNUP_MODULE = "auth.signup";
 export const AUTH_MFA_MODULE = "auth.mfa";
 export const AUTH_PASSWORD_RESET_MODULE = "auth.password.reset";
 export const AUTH_PASSWORD_FORGOT_MODULE = "auth.password.forgot";
 export const AUTH_OAUTH_CALLBACK_MODULE = "auth.oauth.callback";
 export const AUTH_OIDC_CALLBACK_MODULE = "auth.oidc.callback";
-export const AUTH_PROFILE_SETUP_MODULE = "auth.profile.setup";
+export const AUTH_SETUP_MODULE = "auth.setup";
 export const AUTH_2FA_SETUP_MODULE = "auth.2fa.setup";
 export const OAUTH2_CONSENT_MODULE = "oauth2.consent";
-
-// --- setup.ts ---
-export const SETUP_MODULE = "setup";
 
 // --- sqlEditor.ts ---
 export const SQL_EDITOR_HOME_MODULE = "sql-editor.home";
 export const SQL_EDITOR_PROJECT_MODULE = "sql-editor.project";
 export const SQL_EDITOR_INSTANCE_MODULE = "sql-editor.instance";
 export const SQL_EDITOR_DATABASE_MODULE = "sql-editor.database";
-export const SQL_EDITOR_WORKSHEET_MODULE = "sql-editor.worksheet";
+export const SQL_EDITOR_SAVED_QUERY_MODULE = "sql-editor.saved-query";
 export const SQL_EDITOR_QUERY_HISTORY_MODULE = "sql-editor.query-history";
 
 // --- dashboard/workspaceSetting.ts ---
 export const SETTING_ROUTE = "setting";
 export const SETTING_ROUTE_WORKSPACE = `${SETTING_ROUTE}.workspace`;
-export const SETTING_ROUTE_PROFILE = `${SETTING_ROUTE}.profile`;
-export const SETTING_ROUTE_PROFILE_TWO_FACTOR = `${SETTING_ROUTE_PROFILE}.two-factor`;
+export const ACCOUNT_ROUTE = "account";
+export const ACCOUNT_ROUTE_TWO_FACTOR = `${ACCOUNT_ROUTE}.two-factor`;
 export const SETTING_ROUTE_WORKSPACE_GENERAL = `${SETTING_ROUTE_WORKSPACE}.general`;
 export const SETTING_ROUTE_WORKSPACE_SUBSCRIPTION = `${SETTING_ROUTE_WORKSPACE}.subscription`;
 
@@ -77,6 +72,9 @@ export const ENVIRONMENT_V1_ROUTE_DETAIL = `${ENVIRONMENT_V1_ROUTE_DASHBOARD}.de
 
 // --- dashboard/projectV1.ts ---
 export const PROJECT_V1_ROUTE_DETAIL = `${PROJECT_V1_ROUTE_DASHBOARD}.detail`;
+export const PROJECT_V1_ROUTE_INSTANCES = `${PROJECT_V1_ROUTE_DASHBOARD}.instance`;
+export const PROJECT_V1_ROUTE_INSTANCE_CREATE = `${PROJECT_V1_ROUTE_INSTANCES}.create`;
+export const PROJECT_V1_ROUTE_INSTANCE_DETAIL = `${PROJECT_V1_ROUTE_INSTANCES}.detail`;
 export const PROJECT_V1_ROUTE_DATABASES = `${PROJECT_V1_ROUTE_DASHBOARD}.database`;
 export const PROJECT_V1_ROUTE_MASKING_EXEMPTION = `${PROJECT_V1_ROUTE_DASHBOARD}.masking-exemption`;
 export const PROJECT_V1_ROUTE_MASKING_EXEMPTION_CREATE = `${PROJECT_V1_ROUTE_DASHBOARD}.masking-exemption.create`;

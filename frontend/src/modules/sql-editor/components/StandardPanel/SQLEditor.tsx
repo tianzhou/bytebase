@@ -12,7 +12,7 @@ import {
   extensionNameOfLanguage,
   formatEditorContent,
 } from "@/components/monaco/utils";
-import { useWorksheetAndTab } from "@/hooks/useWorksheetAndTab";
+import { useSavedQueryAndTab } from "@/hooks/useSavedQueryAndTab";
 import { aiContextEvents } from "@/modules/ai/logic";
 import * as promptUtils from "@/modules/ai/logic/prompt";
 import type { ChatAction } from "@/modules/ai/types";
@@ -23,7 +23,6 @@ import {
   getSQLEditorTabsState,
   useSQLEditorTabState,
 } from "@/modules/sql-editor/store/tab";
-import { useAppStore } from "@/stores/app";
 import {
   dialectOfEngineV1,
   isValidDatabaseName,
@@ -36,6 +35,7 @@ import { useAIActions } from "../Panels/common/useAIActions";
 import { monacoThemeName } from "../theme/derive";
 import { useActiveSQLEditorTheme } from "../theme/useActiveSQLEditorTheme";
 import { computeAppendedSelection } from "./appendSelection";
+import { prepareSnippetInsertion } from "./prepareSnippetInsertion";
 import { activeSQLEditorRef, activeStatementRef } from "./state";
 import { UploadFileButton } from "./UploadFileButton";
 
@@ -52,7 +52,7 @@ interface SQLEditorProps {
 /**
  * React port of `frontend/src/views/sql-editor/EditorPanel/StandardPanel/SQLEditor.vue`.
  *
- * Worksheet Monaco editor with full keybinding parity:
+ * SavedQuery Monaco editor with full keybinding parity:
  * - Cmd+Enter run / Cmd+Shift+Enter run-in-new-tab
  * - Cmd+S save sheet
  * - Cmd+E explain (or "Dry Run" for BigQuery)
@@ -69,7 +69,7 @@ interface SQLEditorProps {
  * is run from the toolbar.
  */
 export function SQLEditor({ onExecute }: SQLEditorProps) {
-  const { isReadOnly: readonly } = useWorksheetAndTab();
+  const { isReadOnly: readonly } = useSavedQueryAndTab();
   const setShowAIPanel = useSQLEditorStore((s) => s.setShowAIPanel);
   const setPendingInsertAtCaret = useSQLEditorStore(
     (s) => s.setPendingInsertAtCaret
@@ -210,10 +210,6 @@ export function SQLEditor({ onExecute }: SQLEditorProps) {
         selection: newTab ? null : tab.editorState.selection,
       };
       onExecuteRef.current(params, newTab);
-      useAppStore.getState().saveIntroStateByKey({
-        key: "data.query",
-        newState: true,
-      });
     },
     [getActiveStatement]
   );
@@ -322,16 +318,35 @@ export function SQLEditor({ onExecute }: SQLEditorProps) {
     setPendingInsertAtCaret(undefined);
 
     requestAnimationFrame(() => {
+      const model = editor.getModel();
+      if (!model) return;
       const selection = editor.getSelection();
-      const maxLineNumber = editor.getModel()?.getLineCount() ?? 0;
-      const range =
-        selection ??
-        new monaco.Range(maxLineNumber + 1, 1, maxLineNumber + 1, 1);
+      const endPosition = model.getPositionAt(model.getValueLength());
+      const range = selection ?? monaco.Range.fromPositions(endPosition);
+      const startOffset = model.getOffsetAt({
+        lineNumber: range.startLineNumber,
+        column: range.startColumn,
+      });
+      const endOffset = model.getOffsetAt({
+        lineNumber: range.endLineNumber,
+        column: range.endColumn,
+      });
+      const value = model.getValue();
+      const insertion = prepareSnippetInsertion(
+        text,
+        value.slice(0, startOffset),
+        value.slice(endOffset),
+        model.getEOL()
+      );
       editor.executeEdits("bb.event.insert-at-caret", [
-        { forceMoveMarkers: true, text, range },
+        { forceMoveMarkers: true, text: insertion.text, range },
       ]);
+      const cursorPosition = model.getPositionAt(
+        startOffset + insertion.cursorOffset
+      );
+      editor.setPosition(cursorPosition);
       editor.focus();
-      editor.revealLine(range.startLineNumber);
+      editor.revealLine(cursorPosition.lineNumber);
     });
   }, [pendingInsertAtCaret, setPendingInsertAtCaret]);
 

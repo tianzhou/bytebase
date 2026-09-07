@@ -1,17 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { EngineIcon } from "@/components/EngineIcon";
-import { EnvironmentLabel } from "@/components/EnvironmentLabel";
+import { DatabaseTargetDisplay } from "@/components/DatabaseTargetDisplay";
+import { HighlightLabelText } from "@/components/HighlightLabelText";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { usePaginatedSelect } from "@/hooks/usePaginatedSelect";
 import { useAppStore } from "@/stores/app";
 import type { Engine } from "@/types/proto-es/v1/common_pb";
 import type { Database } from "@/types/proto-es/v1/database_service_pb";
-import {
-  extractDatabaseResourceName,
-  getDatabaseEnvironment,
-  getDefaultPagination,
-  getInstanceResource,
-} from "@/utils";
+import { extractDatabaseResourceName, getDefaultPagination } from "@/utils";
 
 interface BaseProps {
   placeholder?: string;
@@ -64,13 +60,6 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
   // synthesized label in practice.
   const getDatabaseByName = useAppStore((s) => s.getDatabaseByName);
 
-  // Current page / latest search results (drives the dropdown rows).
-  const [databases, setDatabases] = useState<Database[]>([]);
-  // Monotonic fetch id: only the latest in-flight fetch may apply its result,
-  // so an out-of-order (slow mount / stale search) response can't clobber newer
-  // results. Mirrors DatabaseResourceSelector / the plan-detail DatabaseSelector.
-  const fetchIdRef = useRef(0);
-
   // Stabilize engines array to avoid re-fetching on every render.
   const enginesRef = useRef(allowedEngineTypeList);
   const stableEngines = useMemo(() => {
@@ -87,37 +76,37 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
     return allowedEngineTypeList;
   }, [allowedEngineTypeList]);
 
-  const fetchDatabases = useCallback(
-    (query: string) => {
-      const fetchId = ++fetchIdRef.current;
-      useAppStore
-        .getState()
-        .fetchDatabases({
-          parent: projectName ?? workspaceResourceName,
-          filter: {
-            environment: environmentName,
-            engines: stableEngines,
-            query,
-          },
-          pageSize: getDefaultPagination(),
-          silent: true,
-        })
-        .then((result) => {
-          // Drop stale responses so a slower earlier fetch can't overwrite the
-          // results of a newer query.
-          if (fetchId !== fetchIdRef.current) return;
-          setDatabases(result.databases);
-        })
-        .catch(() => {
-          /* keep existing options on error — never wipe the selection */
-        });
+  const fetchPage = useCallback(
+    async (query: string, pageToken: string) => {
+      const result = await useAppStore.getState().fetchDatabases({
+        parent: projectName ?? workspaceResourceName,
+        filter: {
+          environment: environmentName,
+          engines: stableEngines,
+          query,
+        },
+        pageSize: getDefaultPagination(),
+        pageToken,
+        silent: true,
+      });
+      return {
+        items: result.databases,
+        nextPageToken: result.nextPageToken,
+      };
     },
     [projectName, environmentName, stableEngines, workspaceResourceName]
   );
+  const {
+    items: databases,
+    search,
+    hasMore,
+    loadingMore,
+    loadMore,
+  } = usePaginatedSelect({ fetchPage });
 
   useEffect(() => {
-    fetchDatabases("");
-  }, [fetchDatabases]);
+    search("");
+  }, [search]);
 
   const selectedValues: string[] = useMemo(() => {
     if (props.multiple === true) return props.value;
@@ -140,7 +129,6 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
   );
 
   const buildOption = useCallback((database: Database): ComboboxOption => {
-    const inst = getInstanceResource(database);
     const { databaseName, instance } = extractDatabaseResourceName(
       database.name
     );
@@ -148,25 +136,18 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
       value: database.name,
       label: databaseName,
       description: instance,
-      render: () => (
+      render: (keyword) => (
         <div className="flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
-            {inst.title && (
-              <>
-                <EngineIcon engine={inst.engine} className="h-4 w-4" />
-                <span>{inst.title}</span>
-                <span className="text-control-placeholder">&gt;</span>
-              </>
-            )}
-            <EnvironmentLabel
-              environmentName={getDatabaseEnvironment(database).name}
-            />
-            <span className="text-control-placeholder">&gt;</span>
-            <span>{databaseName}</span>
-          </div>
-          <span className="text-xs text-control-placeholder">
-            {database.name}
-          </span>
+          <DatabaseTargetDisplay
+            database={database}
+            keyword={keyword}
+            showEnvironment
+          />
+          <HighlightLabelText
+            text={database.name}
+            keyword={keyword}
+            className="text-xs text-control-placeholder"
+          />
         </div>
       ),
     };
@@ -196,7 +177,10 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
   const commonProps = {
     placeholder: placeholder ?? t("database.select"),
     noResultsText: t("common.no-data"),
-    onSearch: fetchDatabases,
+    onSearch: search,
+    hasMore,
+    loadingMore,
+    onLoadMore: loadMore,
     disabled,
     className,
     portal,
@@ -229,14 +213,8 @@ export function DatabaseSelect(props: DatabaseSelectProps) {
       onChange={(name) => onChange(name, resolveDatabase(name))}
       renderValue={(opt) => {
         const database = resolveDatabase(opt.value);
-        if (!database) return opt.label;
-        const inst = getInstanceResource(database);
-        return (
-          <span className="flex items-center gap-1.5 truncate">
-            <EngineIcon engine={inst.engine} className="h-4 w-4" />
-            {extractDatabaseResourceName(database.name).databaseName}
-          </span>
-        );
+        if (!database) return <DatabaseTargetDisplay target={opt.value} />;
+        return <DatabaseTargetDisplay database={database} />;
       }}
     />
   );

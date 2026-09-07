@@ -16,6 +16,7 @@ import type {
   Plan,
 } from "@/types/proto-es/v1/plan_service_pb";
 import { CreatePlanRequestSchema } from "@/types/proto-es/v1/plan_service_pb";
+import { planEvents } from "./events";
 
 export class DraftReviewIssueCreationError extends Error {
   readonly plan: Plan;
@@ -64,6 +65,12 @@ export async function createPlanWithDraftReview({
         }),
       })
     );
+    void planEvents
+      .emit("database-change-issue-created", {
+        issue: issue.name,
+        project: parent,
+      })
+      .catch(() => undefined);
     return { issue, plan: createdPlan };
   } catch (error) {
     throw new DraftReviewIssueCreationError(createdPlan, error);
@@ -97,8 +104,6 @@ export const shouldStayOnPlanDetailPage = (plan: Plan): boolean => {
   }
 
   return !plan.specs.every(
-    (spec) =>
-      spec.config?.case === "createDatabaseConfig" ||
-      spec.config?.case === "exportDataConfig"
+    (spec) => spec.config?.case === "createDatabaseConfig"
   );
 };

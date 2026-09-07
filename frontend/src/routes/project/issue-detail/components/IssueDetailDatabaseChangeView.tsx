@@ -1,5 +1,5 @@
 import { create } from "@bufbuild/protobuf";
-import { ChevronRight, ExternalLink, FolderTree } from "lucide-react";
+import { ExternalLink, FolderTree } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { instanceRoleServiceClientConnect } from "@/api";
@@ -9,7 +9,7 @@ import {
   PROJECT_V1_ROUTE_PLAN_DETAIL_SPECS,
 } from "@/app/router/handles";
 import { buildPlanRolloutRouteFromPlanName } from "@/app/router/routeHelpers";
-import { EngineIcon } from "@/components/EngineIcon";
+import { DatabaseTargetDisplay } from "@/components/DatabaseTargetDisplay";
 import { RouterLink } from "@/components/RouterLink";
 import { SearchInput } from "@/components/ui/search-input";
 import {
@@ -44,7 +44,6 @@ import type { Plan_Spec } from "@/types/proto-es/v1/plan_service_pb";
 import { unknownDatabase } from "@/types/v1/database";
 import {
   extractDatabaseResourceName,
-  extractInstanceResourceName,
   extractPlanUID,
   extractProjectResourceName,
   getDefaultTransactionMode,
@@ -118,7 +117,7 @@ export function IssueDetailDatabaseChangeView({
                 <button
                   key={spec.id}
                   className={cn(
-                    "relative -mb-px flex cursor-pointer items-center gap-1 rounded-t-md border px-3 py-1.5 text-sm transition-colors",
+                    "relative -mb-px flex cursor-pointer items-center gap-1 rounded-t-sm border px-3 py-1.5 text-sm transition-colors",
                     isSelected
                       ? "border-control-border border-b-white bg-white font-medium text-main"
                       : "border-transparent bg-transparent text-control-light hover:text-control"
@@ -148,7 +147,7 @@ export function IssueDetailDatabaseChangeView({
           )}
         </div>
 
-        <div className="rounded-b-lg border-x border-b border-control-border bg-white px-3 py-2">
+        <div className="rounded-b-sm border-x border-b border-control-border bg-white px-3 py-2">
           {selectedSpec && (
             <div className="flex flex-col gap-2">
               <IssueDetailDatabaseChangeTargets
@@ -650,7 +649,7 @@ function IssueDetailDatabaseChangeTargets({
             {visibleTargets.map((target) => (
               <div
                 key={target}
-                className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-lg border px-2 py-1"
+                className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border px-2 py-1"
               >
                 {isValidDatabaseName(target) ? (
                   <IssueDetailDatabaseTarget showEnvironment target={target} />
@@ -712,7 +711,7 @@ function IssueDetailDatabaseChangeTargets({
                   {filteredTargets.map((target) => (
                     <div
                       key={target}
-                      className="w-full rounded-lg border px-2 py-1.5"
+                      className="w-full rounded-sm border px-2 py-1.5"
                     >
                       {isValidDatabaseName(target) ? (
                         <IssueDetailDatabaseTarget
@@ -747,56 +746,12 @@ function IssueDetailDatabaseTarget({
   showEnvironment?: boolean;
   target: string;
 }) {
-  const { t } = useTranslation();
-  const databasesByName = useAppStore((s) => s.databasesByName);
-  const environmentList = useAppStore((s) => s.environmentList);
-  const database = useMemo(
-    () => databasesByName[target] ?? unknownDatabase(),
-    [databasesByName, target]
-  );
-  const environmentName =
-    database.effectiveEnvironment ??
-    database.instanceResource?.environment ??
-    "";
-  const environment = useMemo(
-    () => useAppStore.getState().getEnvironmentByName(environmentName),
-    [environmentList, environmentName]
-  );
-  const instance = database.instanceResource;
-  const { databaseName } = extractDatabaseResourceName(target);
-  const instanceTitle =
-    instance?.title ||
-    extractInstanceResourceName(target) ||
-    t("common.unknown");
-  const title = [
-    showEnvironment ? environment.title : undefined,
-    instanceTitle,
-    databaseName,
-  ]
-    .filter(Boolean)
-    .join(" / ");
-
   return (
-    <div className="flex min-w-0 max-w-full items-center text-sm" title={title}>
-      {instance && (
-        <EngineIcon
-          engine={instance.engine}
-          className="mr-1 inline-block h-4 w-4 shrink-0"
-        />
-      )}
-      {showEnvironment && (
-        <span className="mr-1 max-w-24 shrink truncate text-control-placeholder">
-          {environment.title}
-        </span>
-      )}
-      <span className="min-w-0 shrink-[2] truncate text-control-light">
-        {instanceTitle}
-      </span>
-      <ChevronRight className="h-4 w-4 shrink-0 text-control-light/80" />
-      <span className="min-w-12 flex-1 truncate text-control">
-        {databaseName}
-      </span>
-    </div>
+    <DatabaseTargetDisplay
+      target={target}
+      showEnvironment={showEnvironment}
+      className="flex min-w-0 max-w-full"
+    />
   );
 }
 
@@ -877,7 +832,7 @@ function IssueDetailDatabaseGroupTarget({
           {databases.slice(0, MAX_INLINE_DATABASES).map((database) => (
             <div
               key={database}
-              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-lg border bg-gray-50 px-2 py-1 transition-all"
+              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border bg-gray-50 px-2 py-1 transition-all"
             >
               <IssueDetailDatabaseTarget showEnvironment target={database} />
             </div>

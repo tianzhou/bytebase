@@ -15,6 +15,7 @@ import {
 } from "@/components/AdvancedSearch";
 import { RouterLink } from "@/components/RouterLink";
 import { TimeRangePicker } from "@/components/TimeRangePicker";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -31,6 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tooltip } from "@/components/ui/tooltip";
 import { usePlanFeature } from "@/hooks/useAppState";
 import { useColumnWidths } from "@/hooks/useColumnWidths";
 import { PagedTableFooter } from "@/hooks/usePagedData";
@@ -49,7 +51,10 @@ import {
 } from "@/stores/modules/v1/common";
 import { getDateForPbTimestampProtoEs } from "@/types";
 import { StatusSchema } from "@/types/proto-es/google/rpc/status_pb";
-import type { AuditLog } from "@/types/proto-es/v1/audit_log_service_pb";
+import type {
+  AuditLog,
+  MCPDelegation,
+} from "@/types/proto-es/v1/audit_log_service_pb";
 import {
   AuditLog_Severity,
   ExportAuditLogsRequestSchema,
@@ -67,6 +72,7 @@ import {
   getDefaultPagination,
   humanizeDurationV1,
 } from "@/utils";
+import { celString } from "@/utils/v1/celLiteral";
 
 dayjs.extend(utc);
 
@@ -84,18 +90,18 @@ interface AuditLogFilter {
 
 function buildFilterString(filter: AuditLogFilter): string {
   const parts: string[] = [];
-  if (filter.method) parts.push(`method == "${filter.method}"`);
+  if (filter.method) parts.push(`method == ${celString(filter.method)}`);
   if (filter.level !== undefined)
-    parts.push(`severity == "${AuditLog_Severity[filter.level]}"`);
+    parts.push(`severity == ${celString(AuditLog_Severity[filter.level])}`);
   if (filter.userEmail)
-    parts.push(`user == "${userNamePrefix}${filter.userEmail}"`);
+    parts.push(`user == ${celString(`${userNamePrefix}${filter.userEmail}`)}`);
   if (filter.createdTsAfter)
     parts.push(
-      `create_time >= "${dayjs(filter.createdTsAfter).utc().format()}"`
+      `create_time >= ${celString(dayjs(filter.createdTsAfter).utc().format())}`
     );
   if (filter.createdTsBefore)
     parts.push(
-      `create_time <= "${dayjs(filter.createdTsBefore).utc().format()}"`
+      `create_time <= ${celString(dayjs(filter.createdTsBefore).utc().format())}`
     );
   return parts.join(" && ");
 }
@@ -201,6 +207,94 @@ function getViewLink(auditLog: AuditLog): string | null {
     }
   }
   return null;
+}
+
+// ============================================================
+// MCP provenance
+// ============================================================
+
+// McpProvenanceField renders one label/value pair of the delegation grant.
+// Empty values are omitted rather than shown as a placeholder: these are the
+// grant's stored values copied verbatim, so empty means the grant recorded
+// nothing — a pre-grant legacy session, or a client that omitted `scope` at
+// consent. Inventing a stand-in would misreport stored state as unknown state.
+// See DelegatedGrant in backend/common/context.go for the empty-state map.
+function McpProvenanceField({
+  label,
+  value,
+}: Readonly<{ label: string; value: string }>) {
+  if (!value) return null;
+  return (
+    <div className="flex flex-col">
+      <span className="opacity-70">{label}</span>
+      <span className="font-mono break-all">{value}</span>
+    </div>
+  );
+}
+
+function McpProvenanceDetail({
+  delegation,
+}: Readonly<{ delegation: MCPDelegation }>) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-y-1.5 text-xs">
+      <span className="font-medium">{t("audit-log.mcp.origin")}</span>
+      <McpProvenanceField
+        label={t("audit-log.mcp.correlation-id")}
+        value={delegation.correlationId}
+      />
+      <McpProvenanceField label={t("common.scope")} value={delegation.scope} />
+      <McpProvenanceField
+        label={t("common.resource")}
+        value={delegation.resource}
+      />
+      <McpProvenanceField
+        label={t("audit-log.mcp.client-id")}
+        value={delegation.clientId}
+      />
+    </div>
+  );
+}
+
+// AuditLogActorCell renders the acting user, badged when the entry belongs to
+// MCP: a call that reached the API through the MCP server's delegated
+// credential, or one of the two MCP doors outside the API — the /mcp gate and
+// the OAuth2 consent. Presence of `mcpDelegation` is the marker — never read
+// its values to decide MCP-ness. Every field of it can be empty: `scope`,
+// `resource`, and `clientId` are grant state a legacy or scope-omitting session
+// leaves unset, and `correlationId` is minted at /mcp, so a consent entry has
+// none.
+function AuditLogActorCell({ log }: Readonly<{ log: AuditLog }>) {
+  const { t } = useTranslation();
+  const email = extractUserEmail(log.user);
+  return (
+    <div className="flex items-center gap-x-1.5">
+      {email ? (
+        // As a flex item the anchor is blockified, so `truncate` now ellipses
+        // where the bare inline anchor used to hard-clip; `title` keeps the
+        // full address reachable.
+        <a
+          href={`mailto:${email}`}
+          title={email}
+          className="text-accent hover:underline truncate min-w-0"
+        >
+          {email}
+        </a>
+      ) : (
+        <span>-</span>
+      )}
+      {log.mcpDelegation && (
+        <Tooltip
+          content={<McpProvenanceDetail delegation={log.mcpDelegation} />}
+          popupClassName="max-w-96"
+        >
+          <Badge variant="secondary" className="text-xs px-1.5 py-0 shrink-0">
+            {t("audit-log.mcp.badge")}
+          </Badge>
+        </Tooltip>
+      )}
+    </div>
+  );
 }
 
 // ============================================================
@@ -358,15 +452,7 @@ function useColumnDefs(): ColumnDef[] {
         defaultWidth: 200,
         minWidth: 120,
         resizable: true,
-        render: (log: AuditLog) => {
-          if (!log.user) return <span>-</span>;
-          const email = extractUserEmail(log.user);
-          return (
-            <a href={`mailto:${email}`} className="text-accent hover:underline">
-              {email}
-            </a>
-          );
-        },
+        render: (log: AuditLog) => <AuditLogActorCell log={log} />,
       },
       {
         key: "request",
@@ -594,18 +680,11 @@ export function AuditLogTable({
         }
       }
     },
-    [hasAuditLogFeature, parent, filter, orderBy, pageSize, t]
+    [hasAuditLogFeature, parent, filter, orderBy, pageSize]
   );
 
-  const isFirstLoad = useRef(true);
   useEffect(() => {
-    if (isFirstLoad.current) {
-      isFirstLoad.current = false;
-      fetchAuditLogs(true);
-      return;
-    }
-    const timer = setTimeout(() => fetchAuditLogs(true), 300);
-    return () => clearTimeout(timer);
+    fetchAuditLogs(true);
   }, [fetchAuditLogs]);
 
   const loadMore = useCallback(() => {

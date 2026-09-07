@@ -14,6 +14,7 @@ import { AIChatToSQL, AIContextProvider } from "@/modules/ai/components";
 import { aiContextEvents } from "@/modules/ai/logic";
 import { resizeHandleClass } from "@/modules/schema-editor/resize";
 import { DatabaseChooser } from "@/modules/sql-editor/components/DatabaseChooser";
+import { DataExplorerPanel } from "@/modules/sql-editor/components/DataExplorer/DataExplorerPanel";
 import { DiagramPanel } from "@/modules/sql-editor/components/DiagramPanel";
 import { ExternalTablesPanel } from "@/modules/sql-editor/components/ExternalTablesPanel";
 import { FunctionsPanel } from "@/modules/sql-editor/components/FunctionsPanel";
@@ -56,7 +57,7 @@ const AIPaneFallback = () => (
  * React port of `frontend/src/views/sql-editor/EditorPanel/Panels/Panels.vue`.
  *
  * The host shell beneath `<EditorPanel>`. Two render modes:
- * - `viewState.view === "CODE"` (or no viewState) — shows the worksheet
+ * - `viewState.view === "CODE"` (or no viewState) — shows the saved query
  *   editor (`<StandardPanel>`) or terminal (`<TerminalPanel>`) based on
  *   the active tab's mode. The Vue version did this selection in
  *   `EditorPanel.vue` and passed the result into `<Panels>` via a named
@@ -84,7 +85,7 @@ export function Panels() {
   // Subscribe to `mode` as its own primitive — Pinia's tabStore mutates
   // the tab proxy in place via `Object.assign`, so `() => tabStore
   // .currentTab` only fires Vue's watch on tab-switches (proxy
-  // reference changes), not on `mode` flipping between "WORKSHEET" and
+  // reference changes), not on `mode` flipping between "SAVED_QUERY" and
   // "ADMIN" within the same tab. Without this, clicking the admin-mode
   // button doesn't swap to the `TerminalPanel`.
   const tabMode = useSQLEditorTabState(
@@ -99,6 +100,7 @@ export function Panels() {
   const editorPanelSize = useSQLEditorStore(useShallow(selectEditorPanelSize));
 
   const showAIPaneAlongsidePanel = showAIPanel && isShowingCode;
+  const effectiveView = tabMode === "DATA_EXPLORER" ? "CODE" : view;
   const { setSchema, updateViewState } = useViewStateNav();
   const { execute } = useExecuteSQL();
 
@@ -163,11 +165,14 @@ export function Panels() {
   }, [tabId, databaseMetadata, currentSchema, setSchema]);
 
   const codePanel = useMemo(() => {
-    if (!tab || tabMode === "WORKSHEET") {
+    if (!tab || tabMode === "SAVED_QUERY") {
       return <StandardPanel key={`standard-${tab?.id ?? "default"}`} />;
     }
     if (tabMode === "ADMIN") {
       return <TerminalPanel key={`terminal-${tab.id}`} />;
+    }
+    if (tabMode === "DATA_EXPLORER") {
+      return <DataExplorerPanel key={`data-explorer-${tab.id}`} />;
     }
     return (
       <Alert variant="error" className="m-2" key={`no-permission-${tab.id}`}>
@@ -177,7 +182,9 @@ export function Panels() {
     );
   }, [tab, tabMode, t]);
 
-  const subPanel = view ? renderSubPanel(view, tab?.id) : null;
+  const subPanel = effectiveView
+    ? renderSubPanel(effectiveView, tab?.id)
+    : null;
 
   const handleAiResize = (sizePct: number) => {
     if (!Number.isFinite(sizePct)) return;
@@ -187,8 +194,8 @@ export function Panels() {
   return (
     <div className="flex-1 flex items-stretch overflow-hidden">
       <div className="flex-1 overflow-y-hidden overflow-x-auto">
-        {(!view || view === "CODE") && codePanel}
-        {view && view !== "CODE" && (
+        {(!effectiveView || effectiveView === "CODE") && codePanel}
+        {effectiveView && effectiveView !== "CODE" && (
           <div className="h-full flex flex-col">
             <div className="py-2 px-2 w-full flex flex-row gap-x-2 justify-between items-center">
               <div className="flex items-center justify-start gap-2">

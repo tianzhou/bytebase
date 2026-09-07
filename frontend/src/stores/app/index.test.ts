@@ -1,4 +1,6 @@
 import { create as createProto } from "@bufbuild/protobuf";
+import { TimestampSchema } from "@bufbuild/protobuf/wkt";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { silentContextKey } from "@/api/context-key";
 import { isValidDatabaseGroupName, UNKNOWN_PROJECT_NAME } from "@/types";
@@ -8,6 +10,7 @@ import {
   AccessGrantSchema,
 } from "@/types/proto-es/v1/access_grant_service_pb";
 import { ActuatorInfoSchema } from "@/types/proto-es/v1/actuator_service_pb";
+import { AuthenticationInfoSchema } from "@/types/proto-es/v1/auth_service_pb";
 import {
   ChangelogSchema,
   ChangelogView,
@@ -78,7 +81,31 @@ const mocks = vi.hoisted(() => ({
     return localStorage;
   })(),
   getCurrentUser: vi.fn(),
+  login: vi.fn(),
   logout: vi.fn(),
+  navigateByName: vi.fn(),
+  navigateToPath: vi.fn(),
+  resolvePath: vi.fn(
+    (
+      name: string,
+      options?: { query?: Record<string, string | undefined> }
+    ) => {
+      const base =
+        name === "auth.signin"
+          ? "/auth"
+          : name === "sql-editor.home"
+            ? "/sql-editor"
+            : "/";
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(options?.query ?? {})) {
+        if (value) query.set(key, value);
+      }
+      const serialized = query.toString();
+      return serialized ? `${base}?${serialized}` : base;
+    }
+  ),
+  signup: vi.fn(),
+  getAuthenticationInfo: vi.fn(),
   getActuatorInfo: vi.fn(),
   getWorkspace: vi.fn(),
   updateWorkspace: vi.fn(),
@@ -92,6 +119,7 @@ const mocks = vi.hoisted(() => ({
   getSetting: vi.fn(),
   getProject: vi.fn(),
   getProjectIamPolicy: vi.fn(),
+  setProjectIamPolicy: vi.fn(),
   batchGetProjects: vi.fn(),
   searchProjects: vi.fn(),
   createProject: vi.fn(),
@@ -114,6 +142,8 @@ const mocks = vi.hoisted(() => ({
   listChangelogs: vi.fn(),
   getChangelog: vi.fn(),
   getDatabaseMetadata: vi.fn(),
+  getDatabaseCatalog: vi.fn(),
+  updateDatabaseCatalog: vi.fn(),
   getDatabaseGroup: vi.fn(),
   listDatabaseGroups: vi.fn(),
   getSheet: vi.fn(),
@@ -166,11 +196,15 @@ vi.mock("@/api", () => ({
     getActuatorInfo: mocks.getActuatorInfo,
   },
   authServiceClientConnect: {
+    getAuthenticationInfo: mocks.getAuthenticationInfo,
+    login: mocks.login,
     logout: mocks.logout,
+    signup: mocks.signup,
   },
   projectServiceClientConnect: {
     getProject: mocks.getProject,
     getIamPolicy: mocks.getProjectIamPolicy,
+    setIamPolicy: mocks.setProjectIamPolicy,
     batchGetProjects: mocks.batchGetProjects,
     searchProjects: mocks.searchProjects,
     createProject: mocks.createProject,
@@ -203,6 +237,10 @@ vi.mock("@/api", () => ({
     batchGetDatabases: mocks.batchGetDatabases,
     listDatabases: mocks.listDatabases,
     getDatabaseMetadata: mocks.getDatabaseMetadata,
+  },
+  databaseCatalogServiceClientConnect: {
+    getDatabaseCatalog: mocks.getDatabaseCatalog,
+    updateDatabaseCatalog: mocks.updateDatabaseCatalog,
   },
   databaseGroupServiceClientConnect: {
     getDatabaseGroup: mocks.getDatabaseGroup,
@@ -290,12 +328,28 @@ vi.mock("@/api", () => ({
   },
 }));
 
+vi.mock("@/app/router/navigation", () => ({
+  navigateByName: mocks.navigateByName,
+  navigateToPath: mocks.navigateToPath,
+  resolvePath: mocks.resolvePath,
+}));
+
 const user = createProto(UserSchema, {
   name: "users/alice@example.com",
   email: "alice@example.com",
   groups: ["groups/dba"],
   workspace: "workspaces/default",
 });
+
+const workspacePolicyForUser = (role: string) =>
+  createProto(IamPolicySchema, {
+    bindings: [
+      createProto(BindingSchema, {
+        role,
+        members: [`user:${user.email}`],
+      }),
+    ],
+  });
 
 const projectA = createProto(ProjectSchema, {
   name: "projects/a",
@@ -399,6 +453,11 @@ const changelogB = createProto(ChangelogSchema, {
   schema: "full",
 });
 
+const changelogCreateTime = createProto(TimestampSchema, {
+  seconds: 1735689599n,
+  nanos: 123456789,
+});
+
 const webhookA = createProto(WebhookSchema, {
   name: "projects/a/webhooks/hook-a",
   title: "Hook A",
@@ -412,6 +471,11 @@ const timestampSeconds = (seconds: number) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Tests here stub `location`; without this the stub leaks into every test
+  // declared after it, with only the keys that test happened to supply. The
+  // unstub is blanket, so re-install the localStorage mock it also removes.
+  vi.unstubAllGlobals();
+  vi.stubGlobal("localStorage", mocks.localStorage);
   localStorage.clear();
 });
 
@@ -459,6 +523,444 @@ describe("useAppStore", () => {
     expect(store.getState().currentUser).toBe(user);
     expect(store.getState().currentUserName).toBe(user.name);
     expect(store.getState().isLoggedIn()).toBe(true);
+  });
+
+  // Mutations that answer with the updated user adopt it directly: the router
+  // guard reads this state, and a refetch that failed would leave it stale
+  // while fetchCurrentUser swallowed the error.
+  test("adopts a user handed to setCurrentUser", () => {
+    const store = createAppStore();
+    const enabled = createProto(UserSchema, { ...user, mfaEnabled: true });
+
+    store.getState().setCurrentUser(enabled);
+
+    expect(store.getState().currentUser?.mfaEnabled).toBe(true);
+    expect(store.getState().currentUserName).toBe(enabled.name);
+    expect(store.getState().isLoggedIn()).toBe(true);
+  });
+
+  test("fetches the current user silently when requested", async () => {
+    mocks.getCurrentUser.mockResolvedValue(user);
+    const store = createAppStore();
+
+    await store.getState().fetchCurrentUser(true);
+
+    expect(
+      mocks.getCurrentUser.mock.calls[0][1]?.contextValues.get(silentContextKey)
+    ).toBe(true);
+  });
+
+  test("auto logout preserves the full current path for signin redirect", async () => {
+    const fakeLocation = {
+      pathname: "/sql-editor/projects/prod/instances/pg/databases/app",
+      search: "?schema=public",
+      hash: "#result",
+      href: "",
+    };
+    vi.stubGlobal("location", fakeLocation);
+    mocks.logout.mockResolvedValue({});
+    const store = createAppStore();
+
+    await store.getState().logout();
+
+    expect(mocks.resolvePath).toHaveBeenCalledWith("auth.signin", {
+      query: {
+        redirect:
+          "/sql-editor/projects/prod/instances/pg/databases/app?schema=public#result",
+      },
+    });
+    expect(fakeLocation.href).toBe(
+      "/auth?redirect=%2Fsql-editor%2Fprojects%2Fprod%2Finstances%2Fpg%2Fdatabases%2Fapp%3Fschema%3Dpublic%23result"
+    );
+  });
+
+  test("login keeps an explicit redirect URL in SQL Editor mode", async () => {
+    const redirectUrl =
+      "/sql-editor/projects/prod/instances/pg/databases/app?schema=public#result";
+    mocks.login.mockResolvedValue({ requireResetPassword: false });
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({ workspace: user.workspace });
+    mocks.getWorkspace.mockResolvedValue({ name: user.workspace });
+    // `login()` loads the profile itself, so EDITOR mode comes from the server
+    // rather than a seeded `appFeatures`.
+    mocks.getSetting.mockResolvedValue(
+      createProto(SettingSchema, {
+        value: createProto(SettingValueSchema, {
+          value: {
+            case: "workspaceProfile",
+            value: createProto(WorkspaceProfileSettingSchema, {
+              databaseChangeMode: DatabaseChangeMode.EDITOR,
+            }),
+          },
+        }),
+      })
+    );
+    const store = createAppStore();
+
+    await store.getState().login({
+      request: { email: user.email, password: "secret" } as never,
+      redirectUrl,
+    });
+
+    expect(mocks.navigateToPath).toHaveBeenCalledWith(redirectUrl, {
+      replace: true,
+    });
+  });
+
+  // Regression guard (customer report): signing in from the bare root left
+  // `appFeatures` at its PIPELINE default, because a signed-out boot never
+  // fetches the workspace profile and `login()` did not fetch it either. The
+  // EDITOR branch below then failed and the user landed on the workspace
+  // landing page instead of the SQL Editor. Note this test seeds no
+  // `appFeatures` — the profile must come from the server during `login()`.
+  test("login loads the workspace profile before choosing the next page", async () => {
+    mocks.login.mockResolvedValue({ requireResetPassword: false });
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({ workspace: user.workspace });
+    mocks.getWorkspace.mockResolvedValue({ name: user.workspace });
+    mocks.getSetting.mockResolvedValue(
+      createProto(SettingSchema, {
+        value: createProto(SettingValueSchema, {
+          value: {
+            case: "workspaceProfile",
+            value: createProto(WorkspaceProfileSettingSchema, {
+              databaseChangeMode: DatabaseChangeMode.EDITOR,
+            }),
+          },
+        }),
+      })
+    );
+    const store = createAppStore();
+
+    await store.getState().login({
+      request: { email: user.email, password: "secret" } as never,
+    });
+
+    expect(
+      store.getState().appFeatures["bb.feature.database-change-mode"]
+    ).toBe(DatabaseChangeMode.EDITOR);
+    // `rootGuard` owns the "/" policy and turns this into the SQL Editor; see
+    // the root-redirect tests in app/router/guard.test.ts. What `login()` owes
+    // it is a loaded profile, asserted above.
+    expect(mocks.navigateToPath).toHaveBeenCalledWith("/", { replace: true });
+  });
+
+  test("self-host first login uses the unified workspace setup route", async () => {
+    const firstLoginUser = createProto(UserSchema, {
+      ...user,
+      title: user.email,
+    });
+    mocks.login.mockResolvedValue({
+      requireResetPassword: false,
+      user: firstLoginUser,
+    });
+    mocks.getCurrentUser.mockResolvedValue(firstLoginUser);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 1,
+      saas: false,
+    });
+    mocks.getWorkspace.mockResolvedValue({ name: user.workspace });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceAdmin")
+    );
+    const store = createAppStore();
+
+    await store.getState().login({
+      request: { email: user.email, password: "secret" } as never,
+    });
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("auth.setup", {
+      query: { redirect: "/" },
+    });
+  });
+
+  test("invited SaaS first login skips workspace setup and opens the workspace landing page", async () => {
+    vi.stubGlobal("location", {
+      search: "?workspace=default&email=alice%40example.com",
+    });
+    const firstLoginUser = createProto(UserSchema, {
+      ...user,
+      title: user.email,
+    });
+    mocks.login.mockResolvedValue({
+      requireResetPassword: false,
+      user: firstLoginUser,
+    });
+    mocks.getCurrentUser.mockResolvedValue(firstLoginUser);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 2,
+      saas: true,
+    });
+    mocks.getWorkspace.mockResolvedValue({ name: user.workspace });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    const store = createAppStore();
+
+    await store.getState().login({
+      request: { email: user.email, password: "secret" } as never,
+    });
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("workspace.landing", {
+      replace: true,
+    });
+    expect(mocks.navigateByName).not.toHaveBeenCalledWith(
+      "auth.setup",
+      expect.anything()
+    );
+  });
+
+  test("invited SaaS first login preserves an explicit redirect", async () => {
+    vi.stubGlobal("location", {
+      search:
+        "?workspace=default&email=alice%40example.com&redirect=%2Fprojects%2Ffoo",
+    });
+    const firstLoginUser = createProto(UserSchema, {
+      ...user,
+      title: user.email,
+    });
+    mocks.login.mockResolvedValue({
+      requireResetPassword: false,
+      user: firstLoginUser,
+    });
+    mocks.getCurrentUser.mockResolvedValue(firstLoginUser);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 2,
+      saas: true,
+    });
+    mocks.getWorkspace.mockResolvedValue({ name: user.workspace });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    const store = createAppStore();
+
+    await store.getState().login({
+      request: { email: user.email, password: "secret" } as never,
+    });
+
+    expect(mocks.navigateToPath).toHaveBeenCalledWith("/projects/foo", {
+      replace: true,
+    });
+    expect(mocks.navigateByName).not.toHaveBeenCalledWith(
+      "auth.setup",
+      expect.anything()
+    );
+  });
+
+  // Regression guard: `signup()` used to override the destination with the SQL
+  // Editor whenever the mode read EDITOR, with no check for an explicit
+  // redirect. That branch was dead (signup always boots signed out, so the mode
+  // was never EDITOR) until the profile load made it live, which would have
+  // silently dropped deep links.
+  test("signup keeps an explicit redirect in an EDITOR workspace", async () => {
+    vi.stubGlobal("location", { search: "?redirect=%2Fprojects%2Ffoo" });
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    // userCountInIam > 1 so `enableOnboarding()` is false and signup navigates.
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 2,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    mocks.getSetting.mockResolvedValue(
+      createProto(SettingSchema, {
+        value: createProto(SettingValueSchema, {
+          value: {
+            case: "workspaceProfile",
+            value: createProto(WorkspaceProfileSettingSchema, {
+              databaseChangeMode: DatabaseChangeMode.EDITOR,
+            }),
+          },
+        }),
+      })
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateToPath).toHaveBeenCalledWith("/projects/foo", {
+      replace: true,
+    });
+  });
+
+  test("self-host signup uses the unified workspace setup route", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 1,
+      saas: false,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceAdmin")
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("auth.setup", {
+      replace: true,
+    });
+  });
+
+  test("SaaS signup uses the unified workspace setup route", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 1,
+      saas: true,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceAdmin")
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("auth.setup", {
+      replace: true,
+    });
+  });
+
+  test("invited SaaS signup skips workspace setup and opens the workspace landing page", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 2,
+      saas: true,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("workspace.landing", {
+      replace: true,
+    });
+    expect(mocks.navigateByName).not.toHaveBeenCalledWith(
+      "auth.setup",
+      expect.anything()
+    );
+  });
+
+  test("non-admin signup skips workspace setup even with one IAM user", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 1,
+      saas: true,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("workspace.landing", {
+      replace: true,
+    });
+    expect(mocks.navigateByName).not.toHaveBeenCalledWith(
+      "auth.setup",
+      expect.anything()
+    );
+  });
+
+  test("signup skips workspace setup when the workspace policy cannot be loaded", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 1,
+      saas: true,
+    });
+    mocks.getIamPolicy.mockRejectedValue(new Error("policy unavailable"));
+    const store = createAppStore();
+    store.setState({
+      workspacePolicy: workspacePolicyForUser("roles/workspaceAdmin"),
+    });
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(mocks.navigateByName).toHaveBeenCalledWith("workspace.landing", {
+      replace: true,
+    });
+    expect(mocks.navigateByName).not.toHaveBeenCalledWith(
+      "auth.setup",
+      expect.anything()
+    );
+  });
+
+  test("signup loads the workspace profile before opening the landing page", async () => {
+    mocks.signup.mockResolvedValue({});
+    mocks.getCurrentUser.mockResolvedValue(user);
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: user.workspace,
+      userCountInIam: 2,
+    });
+    mocks.getIamPolicy.mockResolvedValue(
+      workspacePolicyForUser("roles/workspaceMember")
+    );
+    mocks.getSetting.mockResolvedValue(
+      createProto(SettingSchema, {
+        value: createProto(SettingValueSchema, {
+          value: {
+            case: "workspaceProfile",
+            value: createProto(WorkspaceProfileSettingSchema, {
+              databaseChangeMode: DatabaseChangeMode.EDITOR,
+            }),
+          },
+        }),
+      })
+    );
+    const store = createAppStore();
+
+    await store.getState().signup({
+      email: user.email,
+      name: "Test",
+      password: "secret",
+    } as never);
+
+    expect(
+      store.getState().appFeatures["bb.feature.database-change-mode"]
+    ).toBe(DatabaseChangeMode.EDITOR);
+    expect(mocks.navigateByName).toHaveBeenCalledWith("workspace.landing", {
+      replace: true,
+    });
   });
 
   test("lists groups and populates the group cache", async () => {
@@ -773,6 +1275,138 @@ describe("useAppStore", () => {
     expect(store.getState().workspacePolicy).toBe(setPolicy);
   });
 
+  test("patchWorkspaceIamPolicy round-trips the etag it read", async () => {
+    const existing = createProto(IamPolicySchema, {
+      etag: "1756000000000",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/workspaceMember",
+          members: ["user:alice@example.com"],
+        }),
+      ],
+    });
+    mocks.setIamPolicy.mockResolvedValue(existing);
+    const store = createAppStore();
+    store.setState({ workspacePolicy: existing });
+
+    await store
+      .getState()
+      .patchWorkspaceIamPolicy([
+        { member: "user:bob@example.com", roles: ["roles/workspaceMember"] },
+      ]);
+
+    // The server reads the etag from either field; sending both keeps an older
+    // server, which only reads the request field, checking it too.
+    const request = mocks.setIamPolicy.mock.calls[0][0] as {
+      etag: string;
+      policy: { etag: string };
+    };
+    expect(request.etag).toBe("1756000000000");
+    expect(request.policy.etag).toBe("1756000000000");
+  });
+
+  test("patchWorkspaceIamPolicy refetches after a concurrent edit", async () => {
+    const stale = createProto(IamPolicySchema, {
+      etag: "1756000000000",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/workspaceMember",
+          members: ["user:alice@example.com"],
+        }),
+      ],
+    });
+    // What the other admin left behind: alice revoked, and a new etag.
+    const current = createProto(IamPolicySchema, {
+      etag: "1756000009999",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/workspaceAdmin",
+          members: ["user:carol@example.com"],
+        }),
+      ],
+    });
+    mocks.setIamPolicy.mockRejectedValue(
+      new ConnectError("concurrent update", Code.Aborted)
+    );
+    mocks.getIamPolicy.mockResolvedValue(current);
+    const store = createAppStore();
+    store.setState({ workspacePolicy: stale });
+
+    await expect(
+      store
+        .getState()
+        .patchWorkspaceIamPolicy([
+          { member: "user:bob@example.com", roles: ["roles/workspaceMember"] },
+        ])
+    ).rejects.toThrow();
+
+    // Without the refetch the store would keep the losing policy, and every
+    // retry would replay the same stale etag.
+    expect(store.getState().workspacePolicy).toBe(current);
+  });
+
+  test("updateProjectIamPolicy refetches after a concurrent edit", async () => {
+    const stale = createProto(IamPolicySchema, {
+      etag: "1756000000000",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/projectDeveloper",
+          members: ["user:alice@example.com"],
+        }),
+      ],
+    });
+    const current = createProto(IamPolicySchema, {
+      etag: "1756000009999",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/projectOwner",
+          members: ["user:carol@example.com"],
+        }),
+      ],
+    });
+    mocks.setProjectIamPolicy.mockRejectedValue(
+      new ConnectError("concurrent update", Code.Aborted)
+    );
+    mocks.getProjectIamPolicy.mockResolvedValue(current);
+    const store = createAppStore();
+    store.setState({ projectPoliciesByName: { [projectA.name]: stale } });
+
+    await expect(
+      store.getState().updateProjectIamPolicy(projectA.name, stale)
+    ).rejects.toThrow();
+
+    expect(mocks.setProjectIamPolicy.mock.calls[0][0]).toMatchObject({
+      etag: "1756000000000",
+    });
+    expect(store.getState().projectPoliciesByName[projectA.name]).toBe(current);
+  });
+
+  test("updateProjectIamPolicy leaves the cached policy alone on other errors", async () => {
+    const stale = createProto(IamPolicySchema, {
+      etag: "1756000000000",
+      bindings: [
+        createProto(BindingSchema, {
+          role: "roles/projectDeveloper",
+          members: ["user:alice@example.com"],
+        }),
+      ],
+    });
+    mocks.setProjectIamPolicy.mockRejectedValue(
+      new ConnectError("at least one owner", Code.InvalidArgument)
+    );
+    const store = createAppStore();
+    store.setState({ projectPoliciesByName: { [projectA.name]: stale } });
+
+    await expect(
+      store.getState().updateProjectIamPolicy(projectA.name, stale)
+    ).rejects.toThrow();
+
+    // A rejected write left the server's policy where it was, so the etag this
+    // store holds is still good and refetching would be churn.
+    expect(mocks.getProjectIamPolicy).not.toHaveBeenCalled();
+    expect(store.getState().projectPoliciesByName[projectA.name]).toBe(stale);
+  });
+
   test("workspaceUserMapToRoles inverts policy bindings to member -> roles", () => {
     const policy = createProto(IamPolicySchema, {
       bindings: [
@@ -799,34 +1433,41 @@ describe("useAppStore", () => {
     ]);
   });
 
-  test("create archive and restore update activated user count when server info is loaded", async () => {
+  test("create archive and restore refresh the IAM user count", async () => {
     mocks.createUser.mockResolvedValue(userA);
     mocks.deleteUser.mockResolvedValue({});
     mocks.undeleteUser.mockResolvedValue(userA);
+    mocks.getActuatorInfo
+      .mockResolvedValueOnce(
+        createProto(ActuatorInfoSchema, { userCountInIam: 7 })
+      )
+      .mockResolvedValueOnce(
+        createProto(ActuatorInfoSchema, { userCountInIam: 6 })
+      )
+      .mockResolvedValueOnce(
+        createProto(ActuatorInfoSchema, { userCountInIam: 7 })
+      )
+      .mockResolvedValueOnce(
+        createProto(ActuatorInfoSchema, { userCountInIam: 0 })
+      );
     const store = createAppStore();
     store.setState({
       serverInfo: createProto(ActuatorInfoSchema, {
-        activatedUserCount: 2,
+        userCountInIam: 2,
       }),
     });
 
     await store.getState().createUser(userA);
-    expect(store.getState().serverInfo?.activatedUserCount).toBe(3);
+    expect(store.getState().serverInfo?.userCountInIam).toBe(7);
 
     await store.getState().archiveUser(userA.name);
-    expect(store.getState().serverInfo?.activatedUserCount).toBe(2);
+    expect(store.getState().serverInfo?.userCountInIam).toBe(6);
 
     await store.getState().restoreUser(userA.name);
-    expect(store.getState().serverInfo?.activatedUserCount).toBe(3);
-
-    store.setState({
-      serverInfo: createProto(ActuatorInfoSchema, {
-        activatedUserCount: 0,
-      }),
-    });
+    expect(store.getState().serverInfo?.userCountInIam).toBe(7);
 
     await store.getState().archiveUser(userA.name);
-    expect(store.getState().serverInfo?.activatedUserCount).toBe(0);
+    expect(store.getState().serverInfo?.userCountInIam).toBe(0);
   });
 
   test("lists, upserts, and deletes roles", async () => {
@@ -859,6 +1500,17 @@ describe("useAppStore", () => {
     );
   });
 
+  test("lists roles silently when requested", async () => {
+    mocks.listRoles.mockResolvedValue({ roles: [roleA] });
+    const store = createAppStore();
+
+    await store.getState().listRoles(true);
+
+    expect(
+      mocks.listRoles.mock.calls[0][1]?.contextValues.get(silentContextKey)
+    ).toBe(true);
+  });
+
   test("loads workspace permission roles into the role display cache", async () => {
     mocks.getCurrentUser.mockResolvedValue(user);
     mocks.getActuatorInfo.mockResolvedValue({
@@ -873,6 +1525,28 @@ describe("useAppStore", () => {
 
     expect(store.getState().roles).toEqual([roleA, roleB]);
     expect(store.getState().roleList).toEqual([roleA, roleB]);
+    expect(
+      mocks.listRoles.mock.calls[0][1]?.contextValues.get(silentContextKey)
+    ).toBe(true);
+    expect(
+      mocks.getIamPolicy.mock.calls[0][1]?.contextValues.get(silentContextKey)
+    ).toBe(true);
+  });
+
+  test("fetches workspace IAM policy silently when requested", async () => {
+    mocks.getActuatorInfo.mockResolvedValue({
+      workspace: "workspaces/default",
+    });
+    mocks.getWorkspace.mockResolvedValue({ name: "workspaces/default" });
+    mocks.getIamPolicy.mockResolvedValue(createProto(IamPolicySchema, {}));
+    const store = createAppStore();
+    store.setState({ currentUser: user });
+
+    await store.getState().fetchWorkspaceIamPolicy(true);
+
+    expect(
+      mocks.getIamPolicy.mock.calls[0][1]?.contextValues.get(silentContextKey)
+    ).toBe(true);
   });
 
   test("prefetches user members referenced by the workspace policy", async () => {
@@ -1162,6 +1836,37 @@ describe("useAppStore", () => {
     ).toBeUndefined();
   });
 
+  test("fetches the latest prior changelog with a schema snapshot", async () => {
+    const current = createProto(ChangelogSchema, {
+      ...changelogA,
+      createTime: changelogCreateTime,
+    });
+    mocks.getChangelog.mockResolvedValue(current);
+    mocks.listChangelogs.mockResolvedValue({ changelogs: [changelogB] });
+    const store = createAppStore();
+
+    const previous = await store
+      .getState()
+      .fetchPreviousChangelog(current.name);
+
+    expect(previous).toBe(changelogB);
+    expect(mocks.getChangelog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: current.name,
+        view: ChangelogView.FULL,
+      })
+    );
+    expect(mocks.listChangelogs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parent: "instances/i1/databases/db1",
+        pageSize: 1,
+        view: ChangelogView.FULL,
+        filter:
+          'has_schema_snapshot == true && create_time < "2024-12-31T23:59:59.123456789Z"',
+      })
+    );
+  });
+
   test("project webhook operations call through and lookup by id", async () => {
     const projectWithWebhook = createProto(ProjectSchema, {
       ...projectA,
@@ -1253,6 +1958,25 @@ describe("useAppStore", () => {
     );
   });
 
+  test("lists service accounts without caching when requested", async () => {
+    mocks.listServiceAccounts.mockResolvedValue({
+      serviceAccounts: [serviceAccountA],
+      nextPageToken: "",
+    });
+    const store = createAppStore();
+
+    await store.getState().listServiceAccounts({
+      parent: "workspaces/default",
+      pageSize: 20,
+      showDeleted: false,
+      skipCache: true,
+    });
+
+    expect(store.getState().serviceAccountsByName).not.toHaveProperty(
+      serviceAccountA.name
+    );
+  });
+
   test("marks cached service account deleted after delete", async () => {
     mocks.deleteServiceAccount.mockResolvedValue({});
     const store = createAppStore();
@@ -1287,6 +2011,25 @@ describe("useAppStore", () => {
     ).toBe(workloadIdentityA);
   });
 
+  test("lists workload identities without caching when requested", async () => {
+    mocks.listWorkloadIdentities.mockResolvedValue({
+      workloadIdentities: [workloadIdentityA],
+      nextPageToken: "",
+    });
+    const store = createAppStore();
+
+    await store.getState().listWorkloadIdentities({
+      parent: "workspaces/default",
+      pageSize: 20,
+      showDeleted: false,
+      skipCache: true,
+    });
+
+    expect(store.getState().workloadIdentitiesByName).not.toHaveProperty(
+      workloadIdentityA.name
+    );
+  });
+
   test("lists identity providers and replaces the identity provider cache", async () => {
     mocks.listIdentityProviders.mockResolvedValue({
       identityProviders: [identityProviderA],
@@ -1300,7 +2043,9 @@ describe("useAppStore", () => {
       },
     });
 
-    const providers = await store.getState().listIdentityProviders();
+    const providers = await store
+      .getState()
+      .listIdentityProviders("workspaces/default");
 
     expect(providers).toEqual([identityProviderA]);
     expect(store.getState().identityProviderList()).toEqual([
@@ -1418,7 +2163,10 @@ describe("useAppStore", () => {
   });
 
   test("falls back to individual project fetches when batch fetch fails", async () => {
-    mocks.batchGetProjects.mockRejectedValue(new Error("batch failed"));
+    // BatchGetProjects is all-or-nothing, so one stale name fails the batch.
+    mocks.batchGetProjects.mockRejectedValue(
+      new ConnectError("project not found", Code.NotFound)
+    );
     mocks.getProject.mockImplementation(({ name }: { name: string }) => {
       return Promise.resolve(name === projectA.name ? projectA : projectB);
     });
@@ -1588,6 +2336,107 @@ describe("useAppStore", () => {
     expect(store.getState().appFeatures["bb.feature.hide-trial"]).toBe(false);
   });
 
+  test("enables the workspace setup guide for the sole workspace admin", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 1 }),
+      workspacePolicy: createProto(IamPolicySchema, {
+        bindings: [
+          createProto(BindingSchema, {
+            role: "roles/workspaceAdmin",
+            members: [user.name],
+          }),
+        ],
+      }),
+    });
+    expect(store.getState().workspaceSetupGuideEnabled()).toBe(true);
+  });
+
+  test("keeps the workspace setup guide disabled until IAM loads", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 1 }),
+      workspacePolicy: undefined,
+    });
+    expect(store.getState().workspaceSetupGuideEnabled()).toBe(false);
+  });
+
+  test("disables the workspace setup guide for a sole non-admin", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 1 }),
+      workspacePolicy: createProto(IamPolicySchema, {
+        bindings: [
+          createProto(BindingSchema, {
+            role: "roles/workspaceMember",
+            members: [user.name],
+          }),
+        ],
+      }),
+    });
+    expect(store.getState().workspaceSetupGuideEnabled()).toBe(false);
+  });
+
+  test("allows the original admin to finish an explicit team guide", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 2 }),
+      workspacePolicy: createProto(IamPolicySchema, {
+        bindings: [
+          createProto(BindingSchema, {
+            role: "roles/workspaceAdmin",
+            members: [user.name],
+          }),
+        ],
+      }),
+    });
+    expect(store.getState().workspaceSetupGuideEnabled()).toBe(false);
+    expect(store.getState().workspaceSetupGuideEnabled(true)).toBe(true);
+  });
+
+  test("does not allow the multi-member exception for a non-admin", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 2 }),
+      workspacePolicy: createProto(IamPolicySchema, {
+        bindings: [
+          createProto(BindingSchema, {
+            role: "roles/workspaceMember",
+            members: [user.name, "users/teammate@example.com"],
+          }),
+        ],
+      }),
+    });
+
+    expect(store.getState().workspaceSetupGuideEnabled(true)).toBe(false);
+  });
+
+  test("disables the workspace setup guide when quick start is hidden", () => {
+    const store = createAppStore();
+    store.setState({
+      currentUser: user,
+      appFeatures: {
+        ...store.getState().appFeatures,
+        "bb.feature.hide-quick-start": true,
+      },
+      serverInfo: createProto(ActuatorInfoSchema, { userCountInIam: 1 }),
+      workspacePolicy: createProto(IamPolicySchema, {
+        bindings: [
+          createProto(BindingSchema, {
+            role: "roles/workspaceAdmin",
+            members: [user.name],
+          }),
+        ],
+      }),
+    });
+    expect(store.getState().workspaceSetupGuideEnabled()).toBe(false);
+  });
+
   test("derives actuator state for React consumers", () => {
     const store = createAppStore();
     store.setState({
@@ -1611,6 +2460,26 @@ describe("useAppStore", () => {
     expect(store.getState().activatedInstanceCount()).toBe(2);
     expect(store.getState().totalInstanceCount()).toBe(3);
     expect(store.getState().userCountInIam()).toBe(7);
+  });
+
+  test("loads authentication info without fetching actuator info", async () => {
+    const info = createProto(AuthenticationInfoSchema, {
+      workspace: "workspaces/pre-login",
+    });
+    mocks.getAuthenticationInfo.mockResolvedValue(info);
+    const store = createAppStore();
+
+    await store.getState().loadAuthenticationInfo();
+
+    expect(mocks.getAuthenticationInfo).toHaveBeenCalledWith({
+      workspace: "",
+    });
+    expect(mocks.getActuatorInfo).not.toHaveBeenCalled();
+    expect(store.getState().authenticationInfo).toBe(info);
+    expect(store.getState().isSaaSMode()).toBe(false);
+    expect(store.getState().workspaceResourceName()).toBe(
+      "workspaces/pre-login"
+    );
   });
 
   test("derives subscription limits and feature state", () => {
@@ -2022,9 +2891,12 @@ describe("useAppStore", () => {
     store.getState().recordRecentVisit("/projects/a?tab=1");
     store.getState().recordRecentVisit("/projects/a?tab=2");
     store.getState().removeRecentVisit("/missing");
-    store.getState().resetQuickstartProgress();
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.dismissed",
+      newState: true,
+    });
+    store.getState().resumeWorkspaceSetupGuide();
 
-    // Not SaaS in this test, so keys are workspace-agnostic (scope "").
     expect(
       JSON.parse(
         localStorage.getItem(storageKeyRecentProjects("", user.email))!
@@ -2034,12 +2906,75 @@ describe("useAppStore", () => {
       JSON.parse(localStorage.getItem(storageKeyRecentVisit("", user.email))!)
     ).toEqual(["/projects/a?tab=2"]);
     expect(
-      JSON.parse(localStorage.getItem(storageKeyIntroState("", user.email))!)
-    ).toMatchObject({
-      hidden: false,
-      "project.visit": false,
-      "data.query": false,
+      JSON.parse(
+        localStorage.getItem(
+          storageKeyIntroState("workspaces/default", user.email)
+        )!
+      )
+    ).toEqual({ "workspace-setup-guide.dismissed": false });
+  });
+
+  test("resumes the setup guide without clearing progress", () => {
+    const store = createAppStore();
+    store.setState({ currentUser: user });
+
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.dismissed",
+      newState: true,
     });
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.database-explored",
+      newState: true,
+    });
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.statement-run",
+      newState: true,
+    });
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.product-model-seen",
+      newState: true,
+    });
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.completed.query-data",
+      newState: true,
+    });
+    store.getState().saveIntroStateByKey({
+      key: "workspace-setup-guide.started.query-data",
+      newState: true,
+    });
+    store
+      .getState()
+      .saveIntroStateByKey({ key: "unrelated.intro", newState: true });
+
+    store.getState().resumeWorkspaceSetupGuide();
+
+    expect(
+      store.getState().getIntroStateByKey("workspace-setup-guide.dismissed")
+    ).toBe(false);
+    expect(
+      store
+        .getState()
+        .getIntroStateByKey("workspace-setup-guide.database-explored")
+    ).toBe(true);
+    expect(
+      store.getState().getIntroStateByKey("workspace-setup-guide.statement-run")
+    ).toBe(true);
+    expect(
+      store
+        .getState()
+        .getIntroStateByKey("workspace-setup-guide.product-model-seen")
+    ).toBe(true);
+    expect(
+      store
+        .getState()
+        .getIntroStateByKey("workspace-setup-guide.completed.query-data")
+    ).toBe(false);
+    expect(
+      store
+        .getState()
+        .getIntroStateByKey("workspace-setup-guide.started.query-data")
+    ).toBe(true);
+    expect(store.getState().getIntroStateByKey("unrelated.intro")).toBe(true);
   });
 
   test("scopes recent projects by workspace in SaaS mode", () => {
@@ -2114,50 +3049,57 @@ describe("useAppStore", () => {
       serverInfo: createProto(ActuatorInfoSchema, { saas: true }),
     });
     store.setState({ currentUser: { ...user, workspace: "workspaces/a" } });
-    store
-      .getState()
-      .saveIntroStateByKey({ key: "project.visit", newState: true });
+    store.getState().saveIntroStateByKey({ key: "some.intro", newState: true });
 
     store.setState({ currentUser: { ...user, workspace: "workspaces/b" } });
-    expect(store.getState().getIntroStateByKey("project.visit")).toBe(false);
+    expect(store.getState().getIntroStateByKey("some.intro")).toBe(false);
     store
       .getState()
-      .saveIntroStateByKey({ key: "database.visit", newState: true });
+      .saveIntroStateByKey({ key: "another.intro", newState: true });
 
     expect(
       JSON.parse(
         localStorage.getItem(storageKeyIntroState("workspaces/a", user.email))!
       )
-    ).toEqual({ "project.visit": true });
+    ).toEqual({ "some.intro": true });
     expect(
       JSON.parse(
         localStorage.getItem(storageKeyIntroState("workspaces/b", user.email))!
       )
-    ).toEqual({ "database.visit": true });
+    ).toEqual({ "another.intro": true });
   });
 
-  test("keeps intro state workspace-agnostic in self-host mode", () => {
+  test("scopes intro state by workspace in self-host mode", () => {
     const store = createAppStore();
     store.setState({
       serverInfo: createProto(ActuatorInfoSchema, {
         saas: false,
-        workspace: "workspaces/default",
       }),
     });
-    store.setState({ currentUser: user });
+    store.setState({ currentUser: { ...user, workspace: "workspaces/a" } });
     localStorage.setItem(
       storageKeyIntroState("", user.email),
-      JSON.stringify({ "project.visit": true })
+      JSON.stringify({ "stale.intro": true })
     );
+    store.getState().saveIntroStateByKey({ key: "some.intro", newState: true });
 
-    expect(store.getState().getIntroStateByKey("project.visit")).toBe(true);
+    store.setState({ currentUser: { ...user, workspace: "workspaces/b" } });
+    expect(store.getState().getIntroStateByKey("some.intro")).toBe(false);
+    expect(store.getState().getIntroStateByKey("stale.intro")).toBe(false);
     store
       .getState()
-      .saveIntroStateByKey({ key: "database.visit", newState: true });
+      .saveIntroStateByKey({ key: "another.intro", newState: true });
 
     expect(
-      JSON.parse(localStorage.getItem(storageKeyIntroState("", user.email))!)
-    ).toEqual({ "project.visit": true, "database.visit": true });
+      JSON.parse(
+        localStorage.getItem(storageKeyIntroState("workspaces/a", user.email))!
+      )
+    ).toEqual({ "some.intro": true });
+    expect(
+      JSON.parse(
+        localStorage.getItem(storageKeyIntroState("workspaces/b", user.email))!
+      )
+    ).toEqual({ "another.intro": true });
   });
 
   test("caches database metadata and reuses inflight request", async () => {
@@ -2237,6 +3179,99 @@ describe("useAppStore", () => {
     });
 
     expect(mocks.getDatabaseMetadata).toHaveBeenCalledTimes(2);
+  });
+
+  test("keeps project-instance metadata requests and caches isolated", async () => {
+    const { DatabaseMetadataSchema } = await import(
+      "@/types/proto-es/v1/database_service_pb"
+    );
+    const databaseA = "projects/a/instances/shared/databases/db";
+    const databaseB = "projects/b/instances/shared/databases/db";
+    mocks.getDatabaseMetadata.mockImplementation(async ({ name }) =>
+      createProto(DatabaseMetadataSchema, { name })
+    );
+    const store = createAppStore();
+
+    await Promise.all([
+      store.getState().getOrFetchDatabaseMetadata({ database: databaseA }),
+      store.getState().getOrFetchDatabaseMetadata({ database: databaseB }),
+    ]);
+
+    expect(
+      mocks.getDatabaseMetadata.mock.calls.map(([request]) => request.name)
+    ).toEqual([`${databaseA}/metadata`, `${databaseB}/metadata`]);
+    expect(store.getState().getCachedDatabaseMetadata(databaseA)?.name).toBe(
+      `${databaseA}/metadata`
+    );
+    expect(store.getState().getCachedDatabaseMetadata(databaseB)?.name).toBe(
+      `${databaseB}/metadata`
+    );
+
+    store.getState().removeDatabaseMetadataCache(databaseA);
+
+    expect(
+      store.getState().getCachedDatabaseMetadata(databaseA)
+    ).toBeUndefined();
+    expect(store.getState().getCachedDatabaseMetadata(databaseB)?.name).toBe(
+      `${databaseB}/metadata`
+    );
+  });
+
+  test("keeps project-instance catalog requests and caches isolated", async () => {
+    const { DatabaseCatalogSchema } = await import(
+      "@/types/proto-es/v1/database_catalog_service_pb"
+    );
+    const databaseA = "projects/a/instances/shared/databases/db";
+    const databaseB = "projects/b/instances/shared/databases/db";
+    mocks.getDatabaseCatalog.mockImplementation(async ({ name }) =>
+      createProto(DatabaseCatalogSchema, { name })
+    );
+    const store = createAppStore();
+
+    await Promise.all([
+      store.getState().getOrFetchDatabaseCatalog({ database: databaseA }),
+      store.getState().getOrFetchDatabaseCatalog({ database: databaseB }),
+    ]);
+
+    expect(
+      mocks.getDatabaseCatalog.mock.calls.map(([request]) => request.name)
+    ).toEqual([`${databaseA}/catalog`, `${databaseB}/catalog`]);
+    expect(store.getState().getDatabaseCatalog(databaseA).name).toBe(
+      `${databaseA}/catalog`
+    );
+    expect(store.getState().getDatabaseCatalog(databaseB).name).toBe(
+      `${databaseB}/catalog`
+    );
+  });
+
+  test("loads project-instance metadata when updating its catalog", async () => {
+    const { DatabaseCatalogSchema } = await import(
+      "@/types/proto-es/v1/database_catalog_service_pb"
+    );
+    const { DatabaseMetadataSchema } = await import(
+      "@/types/proto-es/v1/database_service_pb"
+    );
+    const database = "projects/a/instances/shared/databases/db";
+    const catalog = createProto(DatabaseCatalogSchema, {
+      name: `${database}/catalog`,
+    });
+    mocks.getDatabaseMetadata.mockResolvedValue(
+      createProto(DatabaseMetadataSchema, { name: `${database}/metadata` })
+    );
+    mocks.updateDatabaseCatalog.mockResolvedValue(catalog);
+    const store = createAppStore();
+
+    await store.getState().updateDatabaseCatalog(catalog);
+
+    expect(mocks.getDatabaseMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ name: `${database}/metadata` }),
+      expect.anything()
+    );
+    expect(mocks.updateDatabaseCatalog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        catalog: expect.objectContaining({ name: `${database}/catalog` }),
+      })
+    );
   });
 
   describe("getDBGroupByName / getOrFetchDBGroupByName cache semantics", () => {

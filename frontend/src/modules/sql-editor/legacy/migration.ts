@@ -1,21 +1,12 @@
 import { create } from "@bufbuild/protobuf";
-import { isUndefined, omit, omitBy } from "lodash-es";
-import { extractWorksheetConnection } from "@/lib/sqlEditorConnection";
+import { isUndefined, omitBy } from "lodash-es";
+import { extractSavedQueryConnection } from "@/lib/sqlEditorConnection";
 import { useAppStore } from "@/stores/app";
 import { getCurrentUserV1 } from "@/stores/modules/migration-helpers";
 import { extractUserEmail } from "@/stores/modules/v1";
 import type { EditorPanelViewState, SQLEditorTab } from "@/types";
-import { DEFAULT_SQL_EDITOR_TAB_MODE } from "@/types";
-import {
-  Worksheet_Visibility,
-  WorksheetSchema,
-} from "@/types/proto-es/v1/worksheet_service_pb";
-import { defaultSQLEditorTab, WebStorageHelper } from "@/utils";
-import {
-  deleteExtendedTab,
-  EXTENDED_TAB_FIELDS,
-  fetchExtendedTab,
-} from "./extendedTab";
+import { SavedQuerySchema } from "@/types/proto-es/v1/saved_query_service_pb";
+import { canCreateSavedQueryInProject, defaultSQLEditorTab } from "@/utils";
 
 const LOCAL_STORAGE_KEY_PREFIX = "bb.sql-editor-tab";
 
@@ -53,89 +44,39 @@ const writeLegacyStorage = <T>(key: string, value: T): void => {
   localStorage.setItem(key, serializeLegacy(value));
 };
 
+// Legacy tabs were stored before the worksheet → saved query rename, so
+// the persisted shape keeps the historical `worksheet` field name.
 type PersistentTab = Pick<
   SQLEditorTab,
-  "id" | "title" | "connection" | "mode" | "worksheet" | "status"
->;
+  "id" | "title" | "connection" | "mode" | "status"
+> & { worksheet?: string };
 
-type LegacyStoredTab = PersistentTab & { statement?: string };
+const LEGACY_POUCH_DATABASES = [
+  "_pouch_bb.plugin.ai.conversations",
+  "_pouch_bb.plugin.ai.messages",
+  "_pouch_bb.sql-editor.extended-tab",
+  "_pouch_bb.storage",
+];
 
-export const migrateLegacyCache = async () => {
-  const userUID = extractUserEmail(getCurrentUserV1().name);
-
-  const keyNamespace = `${LOCAL_STORAGE_KEY_PREFIX}.${userUID}`;
-  const tabIdListKey = `${keyNamespace}.tab-id-list`;
-  const tabIdListMapByProject = readLegacyStorage<Record<string, string[]>>(
-    tabIdListKey,
-    {}
+export const cleanupLegacyPouchDatabases = async () => {
+  if (!globalThis.indexedDB) return;
+  await Promise.all(
+    LEGACY_POUCH_DATABASES.map(
+      (name) =>
+        new Promise<void>((resolve) => {
+          let request: IDBOpenDBRequest;
+          try {
+            request = indexedDB.deleteDatabase(name);
+          } catch {
+            resolve();
+            return;
+          }
+          request.onsuccess = () => resolve();
+          request.onerror = () => resolve();
+          request.onblocked = () => resolve();
+        })
+    )
   );
-
-  const getStorage = () => {
-    return new WebStorageHelper(keyNamespace);
-  };
-
-  const keyForTab = (id: string) => {
-    return `tab.${id}`;
-  };
-
-  const loadStoredTab = async (id: string) => {
-    const stored = getStorage().load<PersistentTab | undefined>(
-      keyForTab(id),
-      undefined
-    );
-    if (!stored) {
-      return undefined;
-    }
-    const tab: SQLEditorTab = {
-      ...defaultSQLEditorTab(),
-      // Ignore extended fields stored in localStorage since they are migrated
-      // to extendedTabStore.
-      ...omit(stored, EXTENDED_TAB_FIELDS),
-      id,
-    };
-    if (tab.mode !== DEFAULT_SQL_EDITOR_TAB_MODE) {
-      // Do not enter ADMIN mode initially
-      tab.mode = DEFAULT_SQL_EDITOR_TAB_MODE;
-    }
-
-    await fetchExtendedTab(tab, () => {
-      // When the first time of migration, the extended doc in IndexedDB is not
-      // found.
-      // Fallback to the original PersistentTab in LocalStorage if possible.
-      // This might happen only once to each user, since the second time when a
-      // tab is saved, extended fields will be migrated, and won't be saved to
-      // LocalStorage, so the fallback routine won't be hit.
-      const { statement } = stored as LegacyStoredTab;
-      if (statement) {
-        tab.statement = statement;
-      }
-    });
-
-    return tab;
-  };
-
-  const entries = [...Object.entries(tabIdListMapByProject)];
-  for (const [project, tabIds] of entries) {
-    const draftTabListKey = `${LOCAL_STORAGE_KEY_PREFIX}.${project}.${userUID}.draft-tab-list`;
-    const draftTabList = readLegacyStorage<SQLEditorTab[]>(draftTabListKey, []);
-
-    for (const tabId of tabIds) {
-      const exist = draftTabList.find((draft) => draft.id === tabId);
-      if (exist) {
-        continue;
-      }
-      const tab = await loadStoredTab(tabId);
-      await deleteExtendedTab(tabId);
-      if (!tab) {
-        continue;
-      }
-      draftTabList.push(tab);
-    }
-    writeLegacyStorage(draftTabListKey, draftTabList);
-
-    delete tabIdListMapByProject[project];
-    writeLegacyStorage(tabIdListKey, tabIdListMapByProject);
-  }
 };
 
 export const migrateDraftsFromCache = async (project: string) => {
@@ -150,6 +91,15 @@ export const migrateDraftsFromCache = async (project: string) => {
   const draftTabListKey = `${keyNamespace}.draft-tab-list`;
   const draftTabList = readLegacyStorage<SQLEditorTab[]>(draftTabListKey, []);
 
+  // Migrating a draft creates a saved query. This check is the cheap half of
+  // the answer -- false means the server will refuse too, so skip the doomed
+  // requests entirely. True is not a promise: it does not evaluate binding
+  // conditions, and the server rejects a resource-scoped grant for this
+  // permission. The loop below has to survive a refusal either way.
+  if (!canCreateSavedQueryInProject(project)) {
+    return;
+  }
+
   const drafts = [...draftTabList];
   for (const draft of drafts) {
     const tab = {
@@ -160,19 +110,23 @@ export const migrateDraftsFromCache = async (project: string) => {
     if ((!viewState || viewState.view === "CODE") && tab.statement) {
       // only store the draft with content
       try {
-        const connection = await extractWorksheetConnection({
+        const connection = await extractSavedQueryConnection({
           database: tab.connection.database,
         });
-        await useAppStore.getState().createWorksheet(
-          create(WorksheetSchema, {
+        await useAppStore.getState().createSavedQuery(
+          create(SavedQuerySchema, {
             title: tab.title,
             database: connection.database,
             content: new TextEncoder().encode(tab.statement),
             project,
-            visibility: Worksheet_Visibility.PRIVATE,
           })
         );
-      } catch {}
+      } catch {
+        // The draft in legacy storage is the only copy, so it survives a
+        // failed migration: a denied create, a network blip, a server error.
+        // It is retried the next time this runs.
+        continue;
+      }
     }
     const index = draftTabList.findIndex((d) => d.id === draft.id);
     if (index >= 0) {

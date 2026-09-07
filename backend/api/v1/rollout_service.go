@@ -285,12 +285,12 @@ func (s *RolloutService) CreateRollout(ctx context.Context, req *connect.Request
 	}
 
 	if !hasPermission {
-		// Allow data export issue creators to create rollout for their own issues
-		if issue == nil || issue.Type != storepb.Issue_DATABASE_EXPORT || issue.CreatorEmail != user.Email {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied to create rollout"))
-		}
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied to create rollout"))
 	}
 
+	if err := rejectMCPOriginatedIssuelessRollout(ctx, project, issue, "create a rollout"); err != nil {
+		return nil, err
+	}
 	if project.Setting.RequireIssueApproval && issue != nil {
 		approved, err := utils.CheckIssueApprovedForPlan(issue, plan)
 		if err != nil {
@@ -336,8 +336,8 @@ func (s *RolloutService) CreateRollout(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to convert to rollout"))
 	}
 
-	// Tickle task run scheduler.
-	s.bus.TaskRunTickleChan <- 0
+	// Tickle the pending task run scheduler.
+	bus.Tickle(s.bus.TaskRunPendingTickleChan)
 
 	return connect.NewResponse(rolloutV1), nil
 }
@@ -372,24 +372,68 @@ func (s *RolloutService) ListTaskRuns(ctx context.Context, req *connect.Request[
 	if plan == nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("rollout %d not found in project %s", planID, projectID))
 	}
+	// An unspecified page_size means the maximum rather than the usual 10: the
+	// wildcard parent reads a whole rollout, and bytebase-action binaries
+	// inside their compatibility window read it in one unpaginated call.
+	const maxPageSize = 1000
+	requestedPageSize := int(request.PageSize)
+	if requestedPageSize <= 0 {
+		requestedPageSize = maxPageSize
+	}
+	offset, err := parseLimitAndOffset(&pageSize{
+		token:   request.PageToken,
+		limit:   requestedPageSize,
+		maximum: maxPageSize,
+	})
+	if err != nil {
+		return nil, err
+	}
+	limitPlusOne := offset.limit + 1
 	taskRuns, err := s.store.ListTaskRuns(ctx, &store.FindTaskRunMessage{
 		Workspace:   common.GetWorkspaceIDFromContext(ctx),
 		ProjectID:   projectID,
 		PlanUID:     &planID,
 		Environment: maybeStageID,
 		TaskUID:     maybeTaskID,
+		Limit:       &limitPlusOne,
+		Offset:      &offset.offset,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to list task runs"))
 	}
-
-	taskRunsV1, err := convertToTaskRuns(ctx, s.store, taskRuns)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to convert to task runs"))
+	var nextPageToken string
+	if len(taskRuns) == limitPlusOne {
+		if nextPageToken, err = offset.getNextPageToken(); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get next page token"))
+		}
+		taskRuns = taskRuns[:offset.limit]
 	}
+
 	return connect.NewResponse(&v1pb.ListTaskRunsResponse{
-		TaskRuns: taskRunsV1,
+		TaskRuns:      convertToTaskRuns(taskRuns),
+		NextPageToken: nextPageToken,
 	}), nil
+}
+
+// classifyRolloutError maps what the review workflow refused a rollout for
+// onto the two answers a caller acts on: the issue is still a draft, or the
+// approval the rollout was built on is no longer current. Anything else is
+// passed through as it came.
+func classifyRolloutError(err error) error {
+	if errors.Is(err, errStaleRolloutApproval) {
+		return errStaleRolloutApproval
+	}
+	var workflowErr *review.Error
+	if errors.As(err, &workflowErr) {
+		switch workflowErr.Reason {
+		case review.ReasonDraftIssue:
+			return errDraftIssueNotSubmitted
+		case review.ReasonApprovalRequired, review.ReasonStaleInput:
+			return errStaleRolloutApproval
+		default:
+		}
+	}
+	return err
 }
 
 // CreateRolloutAndPendingTasks creates rollout tasks and pending task runs.
@@ -405,6 +449,7 @@ func CreateRolloutAndPendingTasks(
 	if issue != nil && issue.Payload.GetDraft() {
 		return errDraftIssueNotSubmitted
 	}
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, project.Workspace)
 
 	result, err := review.NewWorkflow(s).CreateRollout(ctx, review.CreateRolloutInput{
 		Workspace: project.Workspace,
@@ -425,20 +470,7 @@ func CreateRolloutAndPendingTasks(
 		},
 	})
 	if err != nil {
-		if errors.Is(err, errStaleRolloutApproval) {
-			return errStaleRolloutApproval
-		}
-		var workflowErr *review.Error
-		if errors.As(err, &workflowErr) {
-			switch workflowErr.Reason {
-			case review.ReasonDraftIssue:
-				return errDraftIssueNotSubmitted
-			case review.ReasonApprovalRequired, review.ReasonStaleInput:
-				return errStaleRolloutApproval
-			default:
-			}
-		}
-		return err
+		return classifyRolloutError(err)
 	}
 	tasks = result.Tasks
 	issue = result.Issue
@@ -555,11 +587,7 @@ func (s *RolloutService) GetTaskRun(ctx context.Context, req *connect.Request[v1
 		return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("task run %d not found in rollout %d", taskRunUID, planID))
 	}
 
-	taskRunV1, err := convertToTaskRun(ctx, s.store, taskRun)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to convert to task run"))
-	}
-	return connect.NewResponse(taskRunV1), nil
+	return connect.NewResponse(convertToTaskRun(taskRun)), nil
 }
 
 func (s *RolloutService) GetTaskRunLog(ctx context.Context, req *connect.Request[v1pb.GetTaskRunLogRequest]) (*connect.Response[v1pb.TaskRunLog], error) {
@@ -839,6 +867,9 @@ func (s *RolloutService) BatchRunTasks(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("Not allowed to run tasks"))
 	}
 
+	if err := rejectMCPOriginatedIssuelessRollout(ctx, project, issueN, "run tasks"); err != nil {
+		return nil, err
+	}
 	// Check if issue approval is required according to the project settings
 	if project.Setting.RequireIssueApproval && issueN != nil {
 		approved, err := utils.CheckIssueApprovedForPlan(issueN, plan)
@@ -901,11 +932,14 @@ func (s *RolloutService) BatchRunTasks(ctx context.Context, req *connect.Request
 	}
 
 	if err := s.store.CreatePendingTaskRuns(ctx, user.Email, taskRunCreates...); err != nil {
+		if common.ErrorCode(err) == common.Conflict {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		}
 		return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to create pending task runs, error %v", err))
 	}
 
-	// Tickle task run scheduler.
-	s.bus.TaskRunTickleChan <- 0
+	// Tickle the pending task run scheduler.
+	bus.Tickle(s.bus.TaskRunPendingTickleChan)
 
 	return connect.NewResponse(&v1pb.BatchRunTasksResponse{}), nil
 }
@@ -1081,14 +1115,18 @@ func (s *RolloutService) BatchCancelTaskRuns(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to find issue"))
 	}
 
+	// Require every task run to name the parent's stage so the single permission
+	// check below covers the whole batch.
+	var taskRunIDs []int64
 	for _, taskRun := range request.TaskRuns {
-		_, _, taskRunStageID, _, _, err := common.GetProjectIDPlanIDStageIDTaskIDTaskRunID(taskRun)
+		_, _, taskRunStageID, _, taskRunID, err := common.GetProjectIDPlanIDStageIDTaskIDTaskRunID(taskRun)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		if taskRunStageID != stageID {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("task run %v is not in the specified stage %v", taskRun, stageID))
 		}
+		taskRunIDs = append(taskRunIDs, taskRunID)
 	}
 
 	user, ok := GetUserFromContext(ctx)
@@ -1105,22 +1143,29 @@ func (s *RolloutService) BatchCancelTaskRuns(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("Not allowed to cancel tasks"))
 	}
 
-	var taskRunIDs []int64
-	for _, taskRun := range request.TaskRuns {
-		_, _, _, _, taskRunID, err := common.GetProjectIDPlanIDStageIDTaskIDTaskRunID(taskRun)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
-		}
-		taskRunIDs = append(taskRunIDs, taskRunID)
-	}
-
+	// Confine the lookup to the plan and environment just authorized: the stage in
+	// the request names is caller-supplied, so without this an ID from another
+	// environment or plan in the same project would resolve and be canceled on
+	// permission granted elsewhere. Reject rather than drop an out-of-scope ID —
+	// the cancel below is driven by the requested IDs.
 	taskRuns, err := s.store.ListTaskRuns(ctx, &store.FindTaskRunMessage{
-		Workspace: common.GetWorkspaceIDFromContext(ctx),
-		ProjectID: projectID,
-		UIDs:      &taskRunIDs,
+		Workspace:   common.GetWorkspaceIDFromContext(ctx),
+		ProjectID:   projectID,
+		PlanUID:     &planID,
+		Environment: &environment,
+		UIDs:        &taskRunIDs,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to list task runs"))
+	}
+	foundTaskRunIDs := make(map[int64]bool, len(taskRuns))
+	for _, taskRun := range taskRuns {
+		foundTaskRunIDs[taskRun.ID] = true
+	}
+	for _, taskRunID := range taskRunIDs {
+		if !foundTaskRunIDs[taskRunID] {
+			return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("task run %v not found in stage %v", taskRunID, stageID))
+		}
 	}
 
 	for _, taskRun := range taskRuns {
@@ -1237,9 +1282,12 @@ func (s *RolloutService) PreviewTaskRunRollback(ctx context.Context, req *connec
 	if sheetSha256 == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("task %v has no sheet", task.ID))
 	}
-	sheet, err := s.store.GetSheetFull(ctx, sheetSha256)
+	sheet, err := s.store.GetSheetForProject(ctx, projectID, sheetSha256, true)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get sheet statements"))
+	}
+	if sheet == nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.Errorf("sheet not found for task %v", task.ID))
 	}
 	statements := sheet.Statement
 
@@ -1283,7 +1331,7 @@ func GetPipelineCreate(ctx context.Context, s *store.Store, specs []*storepb.Pla
 	// Step 2 - convert all task creates.
 	var taskCreates []*store.TaskMessage
 	for _, spec := range transformedSpecs {
-		tcs, err := getTaskCreatesFromSpec(ctx, s, spec)
+		tcs, err := getTaskCreatesFromSpec(ctx, s, spec, projectID)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to get task creates from spec")
 		}
@@ -1325,12 +1373,7 @@ func GetValidRolloutPolicyForEnvironment(ctx context.Context, stores *store.Stor
 }
 
 // canUserRunEnvironmentTasks returns if a user can run the tasks in an environment.
-func (s *RolloutService) canUserRunEnvironmentTasks(ctx context.Context, user *store.UserMessage, project *store.ProjectMessage, issue *store.IssueMessage, environment string, _ string) (bool, error) {
-	// For data export issues, only the creator can run tasks.
-	if issue != nil && issue.Type == storepb.Issue_DATABASE_EXPORT {
-		return issue.CreatorEmail == user.Email, nil
-	}
-
+func (s *RolloutService) canUserRunEnvironmentTasks(ctx context.Context, user *store.UserMessage, project *store.ProjectMessage, _ *store.IssueMessage, environment string, _ string) (bool, error) {
 	// Users with bb.taskRuns.create can always create task runs.
 	ok, err := s.iamManager.CheckPermission(ctx, permission.TaskRunsCreate, user, common.GetWorkspaceIDFromContext(ctx), project.ResourceID)
 	if err != nil {
@@ -1370,4 +1413,49 @@ func (s *RolloutService) canUserRunEnvironmentTasks(ctx context.Context, user *s
 
 func (s *RolloutService) canUserCancelEnvironmentTaskRun(ctx context.Context, user *store.UserMessage, project *store.ProjectMessage, issue *store.IssueMessage, environment string, creator string) (bool, error) {
 	return s.canUserRunEnvironmentTasks(ctx, user, project, issue, environment, creator)
+}
+
+// rejectMCPOriginatedIssuelessRollout refuses an MCP session driving a change
+// to execution when the project requires issue approval and the plan carries no
+// linked issue.
+//
+// Both approval checks on this path are guarded on a linked issue existing, so
+// a plan created without one reaches task creation with no approval whatever
+// require_issue_approval says. That is not a defect for every caller — the
+// shipped GitOps Service Agent role holds no issue permission at all, so
+// issueless deployment is a supported product contract, and READ_WRITE
+// preserves supported contracts. It is a defect for an MCP session, because
+// without this rule the three FORBIDDEN approval methods are decorative in the
+// change lane: an agent that cannot clear the gate can skip it instead, which
+// is the same end state the self-approval guard exists to prevent. The rule is
+// the one rollout_service.proto states the gate PR owes.
+//
+// It cannot live in the ceiling gate. "The plan has no linked issue" is not a
+// field of either request, so the interceptor would have to read the store to
+// find out — a lookup it has no business doing and one that would race the
+// handler's own. The guard sits where the fact is already loaded.
+//
+// It must bite BEFORE the rollout exists: once an issueless rollout is created,
+// approval finding refuses outright ("rollout already started"), so a rule that
+// only covered BatchRunTasks would leave the change stranded rather than
+// gated. Hence both callers, CreateRollout first.
+//
+// Presence of the delegated grant is the MCP-origin marker, never a field value
+// (common.DelegatedGrant), so the console and the GitOps agent are untouched.
+// BOT-71 tracks whether the product should close this for every caller; if it
+// does, this guard becomes redundant rather than wrong.
+func rejectMCPOriginatedIssuelessRollout(ctx context.Context, project *store.ProjectMessage, issue *store.IssueMessage, action string) error {
+	authCtx, ok := common.GetAuthContextFromContext(ctx)
+	if !ok || authCtx.DelegatedGrant == nil {
+		return nil
+	}
+	if !project.Setting.GetRequireIssueApproval() || issue != nil {
+		// With an issue linked, the approval check beside this one decides,
+		// and it refuses an unapproved one.
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.Errorf(
+		"an MCP session may not %s for a plan with no issue: this project requires issue approval, and a "+
+			"rollout created without an issue never meets that gate. Create an issue for the plan and have it "+
+			"approved, or perform this action signed in to the Bytebase console instead", action))
 }

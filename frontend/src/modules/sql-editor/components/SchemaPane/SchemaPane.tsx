@@ -12,7 +12,7 @@ import { useTranslation } from "react-i18next";
 import { EngineIcon } from "@/components/EngineIcon";
 import { TableSchemaViewer } from "@/components/TableSchemaViewer";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/ui/search-input";
 import { Tree, type TreeDataNode } from "@/components/ui/tree";
 import { countVisibleRows } from "@/components/ui/tree-utils";
 import { cn } from "@/lib/utils";
@@ -55,7 +55,6 @@ import { Label } from "./TreeNode/Label";
 const ROW_HEIGHT = 21;
 const TREE_FALLBACK_HEIGHT = 360;
 const FLAT_TABLE_THRESHOLD = 1000;
-const SEARCH_DEBOUNCE_MS = 200;
 // Stable empty array reference used by the expandedKeys selector — a
 // fresh `[]` per call would re-trigger Zustand subscribers on every
 // store mutation.
@@ -108,7 +107,6 @@ function SchemaPaneInner() {
   const panelViewState = currentTab?.viewState;
 
   const [searchPattern, setSearchPattern] = useState("");
-  const debouncedSearch = useDebouncedValue(searchPattern, SEARCH_DEBOUNCE_MS);
 
   // Reset the search box on every tab switch — matches Vue's
   // `watch(() => currentTab.value?.id, ...)`.
@@ -160,39 +158,51 @@ function SchemaPaneInner() {
   // Build the tree via requestAnimationFrame so the heavy walk doesn't
   // block the metadata-fetch teardown's transition. Mirrors Vue's
   // `requestAnimationFrame(() => { tree.value = buildDatabaseSchemaTree(...) })`.
-  const [tree, setTree] = useState<SchemaTreeNode[] | undefined>(undefined);
+  const [treeResult, setTreeResult] = useState<
+    { database: string; tree: SchemaTreeNode[] } | undefined
+  >(undefined);
+  const tree =
+    treeResult?.database === database.name ? treeResult.tree : undefined;
   useEffect(() => {
     if (isFetching || !metadata) {
-      setTree(undefined);
+      setTreeResult(undefined);
       return;
     }
     if (totalTableCount > FLAT_TABLE_THRESHOLD) {
-      setTree(undefined);
+      setTreeResult(undefined);
       return;
     }
     let raf = 0;
     raf = requestAnimationFrame(() => {
       const built = buildDatabaseSchemaTree(database, metadata);
-      setTree(built);
-      // First-mount default expand: seed treeState.keys so the user
-      // sees database/schema/Tables/Views opened by default. The Vue
-      // version seeds when `treeStateDb !== connectionDb && connectionDb`.
-      const tab = getSQLEditorTabsState().tabsById.get(
-        getSQLEditorTabsState().currentTabId
-      );
-      const connectionDb = tab?.connection.database;
-      if (tab && connectionDb && tab.treeState.database !== connectionDb) {
-        getSQLEditorTabsState().updateTab(tab.id, {
-          treeState: {
-            ...tab.treeState,
-            database: connectionDb,
-            keys: defaultExpandedKeys(built),
-          },
-        });
-      }
+      setTreeResult({ database: database.name, tree: built });
     });
     return () => cancelAnimationFrame(raf);
   }, [isFetching, metadata, totalTableCount, database]);
+
+  // Seed expansion state for every tab, including a newly opened Data
+  // Explorer tab that reuses the already-built tree for the same database.
+  useEffect(() => {
+    if (!tree) return;
+    const tabsState = getSQLEditorTabsState();
+    const tab = tabsState.tabsById.get(currentTabId);
+    const connectionDb = tab?.connection.database;
+    if (
+      !tab ||
+      !connectionDb ||
+      connectionDb !== database.name ||
+      tab.treeState.database === connectionDb
+    ) {
+      return;
+    }
+    tabsState.updateTab(tab.id, {
+      treeState: {
+        ...tab.treeState,
+        database: connectionDb,
+        keys: defaultExpandedKeys(tree),
+      },
+    });
+  }, [currentTabId, database.name, tree]);
 
   // Reactive proxy for `tab.treeState.keys`. Writes via `setExpandedKeys`
   // always REPLACE the whole array. The Zustand selector subscribes on
@@ -276,7 +286,7 @@ function SchemaPaneInner() {
   }, [tree]);
 
   const expandedKeySet = useMemo(() => new Set(expandedKeys), [expandedKeys]);
-  const searchKeyword = debouncedSearch.trim();
+  const searchKeyword = searchPattern.trim();
   const visibleRowCount = useMemo(() => {
     if (!tree) return 0;
     return tree.reduce(
@@ -428,7 +438,7 @@ function SchemaPaneInner() {
     >
       <div className="px-1 flex flex-row gap-1">
         <div className="flex-1 overflow-hidden">
-          <Input
+          <SearchInput
             size="sm"
             value={searchPattern}
             placeholder={t("common.search")}
@@ -451,7 +461,7 @@ function SchemaPaneInner() {
           totalTableCount > FLAT_TABLE_THRESHOLD ? (
             <FlatTableList
               metadata={metadata}
-              search={debouncedSearch}
+              search={searchPattern}
               database={database.name}
               onSelect={onFlatSelect}
               onSelectAll={onFlatSelectAll}
@@ -592,15 +602,6 @@ function defaultExpandedKeys(tree: SchemaTreeNode[]): string[] {
   };
   walk(tree[0]);
   return keys;
-}
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delayMs);
-    return () => clearTimeout(id);
-  }, [value, delayMs]);
-  return debounced;
 }
 
 /**

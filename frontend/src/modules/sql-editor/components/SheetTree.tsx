@@ -3,7 +3,7 @@
  *
  * Full feature parity with the Vue source (850 lines):
  *  1.  Tree display
- *  2.  Click worksheet → open in editor
+ *  2.  Click saved query → open in editor
  *  3.  Click folder → expand/collapse
  *  4.  Multi-select mode (checkbox column)
  *  5.  Drag-and-drop  (wired via react-arborist onMove)
@@ -16,7 +16,7 @@
  */
 
 import { Loader2 } from "lucide-react";
-import type { Ref } from "react";
+import type { CSSProperties, Ref } from "react";
 import {
   useCallback,
   useEffect,
@@ -56,18 +56,23 @@ import { Tree } from "@/components/ui/tree";
 import { countVisibleRows } from "@/components/ui/tree-utils";
 import { cn } from "@/lib/utils";
 import {
-  openWorksheetByName,
+  openSavedQueryByName,
   revealNodes,
-  revealWorksheets,
+  revealSavedQueries,
+  type SavedQueryFolderNode,
+  type SavedQueryFolderPathUpdate,
   type SheetViewMode,
   useSheetContext,
   useSheetContextByView,
-  type WorksheetFolderNode,
 } from "@/modules/sql-editor/model/Sheet";
 import { useSQLEditorStore as useSQLEditorReactStore } from "@/modules/sql-editor/store";
 import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
 import { getSQLEditorTabsState } from "@/modules/sql-editor/store/tab";
 import { useAppStore } from "@/stores/app";
+import {
+  canSearchSavedQueriesInProject,
+  isSavedQueryWritableV1,
+} from "@/utils";
 import { filterNode } from "./filterNode";
 import { SharePopoverBody } from "./SharePopoverBody";
 import { TreeNodePrefix } from "./TreeNodePrefix";
@@ -79,7 +84,7 @@ import { type DropdownOptionType, useDropdown } from "./useDropdown";
 // ---------------------------------------------------------------------------
 
 export type SheetTreeHandle = {
-  handleMultiDelete: (nodes: WorksheetFolderNode[]) => Promise<void>;
+  handleMultiDelete: (nodes: SavedQueryFolderNode[]) => Promise<void>;
 };
 
 type Props = {
@@ -89,9 +94,9 @@ type Props = {
   // "Multi-select" action is hidden so shared/draft rows cannot populate
   // the `my` tree's checkedNodes (which feeds Delete + Move-to-folder).
   readonly multiSelectMode?: boolean;
-  readonly checkedNodes?: WorksheetFolderNode[];
+  readonly checkedNodes?: SavedQueryFolderNode[];
   readonly onMultiSelectModeChange?: (next: boolean) => void;
-  readonly onCheckedNodesChange?: (nodes: WorksheetFolderNode[]) => void;
+  readonly onCheckedNodesChange?: (nodes: SavedQueryFolderNode[]) => void;
   readonly ref?: Ref<SheetTreeHandle>;
 };
 
@@ -103,21 +108,21 @@ type DeleteDialogState =
   | { type: "none" }
   | {
       type: "delete-sheet";
-      worksheetName: string;
+      savedQueryName: string;
     }
   | {
       type: "duplicate-sheet";
-      worksheetName: string;
+      savedQueryName: string;
     }
   | {
       type: "delete-folders";
       folders: string[];
-      worksheets: string[];
+      savedQueries: string[];
     }
   | {
       type: "multi-delete";
       folders: string[];
-      worksheets: string[];
+      savedQueries: string[];
     }
   | {
       type: "duplicate-folder-name";
@@ -131,8 +136,8 @@ type DeleteDialogState =
 
 /** Build a flat→tree data structure for the Tree primitive. */
 function toTreeData(
-  node: WorksheetFolderNode
-): TreeDataNode<WorksheetFolderNode> {
+  node: SavedQueryFolderNode
+): TreeDataNode<SavedQueryFolderNode> {
   return {
     id: node.key,
     data: node,
@@ -142,14 +147,14 @@ function toTreeData(
 
 // Generate unique folder name based on existing children
 // Returns "new folder", "new folder2", "new folder3", etc.
-function generateNewFolderName(children: WorksheetFolderNode[]): string {
+function generateNewFolderName(children: SavedQueryFolderNode[]): string {
   const baseName = "new folder";
   const regex = /^new folder(\d+)$/;
 
   let maxNumber = 0;
   for (let i = children.length - 1; i >= 0; i--) {
     const child = children[i];
-    if (child.worksheet) {
+    if (child.savedQuery || child.loadMore) {
       continue;
     }
     const match = child.label.match(regex);
@@ -164,6 +169,47 @@ function generateNewFolderName(children: WorksheetFolderNode[]): string {
     }
   }
   return maxNumber === 0 ? baseName : `${baseName}${maxNumber + 1}`;
+}
+
+function selectableNodes(node: SavedQueryFolderNode[]): SavedQueryFolderNode[];
+function selectableNodes(node: SavedQueryFolderNode): SavedQueryFolderNode[];
+function selectableNodes(
+  node: SavedQueryFolderNode | SavedQueryFolderNode[]
+): SavedQueryFolderNode[] {
+  if (Array.isArray(node)) {
+    return node.filter((n) => !n.loadMore);
+  }
+  return revealNodes(node, (n) => (n.loadMore ? undefined : n));
+}
+
+function SavedQueryTreeLoadMoreButton({
+  label,
+  onClick,
+}: Readonly<{
+  label: string;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}>) {
+  return (
+    <span
+      data-testid="load-more-wrapper"
+      className="min-w-0 flex-1 truncate text-left"
+    >
+      <Button
+        type="button"
+        appearance="secondary"
+        size="xs"
+        className="tree-label cursor-pointer pb-1 text-xs font-medium text-accent hover:text-accent-hover"
+        onClick={onClick}
+      >
+        <span aria-hidden="true">···</span>
+        <span>{label}</span>
+      </Button>
+    </span>
+  );
+}
+
+function HiddenDropCursor() {
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,15 +227,16 @@ export function SheetTree({
   const { t } = useTranslation();
 
   // ---- Pinia stores (called at top level, not inside the Vue-bridge call) ----------
-  const createWorksheet = useSQLEditorReactStore((s) => s.createWorksheet);
+  const createSavedQuery = useSQLEditorReactStore((s) => s.createSavedQuery);
 
   // ---- Sheet contexts -------------------------------------------------------
   const {
-    filter: worksheetFilter,
+    filter: savedQueryFilter,
     selectedKeys,
     expandedKeys,
     editingNode,
-    batchUpdateWorksheetFolders,
+    batchUpdateSavedQueryFolders,
+    batchUpdateSavedQueryFolderPaths,
     setExpandedKeys,
     setEditingNode,
   } = useSheetContext();
@@ -198,8 +245,11 @@ export function SheetTree({
     isLoading,
     sheetTree,
     fetchSheetList,
+    fetchNextPage,
+    fetchSavedQueriesByFolder,
     folderContext,
-    getFoldersForWorksheet,
+    getFoldersForSavedQuery,
+    rebuildTree,
     events,
   } = useSheetContextByView(view);
 
@@ -213,16 +263,16 @@ export function SheetTree({
   const {
     currentNode: contextMenuNode,
     options: dropdownOptions,
-    worksheetEntity,
+    savedQueryEntity,
     showSharePanel,
     handleContextMenu,
     handleSharePanelShow,
     handleClickOutside: handleContextMenuClickOutside,
   } = useDropdown(
     view,
-    worksheetFilter,
+    savedQueryFilter,
     // Only expose the "Multi-select" entry when the parent wires the
-    // multi-select callbacks — i.e. on the `my` tree inside WorksheetPane.
+    // multi-select callbacks — i.e. on the `my` tree inside SavedQueryPane.
     !!onMultiSelectModeChange && !!onCheckedNodesChange
   );
 
@@ -236,7 +286,7 @@ export function SheetTree({
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   const openMenuAtPoint = useCallback(
-    (clientX: number, clientY: number, node: WorksheetFolderNode) => {
+    (clientX: number, clientY: number, node: SavedQueryFolderNode) => {
       // flushSync so the trigger is repositioned before the synthetic click
       // fires — otherwise Floating UI anchors against the previous position.
       flushSync(() => {
@@ -255,7 +305,7 @@ export function SheetTree({
   );
 
   const openMenuAtElement = useCallback(
-    (element: Element, node: WorksheetFolderNode) => {
+    (element: Element, node: SavedQueryFolderNode) => {
       const rect = element.getBoundingClientRect();
       flushSync(() => {
         setMenuAnchorPos({ x: rect.right, y: rect.bottom });
@@ -273,7 +323,7 @@ export function SheetTree({
   );
 
   const openSharePanelAtElement = useCallback(
-    (e: React.MouseEvent, node: WorksheetFolderNode) => {
+    (e: React.MouseEvent, node: SavedQueryFolderNode) => {
       const rect = e.currentTarget.getBoundingClientRect();
       setMenuAnchorPos({ x: rect.right, y: rect.bottom });
       handleSharePanelShow(e, node);
@@ -291,7 +341,10 @@ export function SheetTree({
 
   // ---- Auto-fetch on mount + project change --------------------------------
   useEffect(() => {
-    if (!isInitialized && project) {
+    // Without discovery access the search and folder calls can only come back
+    // denied, so the tree stays empty instead of failing on every mount. The
+    // Draft view is local and unaffected -- it never fetches.
+    if (!isInitialized && project && canSearchSavedQueriesInProject(project)) {
       void fetchSheetList();
     }
   }, [isInitialized, project, fetchSheetList]);
@@ -330,7 +383,7 @@ export function SheetTree({
   }, [editingKey, events, view]);
 
   // ---- Tree data -----------------------------------------------------------
-  const treeData = useMemo((): TreeDataNode<WorksheetFolderNode>[] => {
+  const treeData = useMemo((): TreeDataNode<SavedQueryFolderNode>[] => {
     return [toTreeData(sheetTree)];
   }, [sheetTree]);
 
@@ -341,7 +394,7 @@ export function SheetTree({
   // AND the search filter — when the keyword is active, arborist hides
   // non-matching rows, so the viewport should shrink accordingly.
   const nodeMatches = useCallback(
-    (node: WorksheetFolderNode, term: string): boolean =>
+    (node: SavedQueryFolderNode, term: string): boolean =>
       filterNode(folderContext.rootPath)(term, node),
     [folderContext.rootPath]
   );
@@ -350,15 +403,48 @@ export function SheetTree({
       countVisibleRows(
         sheetTree,
         new Set(expandedKeysArray),
-        worksheetFilter.keyword,
+        savedQueryFilter.keyword,
         nodeMatches
       ) * ROW_HEIGHT,
-    [sheetTree, expandedKeysArray, worksheetFilter.keyword, nodeMatches]
+    [sheetTree, expandedKeysArray, savedQueryFilter.keyword, nodeMatches]
   );
+
+  useEffect(() => {
+    if (view === "draft" || !isInitialized || isLoading) return;
+    const expandedKeySet = new Set(expandedKeysArray);
+    for (const node of revealNodes(sheetTree, (node) => node)) {
+      if (
+        node.savedQuery ||
+        node.loadMore ||
+        node.key === folderContext.rootPath ||
+        !expandedKeySet.has(node.key)
+      ) {
+        continue;
+      }
+      void fetchSavedQueriesByFolder(node.key);
+    }
+  }, [
+    expandedKeysArray,
+    fetchSavedQueriesByFolder,
+    folderContext.rootPath,
+    isInitialized,
+    isLoading,
+    sheetTree,
+    view,
+  ]);
 
   // ---- Expand/collapse toggle -----------------------------------------------
   const handleToggleExpand = useCallback(
-    (node: WorksheetFolderNode) => {
+    (node: SavedQueryFolderNode) => {
+      const isOpening = !expandedKeysArray.includes(node.key);
+      if (
+        isOpening &&
+        !node.savedQuery &&
+        !node.loadMore &&
+        node.key !== folderContext.rootPath
+      ) {
+        void fetchSavedQueriesByFolder(node.key);
+      }
       setExpandedKeys((prev) => {
         const next = new Set(prev);
         if (next.has(node.key)) {
@@ -369,16 +455,21 @@ export function SheetTree({
         return next;
       });
     },
-    [setExpandedKeys]
+    [
+      expandedKeysArray,
+      fetchSavedQueriesByFolder,
+      folderContext.rootPath,
+      setExpandedKeys,
+    ]
   );
 
   // ---- Helpers: folder/tree operations ------------------------------------
 
   const findParentNode = useCallback(
     (
-      root: WorksheetFolderNode,
+      root: SavedQueryFolderNode,
       key: string
-    ): WorksheetFolderNode | undefined => {
+    ): SavedQueryFolderNode | undefined => {
       if (root.key === key) return undefined;
       for (const child of root.children) {
         if (child.key === key) return root;
@@ -412,39 +503,99 @@ export function SheetTree({
     [setExpandedKeys, folderContext]
   );
 
-  const updateWorksheetFolders = useCallback(
+  const updateSavedQueryFolders = useCallback(
     async (
-      node: WorksheetFolderNode,
+      node: SavedQueryFolderNode,
       oldParentKey: string,
       newParentKey: string
     ) => {
-      const worksheets = revealWorksheets(node, (n: WorksheetFolderNode) => {
-        if (n.worksheet) {
-          const newFullPath = n.key.replace(oldParentKey, newParentKey);
-          return {
-            name: n.worksheet.name,
-            folders: getFoldersForWorksheet(newFullPath),
-          };
+      const savedQueries = revealSavedQueries(
+        node,
+        (n: SavedQueryFolderNode) => {
+          if (n.savedQuery) {
+            const newFullPath = n.key.replace(oldParentKey, newParentKey);
+            return {
+              name: n.savedQuery.name,
+              folders: getFoldersForSavedQuery(newFullPath),
+            };
+          }
+          return undefined;
         }
-        return undefined;
-      });
-      await batchUpdateWorksheetFolders(worksheets);
+      );
+      await batchUpdateSavedQueryFolders(savedQueries);
     },
-    [batchUpdateWorksheetFolders, getFoldersForWorksheet]
+    [batchUpdateSavedQueryFolders, getFoldersForSavedQuery]
+  );
+
+  const collectFolderKeys = useCallback(
+    (folderKey: string): string[] => [
+      folderKey,
+      ...folderContext
+        .listSubFolders(folderKey)
+        .flatMap((child) => collectFolderKeys(child)),
+    ],
+    [folderContext]
+  );
+
+  const updateFolderFolders = useCallback(
+    async (oldKey: string, newKey: string) => {
+      const updates = collectFolderKeys(oldKey).map<SavedQueryFolderPathUpdate>(
+        (sourceKey) => ({
+          sourceFolder: getFoldersForSavedQuery(sourceKey),
+          targetFolder: getFoldersForSavedQuery(
+            sourceKey === oldKey
+              ? newKey
+              : sourceKey.replace(`${oldKey}/`, `${newKey}/`)
+          ),
+        })
+      );
+      await batchUpdateSavedQueryFolderPaths(view, updates);
+    },
+    [
+      batchUpdateSavedQueryFolderPaths,
+      collectFolderKeys,
+      getFoldersForSavedQuery,
+      view,
+    ]
+  );
+
+  const moveFoldersToRoot = useCallback(
+    async (folders: string[]) => {
+      const folderKeys = new Set<string>();
+      for (const folder of folders) {
+        for (const key of collectFolderKeys(folder)) {
+          folderKeys.add(key);
+        }
+      }
+      const updates = [...folderKeys].map<SavedQueryFolderPathUpdate>(
+        (key) => ({
+          sourceFolder: getFoldersForSavedQuery(key),
+          targetFolder: [],
+        })
+      );
+      if (updates.length === 0) return;
+      await batchUpdateSavedQueryFolderPaths(view, updates);
+    },
+    [
+      batchUpdateSavedQueryFolderPaths,
+      collectFolderKeys,
+      getFoldersForSavedQuery,
+      view,
+    ]
   );
 
   // ---- Delete helpers -------------------------------------------------------
 
-  const doDeleteWorksheets = useCallback(async (worksheets: string[]) => {
+  const doDeleteSavedQueries = useCallback(async (savedQueries: string[]) => {
     await Promise.all(
-      worksheets.map((worksheet) =>
-        useAppStore.getState().deleteWorksheetByName(worksheet)
+      savedQueries.map((savedQuery) =>
+        useAppStore.getState().deleteSavedQueryByName(savedQuery)
       )
     );
     const tabsState = getSQLEditorTabsState();
-    for (const worksheet of worksheets) {
+    for (const savedQuery of savedQueries) {
       const tab = Array.from(tabsState.tabsById.values()).find(
-        (t) => t.worksheet === worksheet
+        (t) => t.savedQuery === savedQuery
       );
       if (tab) {
         tabsState.closeTab(tab.id);
@@ -472,9 +623,9 @@ export function SheetTree({
     // original (the immer-frozen tree node is never mutated in place).
     const newTitle = editing.rawLabel.trim();
     // Folders can't be renamed to empty (the label IS the folder name and the
-    // key segment). Worksheets can — they fall back to the "Untitled"
+    // key segment). SavedQueries can — they fall back to the "Untitled"
     // placeholder in the UI.
-    if (!newTitle && !editing.node.worksheet) {
+    if (!newTitle && !editing.node.savedQuery) {
       // Empty folder name — abort the rename, leave the node untouched.
       cleanup();
       return;
@@ -487,20 +638,34 @@ export function SheetTree({
       return;
     }
 
-    if (editing.node.worksheet) {
-      const worksheet = useAppStore
+    if (editing.node.savedQuery) {
+      const savedQuery = useAppStore
         .getState()
-        .getWorksheetByName(editing.node.worksheet.name);
-      if (!worksheet) {
+        .getSavedQueryByName(editing.node.savedQuery.name);
+      if (!savedQuery) {
         cleanup();
         return;
       }
-      await useAppStore
-        .getState()
-        .patchWorksheet({ ...worksheet, title: newTitle }, ["title"]);
+      try {
+        await useAppStore
+          .getState()
+          .patchSavedQuery({ ...savedQuery, title: newTitle }, ["title"]);
+      } catch (error) {
+        // The global middleware ignores NotFound — and a permission denial
+        // is masked as NotFound — so surface the failure here or the rename
+        // silently never persists.
+        useAppStore.getState().notify({
+          module: "bytebase",
+          style: "CRITICAL",
+          title: t("common.error"),
+          description: error instanceof Error ? error.message : String(error),
+        });
+        cleanup();
+        return;
+      }
       const tabsState = getSQLEditorTabsState();
       const tab = Array.from(tabsState.tabsById.values()).find(
-        (t) => t.worksheet === worksheet.name
+        (t) => t.savedQuery === savedQuery.name
       );
       if (tab) {
         tabsState.updateTab(tab.id, { title: newTitle });
@@ -522,13 +687,10 @@ export function SheetTree({
             resolve: (merge) => {
               if (merge) {
                 void (async () => {
-                  await updateWorksheetFolders(
-                    editing.node,
-                    editing.node.key,
-                    newKey
-                  );
+                  await updateFolderFolders(editing.node.key, newKey);
                   replaceExpandedKeys({ oldKey: editing.node.key, newKey });
                   folderContext.moveFolder(editing.node.key, newKey);
+                  rebuildTree();
                   cleanup();
                 })();
               } else {
@@ -541,9 +703,10 @@ export function SheetTree({
           });
         });
       } else {
-        await updateWorksheetFolders(editing.node, editing.node.key, newKey);
+        await updateFolderFolders(editing.node.key, newKey);
         replaceExpandedKeys({ oldKey: editing.node.key, newKey });
         folderContext.moveFolder(editing.node.key, newKey);
+        rebuildTree();
         cleanup();
       }
     }
@@ -552,9 +715,10 @@ export function SheetTree({
     setEditingNode,
     findParentNode,
     sheetTree,
-    updateWorksheetFolders,
+    updateFolderFolders,
     replaceExpandedKeys,
     folderContext,
+    rebuildTree,
   ]);
 
   const handleRenameNode = useCallback(() => {
@@ -566,36 +730,58 @@ export function SheetTree({
     }, 0);
   }, [execRenameNode]);
 
+  const restoreRenameInputSelection = useCallback(
+    (selectionStart: number | null, selectionEnd: number | null) => {
+      if (selectionStart === null || selectionEnd === null) {
+        return;
+      }
+      window.setTimeout(() => {
+        const input = inputRef.current;
+        if (!input || document.activeElement !== input) {
+          return;
+        }
+        const start = Math.min(selectionStart, input.value.length);
+        const end = Math.min(selectionEnd, input.value.length);
+        input.setSelectionRange(start, end);
+      }, 0);
+    },
+    []
+  );
+
   // ---- Click handler -------------------------------------------------------
   const handleNodeClick = useCallback(
-    (e: React.MouseEvent, node: WorksheetFolderNode) => {
+    (e: React.MouseEvent, node: SavedQueryFolderNode) => {
       if (editingNode) return;
-      if (node.worksheet) {
-        if (node.worksheet.type === "worksheet") {
-          void openWorksheetByName({
-            worksheet: node.worksheet.name,
+      if (node.loadMore) {
+        void fetchNextPage(node.loadMoreFolderKey);
+        return;
+      }
+      if (node.savedQuery) {
+        if (node.savedQuery.type === "savedQuery") {
+          void openSavedQueryByName({
+            savedQuery: node.savedQuery.name,
             forceNewTab: e.metaKey || e.ctrlKey,
           });
         } else {
           // draft tab
-          getSQLEditorTabsState().setCurrentTabId(node.worksheet.name);
+          getSQLEditorTabsState().setCurrentTabId(node.savedQuery.name);
         }
       } else {
         handleToggleExpand(node);
       }
     },
-    [editingNode, handleToggleExpand]
+    [editingNode, fetchNextPage, handleToggleExpand]
   );
 
   // ---- Duplicate sheet -------------------------------------------------------
-  const handleDuplicateSheet = useCallback((worksheetName: string) => {
-    setDeleteDialogState({ type: "duplicate-sheet", worksheetName });
+  const handleDuplicateSheet = useCallback((savedQueryName: string) => {
+    setDeleteDialogState({ type: "duplicate-sheet", savedQueryName });
   }, []);
 
   // ---- handleDeleteFolders -------------------------------------------------
   // Returns a promise that resolves true if deletion happened, false if cancelled.
   const handleDeleteFolders = useCallback(
-    (folders: string[], worksheets: string[]): Promise<boolean> => {
+    (folders: string[], savedQueries: string[]): Promise<boolean> => {
       return new Promise<boolean>((resolve) => {
         const cleanFolders = () => {
           for (const folder of folders) {
@@ -603,9 +789,12 @@ export function SheetTree({
           }
         };
 
-        if (worksheets.length === 0) {
-          cleanFolders();
-          resolve(true);
+        if (savedQueries.length === 0) {
+          void (async () => {
+            await moveFoldersToRoot(folders);
+            cleanFolders();
+            resolve(true);
+          })();
           return;
         }
 
@@ -613,32 +802,39 @@ export function SheetTree({
         setDeleteDialogState({
           type: "delete-folders",
           folders,
-          worksheets,
+          savedQueries,
         });
 
         // The dialog will call resolve via the dialog-specific actions below.
         // We stash resolve in a ref so the dialog buttons can pick it up.
-        deleteFoldersResolveRef.current = { resolve, cleanFolders, worksheets };
+        deleteFoldersResolveRef.current = {
+          resolve,
+          cleanFolders,
+          savedQueries,
+        };
       });
     },
-    [folderContext]
+    [folderContext, moveFoldersToRoot]
   );
 
   // Ref to hold the pending promise resolve for delete-folders dialog
   const deleteFoldersResolveRef = useRef<{
     resolve: (v: boolean) => void;
     cleanFolders: () => void;
-    worksheets: string[];
+    savedQueries: string[];
   } | null>(null);
 
   // ---- handleMultiDelete (exposed via ref) ---------------------------------
   const handleMultiDelete = useCallback(
-    (nodes: WorksheetFolderNode[]): Promise<void> => {
+    (nodes: SavedQueryFolderNode[]): Promise<void> => {
       const folders: string[] = [];
-      const worksheets: string[] = [];
+      const savedQueries: string[] = [];
       for (const node of nodes) {
-        if (node.worksheet) {
-          worksheets.push(node.worksheet.name);
+        if (node.loadMore) {
+          continue;
+        }
+        if (node.savedQuery) {
+          savedQueries.push(node.savedQuery.name);
           continue;
         }
         if (node.key === folderContext.rootPath) {
@@ -656,17 +852,17 @@ export function SheetTree({
         }
         folders.push(node.key);
       }
-      if (folders.length === 0 && worksheets.length === 0) {
+      if (folders.length === 0 && savedQueries.length === 0) {
         return Promise.resolve();
       }
       // Multi-select is explicit: delete exactly what was checked. Checking a
       // folder already auto-includes its descendants, so the selection captures
       // the user's full intent. We must NOT reuse the folder context-menu's
       // "Non-empty folder → move to root vs delete" prompt here — that prompt
-      // exists for deleting a single folder whose worksheets weren't selected.
+      // exists for deleting a single folder whose saved queries weren't selected.
       return new Promise<void>((resolve) => {
         multiDeleteResolveRef.current = resolve;
-        setDeleteDialogState({ type: "multi-delete", folders, worksheets });
+        setDeleteDialogState({ type: "multi-delete", folders, savedQueries });
       });
     },
     [folderContext]
@@ -675,7 +871,7 @@ export function SheetTree({
   // Ref to hold the pending promise resolve for the multi-delete dialog.
   const multiDeleteResolveRef = useRef<(() => void) | null>(null);
 
-  // Expose handleMultiDelete via an imperative ref so WorksheetPane can call it
+  // Expose handleMultiDelete via an imperative ref so SavedQueryPane can call it
   useImperativeHandle(ref, () => ({ handleMultiDelete }), [handleMultiDelete]);
 
   // ---- Context menu select handler -----------------------------------------
@@ -702,22 +898,22 @@ export function SheetTree({
           // Focus happens via useEffect above
           break;
         case "delete":
-          if (contextMenuNode.worksheet) {
+          if (contextMenuNode.savedQuery) {
             setDeleteDialogState({
               type: "delete-sheet",
-              worksheetName: contextMenuNode.worksheet.name,
+              savedQueryName: contextMenuNode.savedQuery.name,
             });
           } else {
-            const worksheets = revealWorksheets(
+            const savedQueries = revealSavedQueries(
               contextMenuNode,
-              (n) => n.worksheet?.name
+              (n) => n.savedQuery?.name
             );
-            void handleDeleteFolders([contextMenuNode.key], worksheets);
+            void handleDeleteFolders([contextMenuNode.key], savedQueries);
           }
           break;
         case "duplicate":
-          if (contextMenuNode.worksheet) {
-            await handleDuplicateSheet(contextMenuNode.worksheet.name);
+          if (contextMenuNode.savedQuery) {
+            await handleDuplicateSheet(contextMenuNode.savedQuery.name);
           }
           break;
         case "add-folder": {
@@ -741,16 +937,16 @@ export function SheetTree({
           });
           break;
         }
-        case "add-worksheet":
-          await createWorksheet({
-            folders: getFoldersForWorksheet(contextMenuNode.key),
+        case "add-saved-query":
+          await createSavedQuery({
+            folders: getFoldersForSavedQuery(contextMenuNode.key),
           });
           break;
         case "multi-select":
           // Guarded — the menu item is only surfaced when the callbacks exist
           // (the "my" tree); the optional-chaining is a belt-and-braces safety.
           onMultiSelectModeChange?.(true);
-          onCheckedNodesChange?.(revealNodes(contextMenuNode, (n) => n));
+          onCheckedNodesChange?.(selectableNodes(contextMenuNode));
           break;
         default:
           break;
@@ -766,8 +962,8 @@ export function SheetTree({
       setEditingNode,
       setExpandedKeys,
       folderContext,
-      getFoldersForWorksheet,
-      createWorksheet,
+      getFoldersForSavedQuery,
+      createSavedQuery,
       handleDeleteFolders,
       handleDuplicateSheet,
       handleSharePanelShow,
@@ -776,17 +972,15 @@ export function SheetTree({
     ]
   );
 
-  // ---- handleWorksheetToggleStar (debounced) --------------------------------
+  // ---- handleSavedQueryToggleStar (debounced) --------------------------------
   const starTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleWorksheetToggleStar = useCallback(
-    ({ worksheet, starred }: { worksheet: string; starred: boolean }) => {
+  const handleSavedQueryToggleStar = useCallback(
+    ({ savedQuery, starred }: { savedQuery: string; starred: boolean }) => {
       if (starTimerRef.current !== null) {
         clearTimeout(starTimerRef.current);
       }
       starTimerRef.current = setTimeout(() => {
-        void useAppStore
-          .getState()
-          .upsertWorksheetOrganizer({ worksheet, starred }, ["starred"]);
+        void useAppStore.getState().updateSavedQueryStar(savedQuery, starred);
       }, 300);
     },
     []
@@ -795,7 +989,7 @@ export function SheetTree({
   // ---- handleDuplicateFolderNameDrop: promise-based duplicate check for DnD --
   // Mirrors Vue's handleDuplicateFolderName: resolves true (merge) or false (cancel).
   const handleDuplicateFolderNameDrop = useCallback(
-    (parentNode: WorksheetFolderNode, newKey: string): Promise<boolean> => {
+    (parentNode: SavedQueryFolderNode, newKey: string): Promise<boolean> => {
       const sameNode = parentNode.children.find(
         (child) => child.key === newKey
       );
@@ -817,32 +1011,33 @@ export function SheetTree({
   // Mirrors Vue's handleDrop. react-arborist provides the destination parentNode
   // (always a folder — arborist resolves drop-on-leaf to its parent) and an
   // array of dragged nodes. Only single-drag is supported (matches Vue).
-  const handleMove: MoveHandler<TreeDataNode<WorksheetFolderNode>> =
+  const handleMove: MoveHandler<TreeDataNode<SavedQueryFolderNode>> =
     useCallback(
       async ({ dragNodes, parentNode: arboristParent }) => {
         // Resolve the destination folder node
-        let parentFolderNode: WorksheetFolderNode | undefined;
+        let parentFolderNode: SavedQueryFolderNode | undefined;
         if (arboristParent === null) {
           // Dropped at root level — use the root of sheetTree
           parentFolderNode = sheetTree;
         } else {
           const candidate = arboristParent.data.data;
-          if (candidate.worksheet) {
+          if (candidate.savedQuery) {
             // Should not happen given disableDrop predicate, but guard anyway.
             parentFolderNode = findParentNode(sheetTree, candidate.key);
           } else {
             parentFolderNode = candidate;
           }
         }
-        if (!parentFolderNode) return;
+        if (!parentFolderNode || parentFolderNode.loadMore) return;
 
         // Only handle single drag (matches Vue behaviour)
         const draggedTreeNode = dragNodes[0] as
-          | NodeApi<TreeDataNode<WorksheetFolderNode>>
+          | NodeApi<TreeDataNode<SavedQueryFolderNode>>
           | undefined;
         if (!draggedTreeNode) return;
 
         const draggedNode = draggedTreeNode.data.data;
+        if (draggedNode.loadMore) return;
         const oldParentNode = findParentNode(sheetTree, draggedNode.key);
         if (!oldParentNode) return;
 
@@ -862,16 +1057,19 @@ export function SheetTree({
         if (!merge) return;
 
         const shouldCloseOldParent =
-          !draggedNode.worksheet && oldParentNode.children.length === 1;
+          !draggedNode.savedQuery && oldParentNode.children.length === 1;
 
-        await updateWorksheetFolders(
-          draggedNode,
-          oldParentNode.key,
-          parentFolderNode.key
-        );
-        if (!draggedNode.worksheet) {
+        if (draggedNode.savedQuery) {
+          await updateSavedQueryFolders(
+            draggedNode,
+            oldParentNode.key,
+            parentFolderNode.key
+          );
+        } else {
+          await updateFolderFolders(draggedNode.key, newKey);
           // Folder move — update folderContext too
           folderContext.moveFolder(draggedNode.key, newKey);
+          rebuildTree();
         }
 
         // Update expanded keys (nextTick equivalent: defer to next microtask)
@@ -892,7 +1090,9 @@ export function SheetTree({
         findParentNode,
         folderContext,
         handleDuplicateFolderNameDrop,
-        updateWorksheetFolders,
+        updateSavedQueryFolders,
+        updateFolderFolders,
+        rebuildTree,
         replaceExpandedKeys,
         setExpandedKeys,
       ]
@@ -900,7 +1100,7 @@ export function SheetTree({
 
   // ---- Search match for Tree primitive ------------------------------------
   const searchMatch = useCallback(
-    (node: TreeDataNode<WorksheetFolderNode>, term: string): boolean => {
+    (node: TreeDataNode<SavedQueryFolderNode>, term: string): boolean => {
       const pred = filterNode(folderContext.rootPath);
       return pred(term, node.data);
     },
@@ -916,9 +1116,10 @@ export function SheetTree({
     }: {
       node: {
         id: string;
-        data: TreeDataNode<WorksheetFolderNode>;
+        data: TreeDataNode<SavedQueryFolderNode>;
         isSelected: boolean;
         isOpen?: boolean;
+        willReceiveDrop?: boolean;
       };
       style: React.CSSProperties;
       dragHandle?: (el: HTMLDivElement | null) => void;
@@ -930,6 +1131,10 @@ export function SheetTree({
       const isEditing =
         !!editingNode && editingNode.node.key === folderNode.key;
       const isChecked = checkedNodes.some((n) => n.key === folderNode.key);
+      const isDropTargetFolder =
+        !folderNode.savedQuery &&
+        !folderNode.loadMore &&
+        !!node.willReceiveDrop;
 
       // react-arborist injects `paddingLeft: level * indent` via `style`,
       // which overrides `className`'s `px-2` padding-left. Merge indent with
@@ -937,23 +1142,28 @@ export function SheetTree({
       const ROW_GUTTER_X = 8;
       const indentPadding =
         typeof style.paddingLeft === "number" ? style.paddingLeft : 0;
-      const rowStyle = {
+      const rowStyle: CSSProperties = {
         ...style,
         paddingLeft: indentPadding + ROW_GUTTER_X,
         paddingRight: ROW_GUTTER_X,
+        width: "100%",
+        maxWidth: "100%",
+        boxSizing: "border-box",
       };
       return (
         <div
           key={folderNode.key}
-          ref={dragHandle}
+          ref={folderNode.loadMore ? undefined : dragHandle}
           style={rowStyle}
           data-item-key={folderNode.key}
           className={cn(
-            "flex items-center gap-x-1 w-full py-0.5 text-sm cursor-pointer select-none",
+            "flex min-w-0 max-w-full items-center gap-x-1 text-sm cursor-pointer select-none",
+            isEditing ? "overflow-visible py-0" : "overflow-hidden py-0.5",
             // Align with the connection-panel database tree: subtle neutral
             // hover, accent-tinted selection (was a too-light gray fill).
             "hover:bg-control-bg/70 rounded-xs",
-            isSelected && "bg-accent/10"
+            isSelected && "bg-accent/10",
+            isDropTargetFolder && "bg-accent/15 ring-1 ring-accent/40"
           )}
           onClick={(e) => {
             // Only handle clicks on text/prefix area, not suffix
@@ -966,11 +1176,18 @@ export function SheetTree({
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (
+              view === "draft" ||
+              folderNode.loadMore ||
+              (view === "shared" && !folderNode.savedQuery)
+            ) {
+              return;
+            }
             openMenuAtPoint(e.clientX, e.clientY, folderNode);
           }}
         >
           {/* Multi-select checkbox */}
-          {multiSelectMode && (
+          {multiSelectMode && !folderNode.loadMore && (
             <Checkbox
               checked={isChecked}
               className="shrink-0 cursor-pointer"
@@ -978,9 +1195,9 @@ export function SheetTree({
               onCheckedChange={(checked) => {
                 // Checking a folder recursively includes all descendants so
                 // users don't have to tick each child individually.
-                const affected = folderNode.worksheet
+                const affected = folderNode.savedQuery
                   ? [folderNode]
-                  : revealNodes(folderNode, (n) => n);
+                  : selectableNodes(folderNode);
                 if (checked) {
                   const existing = new Set(checkedNodes.map((n) => n.key));
                   onCheckedNodesChange?.([
@@ -998,69 +1215,92 @@ export function SheetTree({
           )}
 
           {/* Prefix icon */}
-          <span className="tree-prefix shrink-0">
-            <TreeNodePrefix
-              node={folderNode}
-              isOpen={isOpen}
-              rootPath={folderContext.rootPath}
-              view={view}
-            />
-          </span>
+          {!folderNode.loadMore && (
+            <span className="tree-prefix shrink-0">
+              <TreeNodePrefix
+                node={folderNode}
+                isOpen={isOpen}
+                rootPath={folderContext.rootPath}
+                view={view}
+              />
+            </span>
+          )}
 
-          {/* Label / rename input */}
-          <span className="tree-label flex-1 min-w-0">
-            {isEditing ? (
-              <Input
-                ref={inputRef}
-                id={`sheet-input-${folderNode.key}`}
-                size="sm"
-                // Bind to the editable `rawLabel`, NOT `node.label`. The
-                // editingNode lives in the immer-backed sheet-context
-                // store and is frozen — mutating `node.label` silently
-                // no-ops, which froze the input (could not type).
-                value={editingNode.rawLabel}
-                className="h-5 py-0 text-xs px-1!"
-                autoFocus
-                onBlur={() => handleRenameNode()}
-                onKeyDown={(e) => {
-                  // react-arborist's container intercepts Space (toggles node)
-                  // and other keys for tree navigation; stop propagation so
-                  // typing inside the rename input is unaffected.
-                  e.stopPropagation();
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleRenameNode();
-                  }
-                }}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (!editingNode) return;
-                  if (!editingNode.node.worksheet) {
-                    // folder names cannot contain "/" or "."
-                    if (val.includes("/") || val.includes(".")) return;
-                  }
-                  setEditingNode({ ...editingNode, rawLabel: val });
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : folderNode.worksheet && !folderNode.label ? (
-              // Untitled worksheet — render a placeholder. We don't pipe this
-              // through HighlightLabelText since there's nothing to highlight
-              // and the muted italic styling signals "empty title".
-              <span className="truncate block text-control-placeholder italic">
-                {t("common.untitled")}
-              </span>
-            ) : (
-              <HighlightLabelText
-                text={folderNode.label}
-                keyword={worksheetFilter.keyword}
-                className="truncate block"
-              />
-            )}
-          </span>
+          {folderNode.loadMore ? (
+            <SavedQueryTreeLoadMoreButton
+              label={folderNode.label}
+              onClick={(e) => {
+                e.stopPropagation();
+                void fetchNextPage(folderNode.loadMoreFolderKey);
+              }}
+            />
+          ) : (
+            <span
+              className={cn(
+                "tree-label min-w-0 flex-1",
+                isEditing ? "overflow-visible" : "overflow-hidden"
+              )}
+            >
+              {isEditing ? (
+                <Input
+                  ref={inputRef}
+                  id={`sheet-input-${folderNode.key}`}
+                  size="sm"
+                  // Bind to the editable `rawLabel`, NOT `node.label`. The
+                  // editingNode lives in the immer-backed sheet-context
+                  // store and is frozen — mutating `node.label` silently
+                  // no-ops, which froze the input (could not type).
+                  value={editingNode.rawLabel}
+                  className="h-6 w-full min-w-0 py-0 text-sm px-1!"
+                  autoFocus
+                  onBlur={() => handleRenameNode()}
+                  onKeyDown={(e) => {
+                    // react-arborist's container intercepts Space (toggles node)
+                    // and other keys for tree navigation; stop propagation so
+                    // typing inside the rename input is unaffected.
+                    e.stopPropagation();
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleRenameNode();
+                    }
+                  }}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const { selectionStart, selectionEnd } = e.currentTarget;
+                    if (!editingNode) return;
+                    if (!editingNode.node.savedQuery) {
+                      // folder names cannot contain "/" or "."
+                      if (val.includes("/") || val.includes(".")) return;
+                    }
+                    setEditingNode({ ...editingNode, rawLabel: val });
+                    restoreRenameInputSelection(selectionStart, selectionEnd);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <>
+                  {folderNode.savedQuery && !folderNode.label ? (
+                    // Untitled saved query — render a placeholder. We don't
+                    // pipe this through HighlightLabelText since there's
+                    // nothing to highlight and the muted italic styling
+                    // signals "empty title".
+                    <span className="truncate block text-control-placeholder italic">
+                      {t("common.untitled")}
+                    </span>
+                  ) : (
+                    <HighlightLabelText
+                      text={folderNode.label}
+                      keyword={savedQueryFilter.keyword}
+                      className="truncate block"
+                    />
+                  )}
+                </>
+              )}
+            </span>
+          )}
 
           {/* Suffix (star, visibility badge, more) */}
-          {!isEditing && (
+          {!isEditing && !folderNode.loadMore && (
             <TreeNodeSuffix
               node={folderNode}
               view={view}
@@ -1068,7 +1308,7 @@ export function SheetTree({
               onContextMenuShow={(e, n) =>
                 openMenuAtElement(e.currentTarget, n)
               }
-              onToggleStar={handleWorksheetToggleStar}
+              onToggleStar={handleSavedQueryToggleStar}
             />
           )}
         </div>
@@ -1081,12 +1321,13 @@ export function SheetTree({
       setEditingNode,
       checkedNodes,
       multiSelectMode,
-      worksheetFilter,
+      savedQueryFilter,
       view,
       folderContext,
       handleNodeClick,
       handleRenameNode,
-      handleWorksheetToggleStar,
+      restoreRenameInputSelection,
+      handleSavedQueryToggleStar,
       openMenuAtPoint,
       openMenuAtElement,
       openSharePanelAtElement,
@@ -1096,7 +1337,7 @@ export function SheetTree({
   );
 
   // ---- Loading spinner -----------------------------------------------------
-  if (isLoading) {
+  if (isLoading && !isInitialized) {
     return (
       <div className="flex items-center justify-center p-4">
         <Loader2 className="size-4 animate-spin text-control-light" />
@@ -1127,9 +1368,9 @@ export function SheetTree({
               size="sm"
               onClick={async () => {
                 if (deleteDialogState.type !== "delete-sheet") return;
-                const { worksheetName } = deleteDialogState;
+                const { savedQueryName } = deleteDialogState;
                 setDeleteDialogState({ type: "none" });
-                await doDeleteWorksheets([worksheetName]);
+                await doDeleteSavedQueries([savedQueryName]);
               }}
             >
               {t("common.delete")}
@@ -1163,16 +1404,18 @@ export function SheetTree({
               size="sm"
               onClick={async () => {
                 if (deleteDialogState.type !== "duplicate-sheet") return;
-                const { worksheetName } = deleteDialogState;
+                const { savedQueryName } = deleteDialogState;
                 setDeleteDialogState({ type: "none" });
-                const worksheet = useAppStore
+                const savedQuery = useAppStore
                   .getState()
-                  .getWorksheetByName(worksheetName);
-                if (!worksheet) return;
-                await createWorksheet({
-                  title: worksheet.title,
-                  folders: worksheet.folders,
-                  database: worksheet.database,
+                  .getSavedQueryByName(savedQueryName);
+                if (!savedQuery) return;
+                await createSavedQuery({
+                  title: savedQuery.title,
+                  folders: savedQuery.folder
+                    ? savedQuery.folder.split("/")
+                    : [],
+                  database: savedQuery.database,
                 });
                 useAppStore.getState().notify({
                   module: "bytebase",
@@ -1221,20 +1464,16 @@ export function SheetTree({
               size="sm"
               onClick={async () => {
                 if (deleteDialogState.type !== "delete-folders") return;
-                const { folders, worksheets } = deleteDialogState;
+                const { folders } = deleteDialogState;
                 setDeleteDialogState({ type: "none" });
                 const pending = deleteFoldersResolveRef.current;
                 if (pending) {
-                  await batchUpdateWorksheetFolders(
-                    worksheets.map((ws) => ({ name: ws, folders: [] }))
-                  );
+                  await moveFoldersToRoot(folders);
                   pending.cleanFolders();
                   pending.resolve(true);
                   deleteFoldersResolveRef.current = null;
                 } else {
-                  await batchUpdateWorksheetFolders(
-                    folders.map(() => ({ name: "", folders: [] }))
-                  );
+                  await moveFoldersToRoot(folders);
                   for (const folder of folders) {
                     folderContext.removeFolder(folder);
                   }
@@ -1248,16 +1487,19 @@ export function SheetTree({
               size="sm"
               onClick={async () => {
                 if (deleteDialogState.type !== "delete-folders") return;
-                const { worksheets } = deleteDialogState;
+                const { savedQueries } = deleteDialogState;
                 setDeleteDialogState({ type: "none" });
                 const pending = deleteFoldersResolveRef.current;
                 if (pending) {
-                  await doDeleteWorksheets(worksheets);
+                  // TODO: This only deletes files already loaded into the tree.
+                  // Add a batch delete-by-folder API before treating this as
+                  // "delete all files" for paginated folders.
+                  await doDeleteSavedQueries(savedQueries);
                   pending.cleanFolders();
                   pending.resolve(true);
                   deleteFoldersResolveRef.current = null;
                 } else {
-                  await doDeleteWorksheets(worksheets);
+                  await doDeleteSavedQueries(savedQueries);
                   for (const folder of folderContext.rootPath ? [] : []) {
                     folderContext.removeFolder(folder);
                   }
@@ -1299,10 +1541,10 @@ export function SheetTree({
               size="sm"
               onClick={async () => {
                 if (deleteDialogState.type !== "multi-delete") return;
-                const { folders, worksheets } = deleteDialogState;
+                const { folders, savedQueries } = deleteDialogState;
                 setDeleteDialogState({ type: "none" });
-                if (worksheets.length > 0) {
-                  await doDeleteWorksheets(worksheets);
+                if (savedQueries.length > 0) {
+                  await doDeleteSavedQueries(savedQueries);
                 }
                 for (const folder of folders) {
                   folderContext.removeFolder(folder);
@@ -1370,24 +1612,53 @@ export function SheetTree({
 
   // ---- Main render ---------------------------------------------------------
   return (
-    <div className="flex flex-col items-stretch gap-y-1 relative worksheet-tree">
-      <Tree<WorksheetFolderNode>
+    <div
+      data-testid="saved-query-tree"
+      className="relative flex min-w-0 max-w-full flex-col items-stretch gap-y-1 overflow-x-clip"
+    >
+      <Tree<SavedQueryFolderNode>
         data={treeData}
         renderNode={renderNode}
         selectedIds={selectedKeys}
         expandedIds={expandedKeysArray}
-        searchTerm={worksheetFilter.keyword}
+        searchTerm={savedQueryFilter.keyword}
         searchMatch={searchMatch}
         height={treeHeight}
         rowHeight={ROW_HEIGHT}
         indent={12}
-        className="text-sm"
+        renderCursor={HiddenDropCursor}
+        className={cn(
+          "min-w-0 max-w-full !overflow-x-clip !overflow-y-visible text-sm [&_[role=treeitem]]:!min-w-0 [&_[role=treeitem]]:!max-w-full",
+          editingNode
+            ? "[&_[role=treeitem]]:overflow-visible"
+            : "[&_[role=treeitem]]:overflow-hidden"
+        )}
         onMove={handleMove}
-        disableDrag={view === "draft" || !!editingNode || multiSelectMode}
+        // Dragging re-files, which is UpdateSavedQuery's folder field, so a
+        // Shared-tree saved query is draggable exactly when the caller can
+        // update it — the predicate that gates rename. Folders stay pinned
+        // outside the my tree: MoveMySavedQueries rewrites only the caller's
+        // own rows, so dragging a shared folder would move nothing.
+        disableDrag={
+          view === "draft" || !!editingNode || multiSelectMode
+            ? true
+            : ({ data }) => {
+                if (data.loadMore) return true;
+                if (view === "my") return false;
+                if (!data.savedQuery) return true;
+                const entity = useAppStore
+                  .getState()
+                  .getSavedQueryByName(data.savedQuery.name);
+                return !entity || !isSavedQueryWritableV1(entity);
+              }
+        }
         disableDrop={
           view === "draft" || !!editingNode || multiSelectMode
             ? true
-            : ({ parentNode: p }) => !!p?.data.data.worksheet
+            : ({ parentNode: p, dragNodes }) =>
+                !!p?.data.data.savedQuery ||
+                !!p?.data.data.loadMore ||
+                dragNodes.some((node) => !!node.data.data.loadMore)
         }
       />
 
@@ -1395,7 +1666,7 @@ export function SheetTree({
           menu (the row's More button or the cursor). Opens when the user
           selects "Share" from the context menu or clicks the Users badge. */}
       <Popover
-        open={showSharePanel && !!worksheetEntity}
+        open={showSharePanel && !!savedQueryEntity}
         onOpenChange={(next) => {
           if (!next) handleContextMenuClickOutside();
         }}
@@ -1417,7 +1688,9 @@ export function SheetTree({
           }
         />
         <PopoverContent align="start" sideOffset={4}>
-          {worksheetEntity && <SharePopoverBody worksheet={worksheetEntity} />}
+          {savedQueryEntity && (
+            <SharePopoverBody savedQuery={savedQueryEntity} />
+          )}
         </PopoverContent>
       </Popover>
 

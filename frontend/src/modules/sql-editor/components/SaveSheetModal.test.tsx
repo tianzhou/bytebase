@@ -14,17 +14,18 @@ const eventHandlers: Record<string, (payload: unknown) => void> = {};
 const mocks = vi.hoisted(() => ({
   useTranslation: vi.fn(() => ({ t: (key: string) => key })),
   appStore: {
-    getWorksheetByName: vi.fn(),
+    getSavedQueryByName: vi.fn(),
   },
-  editorWorksheetStore: {
+  editorSavedQueryStore: {
     abortAutoSave: vi.fn(),
-    maybeUpdateWorksheet: vi.fn().mockResolvedValue(undefined),
-    createWorksheet: vi.fn().mockResolvedValue(undefined),
+    maybeUpdateSavedQuery: vi.fn().mockResolvedValue(undefined),
+    createSavedQuery: vi.fn().mockResolvedValue(undefined),
   },
   sheetContext: {
-    getPwdForWorksheet: vi.fn(() => ""),
-    getFoldersForWorksheet: vi.fn(() => []),
+    getPwdForSavedQuery: vi.fn(() => ""),
+    getFoldersForSavedQuery: vi.fn(() => []),
   },
+  canCreateSavedQueryInProject: vi.fn(() => true),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -45,8 +46,8 @@ vi.mock("@/stores/app", () => ({
 
 vi.mock("@/modules/sql-editor/store", () => ({
   useSQLEditorStore: (
-    selector: (s: typeof mocks.editorWorksheetStore) => unknown
-  ) => selector(mocks.editorWorksheetStore),
+    selector: (s: typeof mocks.editorSavedQueryStore) => unknown
+  ) => selector(mocks.editorSavedQueryStore),
 }));
 
 vi.mock("@/modules/sql-editor/model/Sheet", () => ({
@@ -57,11 +58,17 @@ vi.mock("@/types", () => ({
   UNKNOWN_ID: 0,
 }));
 
+vi.mock("@/modules/sql-editor/store/editor", () => ({
+  useSQLEditorEditorState: (selector: (s: { project: string }) => unknown) =>
+    selector({ project: "projects/proj1" }),
+}));
+
 vi.mock("@/utils", () => ({
-  extractWorksheetID: vi.fn((worksheet: string) => {
-    if (!worksheet) return "0";
-    // Return non-zero for worksheets that look like real ones
-    return worksheet.includes("/worksheets/") ? "123" : "0";
+  canCreateSavedQueryInProject: mocks.canCreateSavedQueryInProject,
+  extractSavedQueryID: vi.fn((savedQuery: string) => {
+    if (!savedQuery) return "0";
+    // Return non-zero for saved queries that look like real ones
+    return savedQuery.includes("/savedQueries/") ? "123" : "0";
   }),
 }));
 
@@ -179,10 +186,10 @@ const emitSaveSheet = (payload: unknown) => {
 };
 
 // Tab fixtures
-const tabWithoutWorksheet = {
+const tabWithoutSavedQuery = {
   id: "tab-1",
   title: "Untitled",
-  worksheet: undefined,
+  savedQuery: undefined,
   connection: { database: "instances/inst1/databases/db1" },
   statement: "SELECT 1",
 };
@@ -190,7 +197,7 @@ const tabWithoutWorksheet = {
 const savedTab = {
   id: "tab-2",
   title: "My Sheet",
-  worksheet: "projects/proj1/worksheets/123",
+  savedQuery: "projects/proj1/savedQueries/123",
   connection: { database: "instances/inst1/databases/db1" },
   statement: "SELECT 2",
 };
@@ -200,12 +207,13 @@ let SaveSheetModal: typeof import("./SaveSheetModal").SaveSheetModal;
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.useTranslation.mockReturnValue({ t: (key: string) => key });
-  mocks.editorWorksheetStore.abortAutoSave.mockReset();
-  mocks.editorWorksheetStore.maybeUpdateWorksheet.mockResolvedValue(undefined);
-  mocks.editorWorksheetStore.createWorksheet.mockResolvedValue(undefined);
-  mocks.sheetContext.getPwdForWorksheet.mockReturnValue("");
-  mocks.sheetContext.getFoldersForWorksheet.mockReturnValue([]);
-  mocks.appStore.getWorksheetByName.mockReturnValue(undefined);
+  mocks.canCreateSavedQueryInProject.mockReturnValue(true);
+  mocks.editorSavedQueryStore.abortAutoSave.mockReset();
+  mocks.editorSavedQueryStore.maybeUpdateSavedQuery.mockResolvedValue(undefined);
+  mocks.editorSavedQueryStore.createSavedQuery.mockResolvedValue(undefined);
+  mocks.sheetContext.getPwdForSavedQuery.mockReturnValue("");
+  mocks.sheetContext.getFoldersForSavedQuery.mockReturnValue([]);
+  mocks.appStore.getSavedQueryByName.mockReturnValue(undefined);
 
   ({ SaveSheetModal } = await import("./SaveSheetModal"));
 });
@@ -223,7 +231,7 @@ describe("SaveSheetModal", () => {
     );
     render();
 
-    emitSaveSheet({ tab: tabWithoutWorksheet });
+    emitSaveSheet({ tab: tabWithoutSavedQuery });
 
     const dialog = container.querySelector("[data-testid='dialog']");
     expect(dialog).not.toBeNull();
@@ -238,13 +246,48 @@ describe("SaveSheetModal", () => {
     unmount();
   });
 
+  test("save-sheet is a no-op for a draft when the caller cannot create", async () => {
+    // Cmd/Ctrl+S emits the same event as the toolbar button, and the button is
+    // already hidden without the permission -- so the shortcut must not reach
+    // the create call either. The draft stays in the tab.
+    mocks.canCreateSavedQueryInProject.mockReturnValue(false);
+    const { container, render, unmount } = renderIntoContainer(
+      <SaveSheetModal />
+    );
+    render();
+
+    await act(async () => {
+      emitSaveSheet({ tab: tabWithoutSavedQuery });
+    });
+
+    const dialog = container.querySelector("[data-testid='dialog']");
+    expect(dialog?.getAttribute("data-open")).toBe("false");
+    expect(mocks.editorSavedQueryStore.createSavedQuery).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("saving an existing saved query is unaffected by the create permission", async () => {
+    mocks.canCreateSavedQueryInProject.mockReturnValue(false);
+    const { render, unmount } = renderIntoContainer(<SaveSheetModal />);
+    render();
+
+    await act(async () => {
+      emitSaveSheet({ tab: savedTab });
+    });
+
+    expect(
+      mocks.editorSavedQueryStore.maybeUpdateSavedQuery
+    ).toHaveBeenCalled();
+    unmount();
+  });
+
   test("title input disables browser autocomplete", () => {
     const { container, render, unmount } = renderIntoContainer(
       <SaveSheetModal />
     );
     render();
 
-    emitSaveSheet({ tab: tabWithoutWorksheet });
+    emitSaveSheet({ tab: tabWithoutSavedQuery });
 
     const input = container.querySelector(
       "[data-testid='title-input']"
@@ -255,7 +298,7 @@ describe("SaveSheetModal", () => {
     unmount();
   });
 
-  test("2. Saved tab without editTitle saves silently — no modal, maybeUpdateWorksheet called", async () => {
+  test("2. Saved tab without editTitle saves silently — no modal, maybeUpdateSavedQuery called", async () => {
     const { container, render, unmount } = renderIntoContainer(
       <SaveSheetModal />
     );
@@ -269,11 +312,11 @@ describe("SaveSheetModal", () => {
     expect(dialog?.getAttribute("data-open")).toBe("false");
 
     expect(
-      mocks.editorWorksheetStore.maybeUpdateWorksheet
+      mocks.editorSavedQueryStore.maybeUpdateSavedQuery
     ).toHaveBeenCalledWith(
       expect.objectContaining({
         tabId: savedTab.id,
-        worksheet: savedTab.worksheet,
+        savedQuery: savedTab.savedQuery,
         title: savedTab.title,
         database: savedTab.connection.database,
         statement: savedTab.statement,
@@ -297,17 +340,17 @@ describe("SaveSheetModal", () => {
     unmount();
   });
 
-  test("4. Save button stays enabled with an empty title (worksheet becomes Untitled)", async () => {
+  test("4. Save button stays enabled with an empty title (saved query becomes Untitled)", async () => {
     const { container, render, unmount } = renderIntoContainer(
       <SaveSheetModal />
     );
     render();
 
     // Open modal with a tab that has an empty title — Save is allowed; the
-    // worksheet is created with an empty title and the UI renders "Untitled"
+    // saved query is created with an empty title and the UI renders "Untitled"
     // placeholders for it elsewhere.
     const tabWithEmptyTitle = {
-      ...tabWithoutWorksheet,
+      ...tabWithoutSavedQuery,
       title: "",
     };
     emitSaveSheet({ tab: tabWithEmptyTitle });
@@ -322,7 +365,7 @@ describe("SaveSheetModal", () => {
       saveButton.click();
     });
 
-    expect(mocks.editorWorksheetStore.createWorksheet).toHaveBeenCalledWith(
+    expect(mocks.editorSavedQueryStore.createSavedQuery).toHaveBeenCalledWith(
       expect.objectContaining({
         tabId: tabWithEmptyTitle.id,
         title: "",
@@ -332,14 +375,14 @@ describe("SaveSheetModal", () => {
     unmount();
   });
 
-  test("5. Clicking Save on unsaved tab calls createWorksheet with correct args", async () => {
+  test("5. Clicking Save on unsaved tab calls createSavedQuery with correct args", async () => {
     const { container, render, unmount } = renderIntoContainer(
       <SaveSheetModal />
     );
     render();
 
     // Open modal for unsaved tab with a title set
-    emitSaveSheet({ tab: tabWithoutWorksheet });
+    emitSaveSheet({ tab: tabWithoutSavedQuery });
 
     const saveButton = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent === "common.save"
@@ -351,13 +394,13 @@ describe("SaveSheetModal", () => {
       saveButton.click();
     });
 
-    expect(mocks.editorWorksheetStore.abortAutoSave).toHaveBeenCalled();
-    expect(mocks.editorWorksheetStore.createWorksheet).toHaveBeenCalledWith(
+    expect(mocks.editorSavedQueryStore.abortAutoSave).toHaveBeenCalled();
+    expect(mocks.editorSavedQueryStore.createSavedQuery).toHaveBeenCalledWith(
       expect.objectContaining({
-        tabId: tabWithoutWorksheet.id,
-        title: tabWithoutWorksheet.title,
-        statement: tabWithoutWorksheet.statement,
-        database: tabWithoutWorksheet.connection.database,
+        tabId: tabWithoutSavedQuery.id,
+        title: tabWithoutSavedQuery.title,
+        statement: tabWithoutSavedQuery.statement,
+        database: tabWithoutSavedQuery.connection.database,
       })
     );
 
@@ -370,7 +413,7 @@ describe("SaveSheetModal", () => {
     );
     render();
 
-    // Worksheet exists (has a name) but its title is empty — a manual save
+    // SavedQuery exists (has a name) but its title is empty — a manual save
     // should prompt for a title rather than silently re-persisting Untitled.
     const savedUntitledTab = { ...savedTab, title: "" };
     emitSaveSheet({ tab: savedUntitledTab });
@@ -378,7 +421,7 @@ describe("SaveSheetModal", () => {
     const dialog = container.querySelector("[data-testid='dialog']");
     expect(dialog?.getAttribute("data-open")).toBe("true");
     expect(
-      mocks.editorWorksheetStore.maybeUpdateWorksheet
+      mocks.editorSavedQueryStore.maybeUpdateSavedQuery
     ).not.toHaveBeenCalled();
 
     unmount();

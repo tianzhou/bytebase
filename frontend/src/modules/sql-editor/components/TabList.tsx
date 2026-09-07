@@ -31,12 +31,14 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { tabListEvents } from "@/modules/sql-editor/model/TabList/events";
 import { useSQLEditorStore } from "@/modules/sql-editor/store";
+import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
 import {
   getSQLEditorTabsState,
   useOpenTabList,
   useSQLEditorTabState,
 } from "@/modules/sql-editor/store/tab";
 import type { SQLEditorTab } from "@/types/sqlEditor/tab";
+import { canCreateSavedQueryInProject } from "@/utils";
 import { TabContextMenu, type TabContextMenuHandle } from "./TabContextMenu";
 import { TabItem } from "./TabItem/TabItem";
 
@@ -55,12 +57,13 @@ type PendingClose = {
 /**
  * Replaces frontend/src/views/sql-editor/TabList/TabList.vue.
  * Horizontal tab bar at the top of the SQL editor. Drag-reorder via
- * @dnd-kit, overflow-x scroll, "+" button to add a new worksheet, and
+ * @dnd-kit, overflow-x scroll, "+" button to add a new saved query, and
  * right-click context menu delegated to TabContextMenu.
  */
 export function TabList() {
   const { t } = useTranslation();
-  const createWorksheet = useSQLEditorStore((s) => s.createWorksheet);
+  const createSavedQuery = useSQLEditorStore((s) => s.createSavedQuery);
+  const project = useSQLEditorEditorState((s) => s.project);
 
   // Zustand's selector subscribes to in-place tab mutations because
   // `updateTab` reassigns / triggers an immer produce on `tabsById`,
@@ -142,7 +145,7 @@ export function TabList() {
   const removeTab = useCallback(
     async (tab: SQLEditorTab, focusWhenConfirm = false) => {
       const tabsState = getSQLEditorTabsState();
-      if (tab.mode === "WORKSHEET" && tab.status !== "CLEAN") {
+      if (tab.mode === "SAVED_QUERY" && tab.status !== "CLEAN") {
         if (focusWhenConfirm) {
           tabsState.setCurrentTabId(tab.id);
         }
@@ -160,7 +163,14 @@ export function TabList() {
     if (loading) return;
     setLoading(true);
     try {
-      await createWorksheet({});
+      // A new tab is normally backed by a saved query straight away. Without
+      // the create permission that request would fail, so open a local draft
+      // instead -- the editor keeps working, nothing is persisted.
+      if (!canCreateSavedQueryInProject(project)) {
+        getSQLEditorTabsState().addTab();
+      } else {
+        await createSavedQuery({});
+      }
       requestAnimationFrame(() => {
         const el = scrollRef.current;
         if (el) el.scrollTo(el.scrollWidth, 0);
@@ -202,16 +212,7 @@ export function TabList() {
     const [moved] = next.splice(oldIndex, 1);
     next.splice(newIndex, 0, moved);
     // Rewrite the persisted tab order without touching individual tabs.
-    getSQLEditorTabsState().setOpenTabListOrder(
-      next.map((tab) => ({
-        id: tab.id,
-        worksheet: tab.worksheet,
-        mode: tab.mode,
-        batchQueryContext: tab.batchQueryContext,
-        treeState: tab.treeState,
-        viewState: tab.viewState,
-      }))
-    );
+    getSQLEditorTabsState().setOpenTabListOrder(next.map((tab) => tab.id));
   };
 
   // Listen for close-tab events from the context menu (batch actions).
@@ -302,7 +303,7 @@ export function TabList() {
                   type="button"
                   className={cn(
                     "bg-control-bg/20 hover:bg-accent/10 py-1 px-1.5",
-                    "border-t border-x rounded-t hover:border-accent disabled:opacity-50"
+                    "border-t border-x rounded-t-sm hover:border-accent disabled:opacity-50"
                   )}
                   disabled={loading}
                   onClick={handleAddTab}
@@ -321,7 +322,7 @@ export function TabList() {
       <AlertDialog
         open={pendingClose !== null}
         // Vue's confirm dialog used `closeOnEsc: false`, `maskClosable: false`,
-        // `closable: false` — the user MUST click Cancel or "Close sheet".
+        // `closable: false` — the user MUST click Cancel or "Close tab".
         // Cancel Base UI's close when the reason is Esc / outside-click so
         // the dialog stays open and forces an explicit choice.
         onOpenChange={(

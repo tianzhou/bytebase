@@ -10,14 +10,14 @@ import { IdentityProviderType } from "@/types/proto-es/v1/idp_service_pb";
 
 const mocks = vi.hoisted(() => ({
   routerPush: vi.fn(),
+  routerReplace: vi.fn(),
   currentRoute: {
     value: { query: {} as Record<string, string | undefined> },
   },
   pushNotification: vi.fn(),
   openWindowForSSO: vi.fn(),
   actuatorStore: null as unknown,
-  identityProviderList: [] as unknown[],
-  listIdentityProviders: vi.fn(),
+  identityProviders: [] as unknown[],
   authStore: null as unknown,
 }));
 
@@ -25,6 +25,8 @@ vi.mock("@/app/router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/app/router")>()),
   router: {
     push: mocks.routerPush,
+    replace: mocks.routerReplace,
+    resolve: (to: unknown) => ({ href: String(to), fullPath: String(to) }),
     currentRoute: mocks.currentRoute,
   },
 }));
@@ -35,12 +37,18 @@ vi.mock("@/stores", () => ({
 }));
 
 vi.mock("@/stores/app", () => {
-  const getState = () => ({
-    ...(mocks.actuatorStore as Record<string, unknown>),
-    identityProviderList: () => mocks.identityProviderList,
-    listIdentityProviders: mocks.listIdentityProviders,
-    login: (mocks.authStore as { login: unknown }).login,
-  });
+  const getState = () => {
+    const store = mocks.actuatorStore as Record<string, unknown>;
+    const info = store.authenticationInfo as Record<string, unknown> | undefined;
+    return {
+      ...store,
+      // The login page reads its providers off the authentication info.
+      authenticationInfo: info
+        ? { ...info, identityProviders: mocks.identityProviders }
+        : info,
+      login: (mocks.authStore as { login: unknown }).login,
+    };
+  };
   return {
     useAppStore: Object.assign(
       (selector?: (state: ReturnType<typeof getState>) => unknown) =>
@@ -107,31 +115,23 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.currentRoute.value.query = {};
   mocks.actuatorStore = {
-    serverInfo: {
+    authenticationInfo: {
+      workspace: "workspaces/default",
       restriction: {
         disallowPasswordSignin: true,
         allowEmailCodeSignin: false,
         disallowSignup: false,
       },
     },
-    isSaaSMode: () => false,
-    activeUserCount: () => 1,
-    fetchServerInfo: vi.fn(async () => ({})),
+    fetchAuthenticationInfo: vi.fn(async () => ({})),
   };
-  mocks.identityProviderList = [
+  mocks.identityProviders = [
     {
       name: "idps/corp-ldap",
       title: "Corp LDAP",
       type: IdentityProviderType.LDAP,
     },
   ];
-  mocks.listIdentityProviders.mockResolvedValue([
-    {
-      name: "idps/corp-ldap",
-      title: "Corp LDAP",
-      type: IdentityProviderType.LDAP,
-    },
-  ]);
   mocks.authStore = {
     login: vi.fn(async () => {}),
   };
@@ -139,6 +139,56 @@ beforeEach(async () => {
 });
 
 describe("SigninPage", () => {
+  test("redirects to signup when initial admin setup is required", async () => {
+    mocks.actuatorStore = {
+      authenticationInfo: {
+        workspace: "",
+        restriction: {
+          disallowPasswordSignin: false,
+          allowEmailCodeSignin: false,
+          disallowSignup: false,
+        },
+      },
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
+    };
+    mocks.identityProviders = [];
+
+    const { render, unmount } = renderIntoContainer(<SigninPage />);
+    render();
+    await flushPromises();
+
+    expect(mocks.routerReplace).toHaveBeenCalledWith({
+      name: "auth.signup",
+    });
+
+    unmount();
+  });
+
+  test("does not redirect to initial setup when signup is disallowed", async () => {
+    mocks.actuatorStore = {
+      authenticationInfo: {
+        workspace: "",
+        restriction: {
+          disallowPasswordSignin: false,
+          allowEmailCodeSignin: false,
+          disallowSignup: true,
+        },
+      },
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
+    };
+    mocks.identityProviders = [];
+
+    const { render, unmount } = renderIntoContainer(<SigninPage />);
+    render();
+    await flushPromises();
+
+    expect(mocks.routerReplace).not.toHaveBeenCalledWith({
+      name: "auth.signup",
+    });
+
+    unmount();
+  });
+
   test("renders a username text field for LDAP tabs", async () => {
     const { container, render, unmount } = renderIntoContainer(<SigninPage />);
     render();
@@ -166,46 +216,53 @@ describe("SigninPage", () => {
   });
 
   test("renders flat OAuth-first layout when email code is the only method", async () => {
-    // The real cloud config: the SaaS override sets disallowSignup=true
-    // (it gates the password Signup RPC only) — email-code login still
-    // creates accounts for unknown emails, so the page is a signup surface.
+    // Email-code can create an account, so its public surface always carries
+    // the terms even when the restriction conservatively disallows signup.
     mocks.actuatorStore = {
-      serverInfo: {
+      authenticationInfo: {
+        workspace: "",
         restriction: {
           disallowPasswordSignin: true,
           allowEmailCodeSignin: true,
           disallowSignup: true,
         },
       },
-      isSaaSMode: () => true,
-      activeUserCount: () => 1,
-      fetchServerInfo: vi.fn(async () => ({})),
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
     };
     const idps = [
       {
         name: "idps/github",
         title: "GitHub",
         type: IdentityProviderType.OAUTH2,
+        authorizationRequest: {
+          endpoint: "https://github.com/login/oauth/authorize",
+        },
       },
       {
         name: "idps/google",
         title: "Google",
         type: IdentityProviderType.OAUTH2,
+        authorizationRequest: {
+          endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+        },
       },
     ];
-    mocks.identityProviderList = idps;
-    mocks.listIdentityProviders.mockResolvedValue(idps);
+    mocks.identityProviders = idps;
 
     const { container, render, unmount } = renderIntoContainer(<SigninPage />);
     render();
     await flushPromises();
 
+    expect(mocks.routerReplace).not.toHaveBeenCalledWith({
+      name: "auth.signup",
+    });
+
     // Single method: no tab chrome at all.
     expect(container.querySelector('[role="tab"]')).toBeNull();
     expect(container.textContent).not.toContain("auth.sign-in.email-code-tab");
 
-    // Combined sign-in/sign-up copy and SaaS terms line.
-    expect(container.textContent).toContain("auth.sign-in.sign-in-or-create");
+    // The restriction owns the signup copy; terms do not require SaaS mode.
+    expect(container.textContent).toContain("auth.sign-in.sign-in-to-account");
     expect(container.textContent).toContain("auth.sign-in.tos");
 
     // OAuth buttons carry brand icons and "Continue with" copy.
@@ -247,19 +304,17 @@ describe("SigninPage", () => {
 
   test("renders localized tab labels when multiple methods exist", async () => {
     mocks.actuatorStore = {
-      serverInfo: {
+      authenticationInfo: {
+        workspace: "workspaces/default",
         restriction: {
           disallowPasswordSignin: false,
           allowEmailCodeSignin: true,
           disallowSignup: false,
         },
       },
-      isSaaSMode: () => false,
-      activeUserCount: () => 1,
-      fetchServerInfo: vi.fn(async () => ({})),
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
     };
-    mocks.identityProviderList = [];
-    mocks.listIdentityProviders.mockResolvedValue([]);
+    mocks.identityProviders = [];
 
     const { container, render, unmount } = renderIntoContainer(<SigninPage />);
     render();
@@ -274,22 +329,20 @@ describe("SigninPage", () => {
   });
 
   test("hides terms line and signup copy on a re-auth surface", async () => {
-    // SessionExpiredSurface passes allowSignup={false}: same SaaS config,
+    // SessionExpiredSurface passes allowSignup={false}: same email-code config,
     // but the user already has an account — no signup copy, no terms line.
     mocks.actuatorStore = {
-      serverInfo: {
+      authenticationInfo: {
+        workspace: "",
         restriction: {
           disallowPasswordSignin: true,
           allowEmailCodeSignin: true,
           disallowSignup: true,
         },
       },
-      isSaaSMode: () => true,
-      activeUserCount: () => 1,
-      fetchServerInfo: vi.fn(async () => ({})),
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
     };
-    mocks.identityProviderList = [];
-    mocks.listIdentityProviders.mockResolvedValue([]);
+    mocks.identityProviders = [];
 
     const { container, render, unmount } = renderIntoContainer(
       <SigninPage allowSignup={false} />
@@ -306,27 +359,25 @@ describe("SigninPage", () => {
     unmount();
   });
 
-  test("hides terms line and signup copy outside SaaS mode", async () => {
+  test("shows terms for email code without SaaS mode", async () => {
     mocks.actuatorStore = {
-      serverInfo: {
+      authenticationInfo: {
+        workspace: "workspaces/default",
         restriction: {
           disallowPasswordSignin: true,
           allowEmailCodeSignin: true,
           disallowSignup: true,
         },
       },
-      isSaaSMode: () => false,
-      activeUserCount: () => 1,
-      fetchServerInfo: vi.fn(async () => ({})),
+      fetchAuthenticationInfo: vi.fn(async () => ({})),
     };
-    mocks.identityProviderList = [];
-    mocks.listIdentityProviders.mockResolvedValue([]);
+    mocks.identityProviders = [];
 
     const { container, render, unmount } = renderIntoContainer(<SigninPage />);
     render();
     await flushPromises();
 
-    expect(container.textContent).not.toContain("auth.sign-in.tos");
+    expect(container.textContent).toContain("auth.sign-in.tos");
     expect(container.textContent).toContain("auth.sign-in.sign-in-to-account");
     expect(container.textContent).not.toContain(
       "auth.sign-in.sign-in-or-create"

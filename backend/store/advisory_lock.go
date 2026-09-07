@@ -26,6 +26,10 @@ const (
 	// AdvisoryLockKeyPlanIssueRollout serializes Plan review changes, linked
 	// Bytebase Issue creation, and Rollout creation for the same Plan.
 	AdvisoryLockKeyPlanIssueRollout AdvisoryLockKey = 1005
+	// AdvisoryLockKeyIamPolicy serializes compare-and-swap writes to one
+	// resource's IAM policy, including the first write, when there is no policy
+	// row to lock yet.
+	AdvisoryLockKeyIamPolicy AdvisoryLockKey = 1008
 )
 
 // AcquirePlanIssueRolloutAdvisoryLock serializes coordinated Plan, linked Issue,
@@ -52,12 +56,12 @@ func TryAdvisoryLock(ctx context.Context, db *sql.DB, key AdvisoryLockKey) (*Adv
 
 	var acquired bool
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", int64(key)).Scan(&acquired); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, false, err
 	}
 
 	if !acquired {
-		conn.Close()
+		_ = conn.Close()
 		return nil, false, nil
 	}
 
@@ -125,7 +129,7 @@ func AcquireAdvisoryLock(ctx context.Context, db *sql.DB, key AdvisoryLockKey) (
 
 	// pg_advisory_lock blocks until the lock is acquired
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", int64(key)); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 

@@ -10,7 +10,6 @@ import (
 	"github.com/labstack/echo/v5/middleware"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	connectcors "connectrpc.com/cors"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/common/log"
 	"github.com/bytebase/bytebase/backend/component/config"
+	"github.com/bytebase/bytebase/backend/component/productmetrics"
 	stripeplugin "github.com/bytebase/bytebase/backend/plugin/stripe"
 )
 
@@ -32,6 +32,7 @@ func configureEchoRouters(
 	oauth2Service *oauth2.Service,
 	mcpServer *mcp.Server,
 	stripeWebhookHandler *stripeapi.WebhookHandler,
+	productMetrics *productmetrics.ProductMetrics,
 	profile *config.Profile,
 ) {
 	e.Use(recoverMiddleware)
@@ -63,7 +64,7 @@ func configureEchoRouters(
 
 	registerPprof(e, &profile.RuntimeDebug)
 
-	registerMetricsRoute(e, profile)
+	registerMetricsRoute(e, profile, productMetrics)
 
 	e.GET("/healthz", func(c *echo.Context) error {
 		return c.String(http.StatusOK, "OK")
@@ -93,11 +94,7 @@ func configureEchoRouters(
 	embedFrontend(e)
 }
 
-func registerMetricsRoute(e *echo.Echo, profile *config.Profile) {
-	if profile.SaaS {
-		return
-	}
-
+func registerMetricsRoute(e *echo.Echo, profile *config.Profile, productMetrics *productmetrics.ProductMetrics) {
 	// Prometheus metrics - use custom registry to avoid duplicate registration in tests
 	registry := prometheus.NewRegistry()
 	e.Use(echoprometheus.NewMiddlewareWithConfig(echoprometheus.MiddlewareConfig{
@@ -121,13 +118,8 @@ func registerMetricsRoute(e *echo.Echo, profile *config.Profile) {
 	// Use promhttp directly: pass the local registry as the Registerer
 	// for self-instrumentation; pass the Gatherers fold as the gather
 	// source. Both observability surfaces preserved.
-	e.GET("/metrics", echo.WrapHandler(promhttp.InstrumentMetricHandler(
-		registry,
-		promhttp.HandlerFor(
-			prometheus.Gatherers{registry, prometheus.DefaultGatherer},
-			promhttp.HandlerOpts{},
-		),
-	)))
+	registry.MustRegister(productMetrics)
+	e.GET("/metrics", echo.WrapHandler(metricsAccessHandler(profile.MetricsRemoteAccess, newMetricsHandler(registry))))
 }
 
 func recoverMiddleware(next echo.HandlerFunc) echo.HandlerFunc {

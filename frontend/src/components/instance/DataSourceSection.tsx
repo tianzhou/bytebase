@@ -7,7 +7,6 @@ import { useAppStore } from "@/stores/app";
 import { DATASOURCE_READONLY_USER_NAME } from "@/types";
 import { Engine } from "@/types/proto-es/v1/common_pb";
 import { DataSourceType } from "@/types/proto-es/v1/instance_service_pb";
-import { hasWorkspacePermissionV2 } from "@/utils";
 import type { EditDataSource } from "./common";
 import { wrapEditDataSource } from "./common";
 import { DataSourceForm } from "./DataSourceForm";
@@ -36,9 +35,22 @@ export function DataSourceSection({
     editingDataSource,
     readonlyDataSourceList,
     hasReadOnlyDataSource,
+    hasPermission,
+    checkDataSource,
+    isEditing,
   } = ctx;
 
-  const allowUpdate = hasWorkspacePermissionV2("bb.instances.update");
+  // Only the open tab renders its own field errors, and any data source that
+  // fails the check disables Update from anywhere. Say which tab to open —
+  // while there is an edit to save, which is when those buttons are on screen.
+  const incompleteMarker = (ds: EditDataSource) =>
+    !isEditing || checkDataSource([ds]) ? null : (
+      <span className="ml-1 text-error" title={t("instance.open-data-source")}>
+        *<span className="sr-only"> {t("instance.open-data-source")}</span>
+      </span>
+    );
+
+  const allowUpdate = hasPermission("bb.instances.update");
 
   const handleCreateRODataSource = useCallback(() => {
     if (isCreating) return;
@@ -106,8 +118,15 @@ export function DataSourceSection({
     [setDataSourceEditState]
   );
 
+  // DynamoDB normally has a single admin data source, so the read-only
+  // tabs/tips are hidden — unless a read-only data source already exists
+  // (creatable via the API), which must stay reachable.
+  const showDataSourceTabs =
+    !isCreating &&
+    (basicInfo.engine !== Engine.DYNAMODB || hasReadOnlyDataSource);
+
   // Show RO tips when not creating and no RO data source
-  const showROTips = !isCreating && !hasReadOnlyDataSource;
+  const showROTips = showDataSourceTabs && !hasReadOnlyDataSource;
 
   return (
     <>
@@ -132,7 +151,7 @@ export function DataSourceSection({
 
       <div className="mt-2 gap-y-2 gap-x-4 border-none">
         {/* Data source tabs */}
-        {!isCreating && (
+        {showDataSourceTabs && (
           <div className="mb-4 flex items-center gap-x-2 border-b border-block-border">
             <button
               type="button"
@@ -144,6 +163,7 @@ export function DataSourceSection({
               onClick={() => handleTabChange(adminDataSource.id)}
             >
               {t("common.admin")}
+              {incompleteMarker(adminDataSource)}
             </button>
             {readonlyDataSourceList.map((ds) => (
               <div key={ds.id} className="flex items-center">
@@ -157,6 +177,7 @@ export function DataSourceSection({
                   onClick={() => handleTabChange(ds.id)}
                 >
                   {t("common.read-only")}
+                  {incompleteMarker(ds)}
                 </button>
                 {hasReadOnlyDataSource && (
                   <button

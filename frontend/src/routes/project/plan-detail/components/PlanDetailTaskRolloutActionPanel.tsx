@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { rolloutServiceClientConnect } from "@/api";
+import { listAllTaskRuns } from "@/api/taskRun";
 import { TaskStatusIcon } from "@/components/TaskStatusIcon";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,13 +23,11 @@ import { useCurrentUser } from "@/hooks/useAppState";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { projectNamePrefix } from "@/stores/modules/v1/common";
-import { Issue_Type } from "@/types/proto-es/v1/issue_service_pb";
 import type { Stage, Task } from "@/types/proto-es/v1/rollout_service_pb";
 import {
   BatchCancelTaskRunsRequestSchema,
   BatchRunTasksRequestSchema,
   BatchSkipTasksRequestSchema,
-  ListTaskRunsRequestSchema,
   Task_Type,
   TaskRun_Status,
 } from "@/types/proto-es/v1/rollout_service_pb";
@@ -101,24 +100,18 @@ export function PlanDetailTaskRolloutActionPanel({
     ) {
       return "DATABASE_CREATE";
     }
-    if (
-      allRolloutTasks.every((task) => task.type === Task_Type.DATABASE_EXPORT)
-    ) {
-      return "DATABASE_EXPORT";
-    }
     return "DATABASE_CHANGE";
   }, [allRolloutTasks]);
-  const isDatabaseCreateOrExport =
-    rolloutType === "DATABASE_CREATE" || rolloutType === "DATABASE_EXPORT";
+  const isDatabaseCreate = rolloutType === "DATABASE_CREATE";
   const baseTasks = useMemo(() => {
     if (target.tasks) {
       return target.tasks;
     }
-    if (isDatabaseCreateOrExport) {
+    if (isDatabaseCreate) {
       return allRolloutTasks;
     }
     return target.stage?.tasks ?? [];
-  }, [allRolloutTasks, isDatabaseCreateOrExport, target.stage, target.tasks]);
+  }, [allRolloutTasks, isDatabaseCreate, target.stage, target.tasks]);
   const eligibleTasks = useMemo(() => {
     if (action === "RUN" || action === "SKIP") {
       return baseTasks.filter((task) =>
@@ -141,7 +134,7 @@ export function PlanDetailTaskRolloutActionPanel({
       );
     });
   }, [eligibleTasks, page.plan.specs]);
-  const showStageInfo = !isDatabaseCreateOrExport;
+  const showStageInfo = !isDatabaseCreate;
   const showTaskInfo = rolloutType !== "DATABASE_CREATE";
   const taskCountSuffix = useMemo(() => {
     if (
@@ -219,11 +212,7 @@ export function PlanDetailTaskRolloutActionPanel({
       errors.push(t("common.no-data"));
     }
     if (!canRun) {
-      errors.push(
-        page.issue?.type === Issue_Type.DATABASE_EXPORT
-          ? t("task.data-export-creator-only")
-          : t("task.no-permission")
-      );
+      errors.push(t("task.no-permission"));
     }
     if (
       action === "RUN" &&
@@ -530,12 +519,10 @@ async function cancelTasks({
   const cancelableRuns = new Map<string, string[]>();
   for (const [stageId, stageTasks] of tasksByStage) {
     const taskNames = new Set(stageTasks.map((task) => task.name));
-    const response = await rolloutServiceClientConnect.listTaskRuns(
-      create(ListTaskRunsRequestSchema, {
-        parent: `${rolloutName}/stages/${stageId}/tasks/-`,
-      })
+    const taskRuns = await listAllTaskRuns(
+      `${rolloutName}/stages/${stageId}/tasks/-`
     );
-    const runs = response.taskRuns
+    const runs = taskRuns
       .filter((run) => {
         const taskName = run.name.split("/taskRuns/")[0];
         return (

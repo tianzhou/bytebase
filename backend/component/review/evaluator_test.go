@@ -2,19 +2,24 @@ package review
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
+
+	"github.com/bytebase/bytebase/backend/common/testcontainer"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/type/expr"
 
 	"github.com/bytebase/bytebase/backend/common"
-	"github.com/bytebase/bytebase/backend/common/testcontainer"
 	"github.com/bytebase/bytebase/backend/component/bus"
 	"github.com/bytebase/bytebase/backend/enterprise"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
-	"github.com/bytebase/bytebase/backend/migrator"
+
+	// Registers the BigQuery parser handlers the same way backend/server
+	// ultimate.go does for the server binary; statementTypesFromParser resolves
+	// through that registry.
+	_ "github.com/bytebase/bytebase/backend/plugin/parser/bigquery"
 	"github.com/bytebase/bytebase/backend/runner/plancheck"
 	"github.com/bytebase/bytebase/backend/store"
 )
@@ -662,29 +667,229 @@ func TestProcessIssueSkipsDraft(t *testing.T) {
 	require.Empty(t, b.RolloutCreationChan)
 }
 
+func TestApplyApprovalTemplateResolvesProjectInstanceOutsideRequestContext(t *testing.T) {
+	ctx := context.Background()
+	const workspaceID = "workspace-a"
+	s := setupApprovalRunnerStoreInWorkspace(ctx, t, workspaceID)
+
+	environment := "prod"
+	projectID := "project-a"
+	_, err := s.CreateInstance(ctx, &store.InstanceMessage{
+		ResourceID:    "prod",
+		Workspace:     workspaceID,
+		ProjectID:     &projectID,
+		EnvironmentID: &environment,
+		Metadata: &storepb.Instance{
+			Engine:      storepb.Engine_POSTGRES,
+			DataSources: []*storepb.DataSource{{Id: "admin", Type: storepb.DataSourceType_ADMIN}},
+		},
+	})
+	require.NoError(t, err)
+	_, err = s.UpsertDatabase(ctx, &store.DatabaseMessage{
+		ProjectID:    projectID,
+		InstanceID:   "prod",
+		DatabaseName: "app",
+		Metadata:     &storepb.DatabaseMetadata{Labels: map[string]string{}},
+	})
+	require.NoError(t, err)
+
+	plan, err := s.CreatePlan(ctx, &store.PlanMessage{
+		ProjectID: projectID,
+		Name:      "approval plan",
+		Config: &storepb.PlanConfig{
+			ApprovalInputVersion: 2,
+			Specs: []*storepb.PlanConfig_Spec{{
+				Id: "change",
+				Config: &storepb.PlanConfig_Spec_ChangeDatabaseConfig{
+					ChangeDatabaseConfig: &storepb.PlanConfig_ChangeDatabaseConfig{
+						Targets: []string{"projects/project-a/instances/prod/databases/app"},
+					},
+				},
+			}},
+		},
+	}, "creator@example.com")
+	require.NoError(t, err)
+	issue, err := s.CreateIssue(ctx, &store.IssueMessage{
+		ProjectID:    projectID,
+		CreatorEmail: "creator@example.com",
+		Title:        "approval issue",
+		Type:         storepb.Issue_DATABASE_CHANGE,
+		Payload:      &storepb.Issue{},
+		PlanUID:      &plan.UID,
+	})
+	require.NoError(t, err)
+	created, err := s.CreatePlanCheckRun(ctx, &store.PlanCheckRunMessage{
+		ProjectID: projectID,
+		PlanUID:   plan.UID,
+		Result:    &storepb.PlanCheckRunResult{ApprovalInputVersion: 2},
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+	planCheckRun, err := s.GetPlanCheckRun(ctx, projectID, plan.UID)
+	require.NoError(t, err)
+	require.NoError(t, s.UpdatePlanCheckRun(ctx, projectID, store.PlanCheckRunStatusDone, &storepb.PlanCheckRunResult{
+		ApprovalInputVersion: 2,
+	}, planCheckRun.UID))
+
+	evaluator := &ApprovalEvaluator{workflow: NewWorkflow(s)}
+	evaluator.evaluateApproval = func(ctx context.Context, issue *store.IssueMessage, _ *store.ProjectMessage, _ *storepb.WorkspaceApprovalSetting) error {
+		_, approvalInputVersion, done, err := buildCELVariablesForIssue(ctx, s, issue)
+		if err != nil {
+			return err
+		}
+		if !done {
+			return errors.New("approval variables are not ready")
+		}
+		issue.Payload.Approval = &storepb.IssuePayloadApproval{
+			ApprovalFindingDone:  true,
+			ApprovalInputVersion: approvalInputVersion,
+		}
+		return nil
+	}
+	result, err := evaluator.ApplyApprovalTemplate(ctx, ApplyApprovalTemplateInput{
+		Workspace: workspaceID,
+		ProjectID: projectID,
+		IssueUID:  issue.UID,
+	})
+	require.NoError(t, err)
+	require.True(t, result.Applied)
+	require.True(t, result.Issue.Payload.GetApproval().GetApprovalFindingDone())
+}
+
+func TestBuildCELVariablesForAccessGrantResolvesProjectInstanceWithoutCache(t *testing.T) {
+	ctx := context.Background()
+	const workspaceID = "workspace-a"
+	s := setupApprovalRunnerStoreInWorkspace(ctx, t, workspaceID)
+	projectID := "project-a"
+	setupApprovalProjectInstanceDatabase(ctx, t, s)
+
+	accessGrant, err := s.CreateAccessGrant(ctx, &store.AccessGrantMessage{
+		ProjectID: projectID,
+		Creator:   "creator@example.com",
+		Status:    storepb.AccessGrant_PENDING,
+		Payload: &storepb.AccessGrantPayload{
+			Targets: []string{"projects/project-a/instances/prod/databases/app"},
+		},
+	})
+	require.NoError(t, err)
+
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, workspaceID)
+	variables, done, err := buildCELVariablesForAccessGrant(ctx, s, &store.IssueMessage{
+		ProjectID: projectID,
+		Payload:   &storepb.Issue{AccessGrantId: accessGrant.ID},
+	})
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Len(t, variables, 1)
+	require.Equal(t, "prod", variables[0][common.CELAttributeResourceInstanceID])
+	require.Equal(t, "app", variables[0][common.CELAttributeResourceDatabaseName])
+	require.Equal(t, storepb.Engine_POSTGRES.String(), variables[0][common.CELAttributeResourceDBEngine])
+	require.Equal(t, "prod", variables[0][common.CELAttributeResourceEnvironmentID])
+}
+
+func TestBuildCELVariablesForAccessGrantRejectsArchivedProjectInstanceWithoutCache(t *testing.T) {
+	ctx := context.Background()
+	const workspaceID = "workspace-a"
+	s := setupApprovalRunnerStoreInWorkspace(ctx, t, workspaceID)
+	projectID := "project-a"
+	setupApprovalProjectInstanceDatabase(ctx, t, s)
+
+	accessGrant, err := s.CreateAccessGrant(ctx, &store.AccessGrantMessage{
+		ProjectID: projectID,
+		Creator:   "creator@example.com",
+		Status:    storepb.AccessGrant_PENDING,
+		Payload: &storepb.AccessGrantPayload{
+			Targets: []string{"projects/project-a/instances/prod/databases/app"},
+		},
+	})
+	require.NoError(t, err)
+	deleted := true
+	instanceID := "prod"
+	_, err = s.UpdateInstance(ctx, &store.UpdateInstanceMessage{
+		Workspace:  workspaceID,
+		ResourceID: &instanceID,
+		Deleted:    &deleted,
+	})
+	require.NoError(t, err)
+
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, workspaceID)
+	_, _, err = buildCELVariablesForAccessGrant(ctx, s, &store.IssueMessage{
+		ProjectID: projectID,
+		Payload:   &storepb.Issue{AccessGrantId: accessGrant.ID},
+	})
+	require.ErrorContains(t, err, `instance "prod" has been deleted`)
+}
+
+func TestGetDatabasesForRoleGrantRejectsEveryNoncanonicalAlias(t *testing.T) {
+	ctx := context.Background()
+	const workspaceID = "workspace-a"
+	s := setupApprovalRunnerStoreInWorkspace(ctx, t, workspaceID)
+	projectID := "project-a"
+	setupApprovalProjectInstanceDatabase(ctx, t, s)
+
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, workspaceID)
+	_, err := getDatabasesForRoleGrant(ctx, s, projectID, []string{
+		"instances/prod/databases/app",
+		"projects/project-a/instances/prod/databases/app",
+	})
+	require.ErrorContains(t, err, `instance "prod" not found in requested scope`)
+}
+
+func TestGetDatabasesForRoleGrantRejectsNoncanonicalScopeForMissingDatabase(t *testing.T) {
+	ctx := context.Background()
+	const workspaceID = "workspace-a"
+	s := setupApprovalRunnerStoreInWorkspace(ctx, t, workspaceID)
+	projectID := "project-a"
+	setupApprovalProjectInstanceDatabase(ctx, t, s)
+
+	ctx = context.WithValue(ctx, common.WorkspaceIDContextKey, workspaceID)
+	_, err := getDatabasesForRoleGrant(ctx, s, projectID, []string{
+		"instances/prod/databases/missing",
+	})
+	require.ErrorContains(t, err, `instance "prod" not found in requested scope`)
+}
+
+func setupApprovalProjectInstanceDatabase(ctx context.Context, t *testing.T, s *store.Store) {
+	t.Helper()
+	const workspaceID = "workspace-a"
+	projectID := "project-a"
+	environment := "prod"
+	_, err := s.CreateInstance(ctx, &store.InstanceMessage{
+		ResourceID:    "prod",
+		Workspace:     workspaceID,
+		ProjectID:     &projectID,
+		EnvironmentID: &environment,
+		Metadata: &storepb.Instance{
+			Engine:      storepb.Engine_POSTGRES,
+			DataSources: []*storepb.DataSource{{Id: "admin", Type: storepb.DataSourceType_ADMIN}},
+		},
+	})
+	require.NoError(t, err)
+	_, err = s.UpsertDatabase(ctx, &store.DatabaseMessage{
+		ProjectID:    projectID,
+		InstanceID:   "prod",
+		DatabaseName: "app",
+		Metadata:     &storepb.DatabaseMetadata{Labels: map[string]string{}},
+	})
+	require.NoError(t, err)
+}
+
 func setupApprovalRunnerStore(ctx context.Context, t *testing.T) *store.Store {
+	return setupApprovalRunnerStoreInWorkspace(ctx, t, "default")
+}
+
+func setupApprovalRunnerStoreInWorkspace(ctx context.Context, t *testing.T, workspaceID string) *store.Store {
 	t.Helper()
 
-	container := testcontainer.GetTestPgContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	db, s, _ := testcontainer.NewMetadataDB(t)
 
-	db := container.GetDB()
-	require.NoError(t, migrator.MigrateSchema(ctx, db))
-
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO workspace (resource_id) VALUES ('default');
-		INSERT INTO principal (name, email, password_hash) VALUES ('creator', 'creator@example.com', 'unused');
-		INSERT INTO project (resource_id, workspace, name) VALUES ('project-a', 'default', 'Project A');
-	`)
+	_, err := db.ExecContext(ctx, "INSERT INTO workspace (resource_id) VALUES ($1)", workspaceID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, "INSERT INTO principal (name, email, password_hash) VALUES ('creator', 'creator@example.com', 'unused')")
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, "INSERT INTO project (resource_id, workspace, name) VALUES ('project-a', $1, 'Project A')", workspaceID)
 	require.NoError(t, err)
 
-	pgURL := fmt.Sprintf(
-		"host=%s port=%s user=postgres password=root-password database=postgres",
-		container.GetHost(), container.GetPort(),
-	)
-	s, err := store.New(ctx, pgURL, false)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, s.Close()) })
 	return s
 }
 
@@ -719,4 +924,104 @@ func setupApprovalDatabaseGroupFixture(ctx context.Context, t *testing.T, s *sto
 	allDatabases, err := s.ListDatabases(ctx, &store.FindDatabaseMessage{ProjectID: &projectID})
 	require.NoError(t, err)
 	return allDatabases
+}
+
+// TestApprovalTemplateMatchesOnEngineWithoutStatementReport is the BYT-10131
+// regression. BigQuery is outside common.EngineSupportStatementReport, so no
+// SQL summary report exists and statement.sql_type used to be absent from the
+// activation; cel-go resolved it to an unknown and the rule was dropped as a
+// non-match, so the issue reported "No approval required". Both polarities are
+// covered: before the fix the DDL rule wrongly skipped approval, and the DML
+// rule would still skip it under a plain "UNKNOWN" default.
+func TestApprovalTemplateMatchesOnEngineWithoutStatementReport(t *testing.T) {
+	const ddlRule = `!(statement.sql_type in ["INSERT", "UPDATE", "DELETE"]) && resource.environment_id == "prod"`
+	const dmlRule = `statement.sql_type in ["INSERT", "UPDATE", "DELETE"] && resource.environment_id == "prod"`
+	const mergeRule = `statement.sql_type in ["INSERT", "UPDATE", "DELETE", "MERGE"] && resource.environment_id == "prod"`
+	const ddlRuleWithMerge = `!(statement.sql_type in ["INSERT", "UPDATE", "DELETE", "MERGE"]) && resource.environment_id == "prod"`
+	const mergeStatement = "MERGE INTO `users` t USING `staging` s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.name = s.name;"
+
+	tests := []struct {
+		name       string
+		expression string
+		statement  string
+		wantMatch  bool
+	}{
+		{"ddl rule matches ALTER TABLE", ddlRule, "ALTER TABLE `users` ADD COLUMN status STRING;", true},
+		{"ddl rule skips INSERT", ddlRule, "INSERT INTO `users` (id) VALUES (1);", false},
+		{"dml rule matches INSERT", dmlRule, "INSERT INTO `users` (id) VALUES (1);", true},
+		{"dml rule skips ALTER TABLE", dmlRule, "ALTER TABLE `users` ADD COLUMN status STRING;", false},
+		// MERGE writes rows, so a DML rule that names it must fire and the
+		// DDL rule must not. Only the googlesql engines emit MERGE today.
+		{"dml rule matches MERGE when named", mergeRule, mergeStatement, true},
+		{"ddl rule skips MERGE when named", ddlRuleWithMerge, mergeStatement, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := require.New(t)
+			statementTypes := statementTypesFromParser(storepb.Engine_BIGQUERY, tt.statement)
+			a.NotEmpty(statementTypes, "BigQuery must classify the statement without a summary report")
+
+			celVars := expandCELVars(map[string]any{
+				common.CELAttributeResourceEnvironmentID: "prod",
+				common.CELAttributeResourceProjectID:     "project",
+				common.CELAttributeResourceDBEngine:      storepb.Engine_BIGQUERY.String(),
+				common.CELAttributeStatementText:         tt.statement,
+			}, statementTypes, nil)
+
+			template, err := getApprovalTemplate(&storepb.WorkspaceApprovalSetting{
+				Rules: []*storepb.WorkspaceApprovalSetting_Rule{
+					{
+						Source:    storepb.WorkspaceApprovalSetting_Rule_CHANGE_DATABASE,
+						Condition: &expr.Expr{Expression: tt.expression},
+						Template:  &storepb.ApprovalTemplate{Title: "DDL Prod"},
+					},
+				},
+			}, storepb.WorkspaceApprovalSetting_Rule_CHANGE_DATABASE, celVars)
+			a.NoError(err)
+			if tt.wantMatch {
+				a.NotNil(template)
+				a.Equal("DDL Prod", template.Title)
+			} else {
+				a.Nil(template)
+			}
+		})
+	}
+}
+
+// A sheet of N statements yields N type entries, all identical when the sheet
+// repeats one statement. Every rule is evaluated against every activation, so
+// without deduplication a large sheet costs tens of thousands of pointless
+// evaluations per target, multiplied again by a database group's target count.
+func TestExpandCELVarsDeduplicatesActivations(t *testing.T) {
+	a := require.New(t)
+	base := map[string]any{common.CELAttributeResourceProjectID: "project"}
+
+	repeated := make([]storepb.StatementType, 10000)
+	for i := range repeated {
+		repeated[i] = storepb.StatementType_INSERT
+	}
+	a.Len(expandCELVars(base, repeated, nil), 1)
+
+	// Distinct types survive, in first-seen order.
+	mixed := []storepb.StatementType{
+		storepb.StatementType_INSERT,
+		storepb.StatementType_ALTER_TABLE,
+		storepb.StatementType_INSERT,
+	}
+	got := expandCELVars(base, mixed, nil)
+	a.Len(got, 2)
+	a.Equal("INSERT", got[0][common.CELAttributeStatementSQLType])
+	a.Equal("ALTER_TABLE", got[1][common.CELAttributeStatementSQLType])
+
+	// Deduplication is over the (type, table) pair, not the type alone.
+	pairs := expandCELVars(base, mixed, []string{"users", "users", "orders"})
+	a.Len(pairs, 4)
+
+	// UNSPECIFIED collapses like any other value.
+	unspecified := []storepb.StatementType{
+		storepb.StatementType_STATEMENT_TYPE_UNSPECIFIED,
+		storepb.StatementType_STATEMENT_TYPE_UNSPECIFIED,
+	}
+	a.Len(expandCELVars(base, unspecified, nil), 1)
 }

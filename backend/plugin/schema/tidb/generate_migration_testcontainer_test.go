@@ -30,8 +30,7 @@ func TestGenerateMigrationWithTestcontainer(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	container := testcontainer.GetTestTiDBContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedTiDBContainer(t)
 
 	// Test cases with various schema changes
 	testCases := []struct {

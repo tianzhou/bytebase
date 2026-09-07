@@ -1,8 +1,8 @@
 import type { ReactElement } from "react";
-import { act } from "react";
+import { act, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { WorksheetFolderNode } from "@/modules/sql-editor/model/Sheet";
+import type { SavedQueryFolderNode } from "@/modules/sql-editor/model/Sheet";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -18,31 +18,42 @@ globalThis.ResizeObserver = class ResizeObserver {
 // ---- hoisted mocks ----------------------------------------------------------
 
 const mocks = vi.hoisted(() => ({
+  canSearchSavedQueriesInProject: vi.fn(() => true),
   useTranslation: vi.fn(() => ({ t: (key: string) => key })),
   appStore: {
-    getWorksheetByName: vi.fn(),
-    deleteWorksheetByName: vi.fn(),
-    patchWorksheet: vi.fn(),
-    upsertWorksheetOrganizer: vi.fn(),
+    getSavedQueryByName: vi.fn(),
+    deleteSavedQueryByName: vi.fn(),
+    patchSavedQuery: vi.fn(),
+    updateSavedQueryStar: vi.fn(),
   } as {
-    getWorksheetByName: ReturnType<typeof vi.fn>;
-    deleteWorksheetByName: ReturnType<typeof vi.fn>;
-    patchWorksheet: ReturnType<typeof vi.fn>;
-    upsertWorksheetOrganizer: ReturnType<typeof vi.fn>;
+    getSavedQueryByName: ReturnType<typeof vi.fn>;
+    deleteSavedQueryByName: ReturnType<typeof vi.fn>;
+    patchSavedQuery: ReturnType<typeof vi.fn>;
+    updateSavedQueryStar: ReturnType<typeof vi.fn>;
   },
   getSQLEditorTabsState: vi.fn(),
   project: "projects/proj1",
-  // The new zustand store mock — only `createWorksheet` is used by SheetTree.
-  createWorksheet: vi.fn().mockResolvedValue({}),
+  // The new zustand store mock — only `createSavedQuery` is used by SheetTree.
+  createSavedQuery: vi.fn().mockResolvedValue({}),
   useSheetContext: vi.fn(),
   useSheetContextByView: vi.fn(),
   useDropdown: vi.fn(),
-  openWorksheetByName: vi.fn(),
+  openSavedQueryByName: vi.fn(),
   pushNotification: vi.fn(),
+  treeProps: {} as {
+    disableDrag?: unknown;
+    disableDrop?: unknown;
+    onMove?: unknown;
+    renderCursor?: unknown;
+  },
 }));
 
 vi.mock("react-i18next", () => ({
   useTranslation: mocks.useTranslation,
+}));
+
+vi.mock("@/utils", () => ({
+  canSearchSavedQueriesInProject: mocks.canSearchSavedQueriesInProject,
 }));
 
 vi.mock("@/stores", () => ({
@@ -64,20 +75,20 @@ vi.mock("@/modules/sql-editor/store/editor", () => ({
 
 vi.mock("@/modules/sql-editor/store", () => ({
   useSQLEditorStore: (
-    selector: (s: { createWorksheet: typeof mocks.createWorksheet }) => unknown
-  ) => selector({ createWorksheet: mocks.createWorksheet }),
+    selector: (s: { createSavedQuery: typeof mocks.createSavedQuery }) => unknown
+  ) => selector({ createSavedQuery: mocks.createSavedQuery }),
 }));
 
 vi.mock("@/modules/sql-editor/model/Sheet", () => ({
   useSheetContext: mocks.useSheetContext,
   useSheetContextByView: mocks.useSheetContextByView,
-  openWorksheetByName: mocks.openWorksheetByName,
+  openSavedQueryByName: mocks.openSavedQueryByName,
   revealNodes: (
-    node: WorksheetFolderNode,
-    cb: (n: WorksheetFolderNode) => unknown
+    node: SavedQueryFolderNode,
+    cb: (n: SavedQueryFolderNode) => unknown
   ) => {
     const results: unknown[] = [];
-    const walk = (n: WorksheetFolderNode) => {
+    const walk = (n: SavedQueryFolderNode) => {
       const r = cb(n);
       if (r !== undefined) results.push(r);
       for (const c of n.children) walk(c);
@@ -85,13 +96,13 @@ vi.mock("@/modules/sql-editor/model/Sheet", () => ({
     walk(node);
     return results;
   },
-  revealWorksheets: (
-    node: WorksheetFolderNode,
-    cb: (n: WorksheetFolderNode) => unknown
+  revealSavedQueries: (
+    node: SavedQueryFolderNode,
+    cb: (n: SavedQueryFolderNode) => unknown
   ) => {
     const results: unknown[] = [];
-    const walk = (n: WorksheetFolderNode) => {
-      if (n.worksheet) {
+    const walk = (n: SavedQueryFolderNode) => {
+      if (n.savedQuery) {
         const r = cb(n);
         if (r !== undefined) results.push(r);
       }
@@ -113,7 +124,7 @@ vi.mock("./filterNode", () => ({
 // Mock Tree primitive — renders all nodes (recursively) via renderNode
 type MockTreeItem = {
   id: string;
-  data: WorksheetFolderNode;
+  data: SavedQueryFolderNode;
   children?: MockTreeItem[];
 };
 type MockRenderArgs = {
@@ -122,6 +133,7 @@ type MockRenderArgs = {
     data: MockTreeItem;
     isSelected: boolean;
     isOpen?: boolean;
+    willReceiveDrop?: boolean;
   };
   style: React.CSSProperties;
 };
@@ -130,10 +142,21 @@ vi.mock("@/components/ui/tree", () => ({
   Tree: ({
     data,
     renderNode,
+    className,
+    disableDrag,
+    disableDrop,
+    onMove,
+    renderCursor,
   }: {
     data: MockTreeItem[];
     renderNode: (args: MockRenderArgs) => React.ReactNode;
+    className?: string;
+    disableDrag?: unknown;
+    disableDrop?: unknown;
+    onMove?: unknown;
+    renderCursor?: unknown;
   }) => {
+    mocks.treeProps = { disableDrag, disableDrop, onMove, renderCursor };
     const renderAll = (items: MockTreeItem[]): React.ReactNode[] =>
       items.flatMap((item) => [
         renderNode({
@@ -142,7 +165,11 @@ vi.mock("@/components/ui/tree", () => ({
         }),
         ...(item.children ? renderAll(item.children) : []),
       ]);
-    return <div data-testid="tree">{renderAll(data)}</div>;
+    return (
+      <div data-testid="tree" className={className}>
+        {renderAll(data)}
+      </div>
+    );
   },
 }));
 
@@ -211,11 +238,20 @@ vi.mock("@/components/ui/button", () => ({
   Button: ({
     children,
     onClick,
+    disabled,
+    className,
   }: {
     children: React.ReactNode;
     onClick?: () => void;
+    disabled?: boolean;
+    className?: string;
   }) => (
-    <button data-testid="button" onClick={onClick}>
+    <button
+      data-testid="button"
+      className={className}
+      disabled={disabled}
+      onClick={onClick}
+    >
       {children}
     </button>
   ),
@@ -223,29 +259,29 @@ vi.mock("@/components/ui/button", () => ({
 
 // Mock Input
 vi.mock("@/components/ui/input", () => ({
-  Input: ({
-    value,
-    onChange,
-    onBlur,
-    onKeyDown,
-    id,
-  }: {
-    value?: string;
-    onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
-    onBlur?: () => void;
-    onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-    id?: string;
-  }) => (
+  Input: forwardRef<
+    HTMLInputElement,
+    {
+      value?: string;
+      onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+      onBlur?: () => void;
+      onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+      id?: string;
+      className?: string;
+    }
+  >(({ value, onChange, onBlur, onKeyDown, id, className }, ref) => (
     <input
+      ref={ref}
       data-testid="rename-input"
       id={id}
+      className={className}
       value={value ?? ""}
       onChange={onChange}
       onBlur={onBlur}
       onKeyDown={onKeyDown}
       readOnly={!onChange}
     />
-  ),
+  )),
 }));
 
 // Mock HighlightLabelText
@@ -300,20 +336,20 @@ vi.mock("./TreeNodeSuffix", () => ({
     onToggleStar,
     node,
   }: {
-    node: WorksheetFolderNode;
+    node: SavedQueryFolderNode;
     view: string;
-    onToggleStar?: (args: { worksheet: string; starred: boolean }) => void;
-    onSharePanelShow?: (e: React.MouseEvent, node: WorksheetFolderNode) => void;
+    onToggleStar?: (args: { savedQuery: string; starred: boolean }) => void;
+    onSharePanelShow?: (e: React.MouseEvent, node: SavedQueryFolderNode) => void;
     onContextMenuShow?: (
       e: React.MouseEvent,
-      node: WorksheetFolderNode
+      node: SavedQueryFolderNode
     ) => void;
   }) => (
     <div
       data-testid="tree-node-suffix"
       onClick={() => {
-        if (node.worksheet) {
-          onToggleStar?.({ worksheet: node.worksheet.name, starred: true });
+        if (node.savedQuery) {
+          onToggleStar?.({ savedQuery: node.savedQuery.name, starred: true });
         }
       }}
     />
@@ -324,9 +360,9 @@ vi.mock("./TreeNodeSuffix", () => ({
 
 const makeFolderNode = (
   key: string,
-  children: WorksheetFolderNode[] = [],
+  children: SavedQueryFolderNode[] = [],
   editable = false
-): WorksheetFolderNode => ({
+): SavedQueryFolderNode => ({
   key,
   label: key.split("/").slice(-1)[0],
   editable,
@@ -334,21 +370,30 @@ const makeFolderNode = (
   empty: children.length === 0,
 });
 
-const makeWorksheetNode = (
+const makeSavedQueryNode = (
   key: string,
-  name = "worksheets/ws1"
-): WorksheetFolderNode => ({
+  name = "savedQueries/ws1"
+): SavedQueryFolderNode => ({
   key,
   label: key.split("/").slice(-1)[0],
   editable: false,
   children: [],
   empty: true,
-  worksheet: {
+  savedQuery: {
     name,
     title: "My Query",
     folders: [],
-    type: "worksheet",
+    type: "savedQuery",
   },
+});
+
+const makeLoadMoreNode = (key: string): SavedQueryFolderNode => ({
+  key,
+  label: "common.load-more",
+  editable: false,
+  isLeaf: true,
+  loadMore: true,
+  children: [],
 });
 
 // The migrated `useSheetContext()` exposes `expandedKeys` / `selectedKeys`
@@ -368,8 +413,8 @@ const setupDefaultMocks = () => {
   mocks.useTranslation.mockReturnValue({ t: (key: string) => key });
 
   const rootNode = makeFolderNode("/my", [
-    makeFolderNode("/my/folder1", [makeWorksheetNode("/my/folder1/ws1")]),
-    makeWorksheetNode("/my/ws2"),
+    makeFolderNode("/my/folder1", [makeSavedQueryNode("/my/folder1/ws1")]),
+    makeSavedQueryNode("/my/ws2"),
   ]);
 
   const expandedKeys = makeExpandedKeysRef(["/my"]);
@@ -378,6 +423,7 @@ const setupDefaultMocks = () => {
 
   const folderContext = {
     rootPath: "/my",
+    listSubFolders: vi.fn((_parent: string): string[] => []),
     isSubFolder: vi.fn(() => false),
     moveFolder: vi.fn(),
     removeFolder: vi.fn(),
@@ -396,7 +442,8 @@ const setupDefaultMocks = () => {
     get editingNode() {
       return editingNode.value;
     },
-    batchUpdateWorksheetFolders: vi.fn(),
+    batchUpdateSavedQueryFolders: vi.fn(),
+    batchUpdateSavedQueryFolderPaths: vi.fn(),
     setExpandedKeys: vi.fn(
       (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
         expandedKeys.value =
@@ -414,13 +461,19 @@ const setupDefaultMocks = () => {
   const viewContext = {
     isInitialized: true,
     isLoading: false,
+    isFetchingNextPage: false,
+    hasMore: false,
+    hasMoreForFolder: vi.fn((_folderKey: string) => false),
     get sheetTree() {
       return viewContext._sheetTree.value;
     },
-    _sheetTree: { value: rootNode } as { value: WorksheetFolderNode },
+    _sheetTree: { value: rootNode } as { value: SavedQueryFolderNode },
     fetchSheetList: vi.fn(),
+    fetchNextPage: vi.fn(),
+    fetchSavedQueriesByFolder: vi.fn(),
+    rebuildTree: vi.fn(),
     folderContext,
-    getFoldersForWorksheet: vi.fn((path: string) => [path]),
+    getFoldersForSavedQuery: vi.fn((path: string) => [path]),
     events: {
       on: vi.fn(() => () => {}),
       emit: vi.fn(),
@@ -429,7 +482,7 @@ const setupDefaultMocks = () => {
 
   mocks.useSheetContext.mockReturnValue(sheetContext);
   mocks.useSheetContextByView.mockReturnValue(viewContext);
-  mocks.appStore.getWorksheetByName.mockImplementation((name: string) => ({
+  mocks.appStore.getSavedQueryByName.mockImplementation((name: string) => ({
     name,
     title: "My Query",
     folders: [],
@@ -437,26 +490,26 @@ const setupDefaultMocks = () => {
     starred: false,
     creator: "users/test@example.com",
   }));
-  mocks.appStore.deleteWorksheetByName.mockResolvedValue(undefined);
-  mocks.appStore.patchWorksheet.mockResolvedValue({});
-  mocks.appStore.upsertWorksheetOrganizer.mockResolvedValue(undefined);
+  mocks.appStore.deleteSavedQueryByName.mockResolvedValue(undefined);
+  mocks.appStore.patchSavedQuery.mockResolvedValue({});
+  mocks.appStore.updateSavedQueryStar.mockResolvedValue(undefined);
   mocks.getSQLEditorTabsState.mockReturnValue({
     tabsById: new Map(),
     closeTab: vi.fn(),
     updateTab: vi.fn(),
     setCurrentTabId: vi.fn(),
   });
-  mocks.createWorksheet.mockResolvedValue({});
+  mocks.createSavedQuery.mockResolvedValue({});
   mocks.useDropdown.mockReturnValue({
     currentNode: undefined,
     options: [],
-    worksheetEntity: undefined,
+    savedQueryEntity: undefined,
     showSharePanel: false,
     handleContextMenu: vi.fn(),
     handleSharePanelShow: vi.fn(),
     handleClickOutside: vi.fn(),
   });
-  mocks.openWorksheetByName.mockResolvedValue(undefined);
+  mocks.openSavedQueryByName.mockResolvedValue(undefined);
 
   return {
     rootNode,
@@ -468,6 +521,20 @@ const setupDefaultMocks = () => {
     viewContext,
   };
 };
+
+test("keeps the initialized tree visible while refetching", () => {
+  const { viewContext } = setupDefaultMocks();
+  viewContext.isLoading = true;
+
+  const { container, render, unmount } = renderIntoContainer(
+    <SheetTree view="my" />
+  );
+  render();
+
+  expect(container.textContent).toContain("folder1");
+  expect(container.textContent).toContain("ws2");
+  unmount();
+});
 
 const renderIntoContainer = (element: ReactElement) => {
   const container = document.createElement("div");
@@ -498,6 +565,7 @@ let SheetTree: typeof import("./SheetTree").SheetTree;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.canSearchSavedQueriesInProject.mockReturnValue(true);
   setupDefaultMocks();
   ({ SheetTree } = await import("./SheetTree"));
 });
@@ -510,6 +578,27 @@ afterEach(() => {
 // ---- tests ------------------------------------------------------------------
 
 describe("SheetTree", () => {
+  test("fetches on mount when the caller can discover saved queries", () => {
+    const ctx = setupDefaultMocks();
+    ctx.viewContext.isInitialized = false;
+    const { render, unmount } = renderIntoContainer(<SheetTree view="my" />);
+    render();
+    expect(ctx.viewContext.fetchSheetList).toHaveBeenCalled();
+    unmount();
+  });
+
+  test("does not fetch without discovery access", () => {
+    // A SQL role can grant query access without bb.savedQueries.search, and
+    // both the search and folder calls would come back denied on every mount.
+    mocks.canSearchSavedQueriesInProject.mockReturnValue(false);
+    const ctx = setupDefaultMocks();
+    ctx.viewContext.isInitialized = false;
+    const { render, unmount } = renderIntoContainer(<SheetTree view="my" />);
+    render();
+    expect(ctx.viewContext.fetchSheetList).not.toHaveBeenCalled();
+    unmount();
+  });
+
   test("1. Renders tree from store data", () => {
     const { container, render, unmount } = renderIntoContainer(
       <SheetTree
@@ -523,6 +612,9 @@ describe("SheetTree", () => {
     // Tree primitive is rendered
     const tree = document.body.querySelector("[data-testid='tree']");
     expect(tree).not.toBeNull();
+    expect(tree?.className).toContain("[&_[role=treeitem]]:!min-w-0");
+    expect(tree?.className).toContain("!overflow-y-visible");
+    expect(typeof mocks.treeProps.renderCursor).toBe("function");
 
     // HighlightLabelText nodes are rendered (root node + children)
     const labels = container.querySelectorAll(
@@ -533,18 +625,18 @@ describe("SheetTree", () => {
     unmount();
   });
 
-  test("2. Click worksheet → fires openWorksheetByName", () => {
+  test("2. Click saved query → fires openSavedQueryByName", () => {
     const defaultMocks = setupDefaultMocks();
-    // Root node is a folder with a worksheet child
-    const wsNode = makeWorksheetNode("/my/ws2");
+    // Root node is a folder with a saved query child
+    const wsNode = makeSavedQueryNode("/my/ws2");
     const rootNode = makeFolderNode("/my", [wsNode]);
     defaultMocks.viewContext._sheetTree.value = rootNode;
 
-    // Make useDropdown return the worksheet node as current
+    // Make useDropdown return the saved query node as current
     mocks.useDropdown.mockReturnValue({
       currentNode: undefined,
       options: [],
-      worksheetEntity: undefined,
+      savedQueryEntity: undefined,
       showSharePanel: false,
       handleContextMenu: vi.fn(),
       handleSharePanelShow: vi.fn(),
@@ -560,7 +652,7 @@ describe("SheetTree", () => {
     );
     render();
 
-    // Find tree row for the worksheet node — it has data-item-key
+    // Find tree row for the saved query node — it has data-item-key
     const row = container.querySelector(
       `[data-item-key="/my/ws2"]`
     ) as HTMLElement | null;
@@ -572,9 +664,9 @@ describe("SheetTree", () => {
       label?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(mocks.openWorksheetByName).toHaveBeenCalledWith(
+    expect(mocks.openSavedQueryByName).toHaveBeenCalledWith(
       expect.objectContaining({
-        worksheet: "worksheets/ws1",
+        savedQuery: "savedQueries/ws1",
         forceNewTab: false,
       })
     );
@@ -615,9 +707,67 @@ describe("SheetTree", () => {
     unmount();
   });
 
+  test("3b. Opening a locally nonempty folder still fetches its server members", () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/my/folder1", [
+      makeSavedQueryNode("/my/folder1/new-local-ws"),
+    ]);
+    const rootNode = makeFolderNode("/my", [folder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.expandedKeys.value = new Set(["/my"]);
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const row = container.querySelector(
+      `[data-item-key="/my/folder1"]`
+    ) as HTMLElement | null;
+    const prefix = row?.querySelector("[data-testid='tree-node-prefix']");
+    act(() => {
+      prefix?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(defaultMocks.viewContext.fetchSavedQueriesByFolder).toHaveBeenCalledWith(
+      "/my/folder1"
+    );
+
+    unmount();
+  });
+
+  test("3c. Already expanded locally nonempty folders are fetched", () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/my/folder1", [
+      makeSavedQueryNode("/my/folder1/new-local-ws"),
+    ]);
+    const rootNode = makeFolderNode("/my", [folder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.expandedKeys.value = new Set(["/my", "/my/folder1"]);
+
+    const { render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    expect(defaultMocks.viewContext.fetchSavedQueriesByFolder).toHaveBeenCalledWith(
+      "/my/folder1"
+    );
+
+    unmount();
+  });
+
   test("4. Multi-select mode renders checkboxes; toggle fires onCheckedNodesChange", () => {
     const defaultMocks = setupDefaultMocks();
-    const wsNode = makeWorksheetNode("/my/ws2");
+    const wsNode = makeSavedQueryNode("/my/ws2");
     const rootNode = makeFolderNode("/my", [wsNode]);
     defaultMocks.viewContext._sheetTree.value = rootNode;
 
@@ -657,9 +807,53 @@ describe("SheetTree", () => {
     unmount();
   });
 
+  test("4b. Multi-select folder selection skips load-more nodes", () => {
+    const defaultMocks = setupDefaultMocks();
+    const wsNode = makeSavedQueryNode("/my/folder1/ws1");
+    const loadMoreNode = makeLoadMoreNode(
+      "__savedQuery_load_more__:/my/folder1"
+    );
+    const folderNode = makeFolderNode(
+      "/my/folder1",
+      [wsNode, loadMoreNode],
+      true
+    );
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/my", [
+      folderNode,
+    ]);
+
+    const onCheckedNodesChange = vi.fn();
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        multiSelectMode={true}
+        checkedNodes={[]}
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={onCheckedNodesChange}
+      />
+    );
+    render();
+
+    const row = container.querySelector(
+      `[data-item-key="/my/folder1"]`
+    ) as HTMLElement | null;
+    const checkbox = row?.querySelector("input[type='checkbox']");
+
+    act(() => {
+      checkbox?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onCheckedNodesChange).toHaveBeenCalledWith(
+      expect.not.arrayContaining([loadMoreNode])
+    );
+
+    unmount();
+  });
+
   test("5. Right-click → opens context menu with items", () => {
     const defaultMocks = setupDefaultMocks();
-    const wsNode = makeWorksheetNode("/my/ws2");
+    const wsNode = makeSavedQueryNode("/my/ws2");
     const rootNode = makeFolderNode("/my", [wsNode]);
     defaultMocks.viewContext._sheetTree.value = rootNode;
 
@@ -670,7 +864,7 @@ describe("SheetTree", () => {
         { type: "item", key: "rename", label: "Rename" },
         { type: "item", key: "delete", label: "Delete" },
       ],
-      worksheetEntity: undefined,
+      savedQueryEntity: undefined,
       showSharePanel: false,
       handleContextMenu,
       handleSharePanelShow: vi.fn(),
@@ -709,19 +903,97 @@ describe("SheetTree", () => {
     unmount();
   });
 
-  test("6. Delete confirm → fires worksheetV1Store.deleteWorksheetByName", async () => {
+  test("does not open the context menu for draft rows", () => {
     const defaultMocks = setupDefaultMocks();
-    const wsNode = makeWorksheetNode("/my/ws2", "worksheets/ws2");
+    const draftNode = makeSavedQueryNode(
+      "/draft/explorer",
+      "data-explorer-tab"
+    );
+    if (draftNode.savedQuery) {
+      draftNode.savedQuery.type = "draft";
+    }
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/draft", [
+      draftNode,
+    ]);
+
+    const handleContextMenu = vi.fn();
+    mocks.useDropdown.mockReturnValue({
+      currentNode: undefined,
+      options: [],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu,
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree view="draft" />
+    );
+    render();
+
+    const row = container.querySelector(
+      `[data-item-key="/draft/explorer"]`
+    );
+    expect(row).not.toBeNull();
+    act(() => {
+      row?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+
+    expect(handleContextMenu).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  test("does not open the context menu for shared folders", () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/shared/folder");
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/shared", [
+      folder,
+    ]);
+    defaultMocks.viewContext.folderContext.rootPath = "/shared";
+
+    const handleContextMenu = vi.fn();
+    mocks.useDropdown.mockReturnValue({
+      currentNode: undefined,
+      options: [],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu,
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree view="shared" />
+    );
+    render();
+
+    const row = container.querySelector(
+      '[data-item-key="/shared/folder"]'
+    );
+    act(() => {
+      row?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    });
+
+    expect(handleContextMenu).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  test("6. Delete confirm → fires savedQueryV1Store.deleteSavedQueryByName", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const wsNode = makeSavedQueryNode("/my/ws2", "savedQueries/ws2");
     const rootNode = makeFolderNode("/my", [wsNode]);
     defaultMocks.viewContext._sheetTree.value = rootNode;
 
-    const deleteWorksheetByName = vi.fn().mockResolvedValue(undefined);
-    mocks.appStore.deleteWorksheetByName = deleteWorksheetByName;
+    const deleteSavedQueryByName = vi.fn().mockResolvedValue(undefined);
+    mocks.appStore.deleteSavedQueryByName = deleteSavedQueryByName;
 
     mocks.useDropdown.mockReturnValue({
       currentNode: wsNode,
       options: [{ type: "item", key: "delete", label: "Delete" }],
-      worksheetEntity: { name: "worksheets/ws2" },
+      savedQueryEntity: { name: "savedQueries/ws2" },
       showSharePanel: false,
       handleContextMenu: vi.fn(),
       handleSharePanelShow: vi.fn(),
@@ -767,7 +1039,591 @@ describe("SheetTree", () => {
       await new Promise((r) => setTimeout(r, 10));
     });
 
-    expect(deleteWorksheetByName).toHaveBeenCalledWith("worksheets/ws2");
+    expect(deleteSavedQueryByName).toHaveBeenCalledWith("savedQueries/ws2");
+
+    unmount();
+  });
+
+  test("6b. Delete folder moves all folder paths to root via batch folder update", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const loadedSavedQuery = makeSavedQueryNode(
+      "/my/old/loaded",
+      "savedQueries/loaded"
+    );
+    const oldFolder = makeFolderNode("/my/old", [loadedSavedQuery]);
+    const rootNode = makeFolderNode("/my", [oldFolder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.viewContext.getFoldersForSavedQuery.mockImplementation(
+      (path: string) =>
+        path
+          .replace("/my", "")
+          .split("/")
+          .map((part) => part.trim())
+          .filter(Boolean)
+    );
+    defaultMocks.folderContext.listSubFolders.mockImplementation(
+      (parent: string) =>
+        parent === "/my/old" ? ["/my/old/child", "/my/old/child/grand"] : []
+    );
+
+    mocks.useDropdown.mockReturnValue({
+      currentNode: oldFolder,
+      options: [{ type: "item", key: "delete", label: "Delete" }],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu: vi.fn(),
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const deleteItem = Array.from(
+      container.querySelectorAll("[data-testid='dropdown-menu-item']")
+    ).find((el) => el.textContent === "Delete") as HTMLElement | undefined;
+    expect(deleteItem).not.toBeUndefined();
+
+    await act(async () => {
+      deleteItem?.click();
+    });
+
+    const moveToRootButton = Array.from(
+      document.body.querySelectorAll(
+        "[data-testid='alert-dialog-content'] [data-testid='button']"
+      )
+    ).find(
+      (button) => button.textContent === "sheet.hint-tips.move-to-root-folder"
+    ) as HTMLElement | undefined;
+    expect(moveToRootButton).not.toBeUndefined();
+
+    await act(async () => {
+      moveToRootButton?.click();
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(
+      defaultMocks.sheetContext.batchUpdateSavedQueryFolderPaths
+    ).toHaveBeenCalledWith("my", [
+      { sourceFolder: ["old"], targetFolder: [] },
+      { sourceFolder: ["old", "child"], targetFolder: [] },
+      { sourceFolder: ["old", "child", "grand"], targetFolder: [] },
+    ]);
+    expect(
+      defaultMocks.sheetContext.batchUpdateSavedQueryFolders
+    ).not.toHaveBeenCalled();
+    expect(defaultMocks.folderContext.removeFolder).toHaveBeenCalledWith(
+      "/my/old"
+    );
+
+    unmount();
+  });
+
+  test("6c. Delete locally empty folder still moves backend-known folders to root", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const oldFolder = makeFolderNode("/my/old");
+    const rootNode = makeFolderNode("/my", [oldFolder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.viewContext.getFoldersForSavedQuery.mockImplementation(
+      (path: string) =>
+        path
+          .replace("/my", "")
+          .split("/")
+          .map((part) => part.trim())
+          .filter(Boolean)
+    );
+    defaultMocks.folderContext.listSubFolders.mockImplementation(
+      (parent: string) => (parent === "/my/old" ? ["/my/old/child"] : [])
+    );
+
+    mocks.useDropdown.mockReturnValue({
+      currentNode: oldFolder,
+      options: [{ type: "item", key: "delete", label: "Delete" }],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu: vi.fn(),
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const deleteItem = Array.from(
+      container.querySelectorAll("[data-testid='dropdown-menu-item']")
+    ).find((el) => el.textContent === "Delete") as HTMLElement | undefined;
+    expect(deleteItem).not.toBeUndefined();
+
+    await act(async () => {
+      deleteItem?.click();
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(
+      defaultMocks.sheetContext.batchUpdateSavedQueryFolderPaths
+    ).toHaveBeenCalledWith("my", [
+      { sourceFolder: ["old"], targetFolder: [] },
+      { sourceFolder: ["old", "child"], targetFolder: [] },
+    ]);
+    expect(defaultMocks.folderContext.removeFolder).toHaveBeenCalledWith(
+      "/my/old"
+    );
+
+    unmount();
+  });
+
+  test("7. Load more button fetches the next page", async () => {
+    const defaultMocks = setupDefaultMocks();
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/my", [
+      {
+        key: "__savedQuery_load_more__:/my",
+        label: "common.load-more",
+        editable: false,
+        isLeaf: true,
+        loadMore: true,
+        loadMoreFolderKey: "/my",
+        children: [],
+      },
+    ]);
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const loadMoreRow = container.querySelector(
+      `[data-item-key="__savedQuery_load_more__:/my"]`
+    ) as HTMLElement | null;
+    expect(loadMoreRow).not.toBeNull();
+    const loadMoreWrapper = loadMoreRow?.querySelector(
+      "[data-testid='load-more-wrapper']"
+    );
+    const loadMoreButton = loadMoreRow?.querySelector("[data-testid='button']");
+    expect(loadMoreButton).not.toBeNull();
+    expect(loadMoreWrapper?.classList.contains("flex-1")).toBe(true);
+    expect(loadMoreWrapper?.classList.contains("text-left")).toBe(true);
+    expect(loadMoreButton?.classList.contains("tree-label")).toBe(true);
+    expect(loadMoreButton?.classList.contains("flex-1")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-accent")).toBe(true);
+    expect(loadMoreButton?.classList.contains("text-control")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-control-light")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-xs")).toBe(true);
+    expect(loadMoreButton?.classList.contains("cursor-pointer")).toBe(true);
+    expect(loadMoreButton?.classList.contains("pb-1")).toBe(true);
+    expect(loadMoreButton?.textContent).toBe("···common.load-more");
+
+    await act(async () => {
+      loadMoreWrapper?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true })
+      );
+    });
+    expect(defaultMocks.viewContext.fetchNextPage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      loadMoreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(defaultMocks.viewContext.fetchNextPage).toHaveBeenCalledWith("/my");
+
+    unmount();
+  });
+
+  test("7b. Folder load more button fetches that folder's next page", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/my/alpha", [
+      makeSavedQueryNode("/my/alpha/ws1"),
+      {
+        key: "__savedQuery_load_more__:/my/alpha",
+        label: "common.load-more",
+        editable: false,
+        isLeaf: true,
+        loadMore: true,
+        loadMoreFolderKey: "/my/alpha",
+        children: [],
+      },
+    ]);
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/my", [folder]);
+    defaultMocks.expandedKeys.value = new Set(["/my", "/my/alpha"]);
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const loadMoreRow = container.querySelector(
+      `[data-item-key="__savedQuery_load_more__:/my/alpha"]`
+    ) as HTMLElement | null;
+    expect(loadMoreRow).not.toBeNull();
+    const loadMoreWrapper = loadMoreRow?.querySelector(
+      "[data-testid='load-more-wrapper']"
+    );
+    const loadMoreButton = loadMoreRow?.querySelector("[data-testid='button']");
+    expect(loadMoreButton).not.toBeNull();
+    expect(loadMoreWrapper?.classList.contains("flex-1")).toBe(true);
+    expect(loadMoreWrapper?.classList.contains("text-left")).toBe(true);
+    expect(loadMoreButton?.classList.contains("tree-label")).toBe(true);
+    expect(loadMoreButton?.classList.contains("flex-1")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-accent")).toBe(true);
+    expect(loadMoreButton?.classList.contains("text-control")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-control-light")).toBe(false);
+    expect(loadMoreButton?.classList.contains("text-xs")).toBe(true);
+    expect(loadMoreButton?.classList.contains("cursor-pointer")).toBe(true);
+    expect(loadMoreButton?.classList.contains("pb-1")).toBe(true);
+    expect(loadMoreButton?.textContent).toBe("···common.load-more");
+
+    await act(async () => {
+      loadMoreWrapper?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true })
+      );
+    });
+    expect(defaultMocks.viewContext.fetchNextPage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      loadMoreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(defaultMocks.viewContext.fetchNextPage).toHaveBeenCalledWith(
+      "/my/alpha"
+    );
+
+    unmount();
+  });
+
+  test("7c. Load more rows are inert for tree actions", () => {
+    const defaultMocks = setupDefaultMocks();
+    const loadMoreNode = makeLoadMoreNode("__savedQuery_load_more__:/my");
+    const folderNode = makeFolderNode("/my/folder", [], true);
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/my", [
+      folderNode,
+      loadMoreNode,
+    ]);
+
+    const handleContextMenu = vi.fn();
+    mocks.useDropdown.mockReturnValue({
+      currentNode: undefined,
+      options: [],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu,
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const loadMoreRow = container.querySelector(
+      `[data-item-key="__savedQuery_load_more__:/my"]`
+    ) as HTMLElement | null;
+    expect(loadMoreRow).not.toBeNull();
+
+    act(() => {
+      loadMoreRow?.dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true })
+      );
+    });
+    expect(handleContextMenu).not.toHaveBeenCalled();
+
+    const disableDrag = mocks.treeProps.disableDrag as
+      | ((data: { data: SavedQueryFolderNode }) => boolean)
+      | undefined;
+    expect(disableDrag?.({ data: loadMoreNode })).toBe(true);
+    expect(disableDrag?.({ data: folderNode })).toBe(false);
+
+    const disableDrop = mocks.treeProps.disableDrop as
+      | ((args: {
+          parentNode?: { data: { data: SavedQueryFolderNode } } | null;
+          dragNodes: { data: { data: SavedQueryFolderNode } }[];
+        }) => boolean)
+      | undefined;
+    expect(
+      disableDrop?.({
+        parentNode: { data: { data: loadMoreNode } },
+        dragNodes: [{ data: { data: folderNode } }],
+      })
+    ).toBe(true);
+    expect(
+      disableDrop?.({
+        parentNode: { data: { data: folderNode } },
+        dragNodes: [{ data: { data: loadMoreNode } }],
+      })
+    ).toBe(true);
+
+    unmount();
+  });
+
+  test("7d. Add folder ignores load-more nodes when generating a name", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const existingFolder = makeFolderNode("/my/new folder", [], true);
+    const loadMoreNode = makeLoadMoreNode("__savedQuery_load_more__:/my");
+    const rootNode = makeFolderNode(
+      "/my",
+      [existingFolder, loadMoreNode],
+      true
+    );
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+
+    mocks.useDropdown.mockReturnValue({
+      currentNode: rootNode,
+      options: [{ type: "item", key: "add-folder", label: "Add folder" }],
+      savedQueryEntity: undefined,
+      showSharePanel: false,
+      handleContextMenu: vi.fn(),
+      handleSharePanelShow: vi.fn(),
+      handleClickOutside: vi.fn(),
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const addFolderItem = container.querySelector(
+      "[data-testid='dropdown-menu-item']"
+    ) as HTMLElement | null;
+
+    await act(async () => {
+      addFolderItem?.click();
+    });
+
+    expect(defaultMocks.viewContext.folderContext.addFolder).toHaveBeenCalledWith(
+      "/my/new folder2"
+    );
+    expect(defaultMocks.sheetContext.setEditingNode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawLabel: "new folder2",
+      })
+    );
+
+    unmount();
+  });
+
+  test("8. Rename input is not clipped by display-mode row overflow", () => {
+    const defaultMocks = setupDefaultMocks();
+    const wsNode = makeSavedQueryNode("/my/ws-with-long-title");
+    const rootNode = makeFolderNode("/my", [wsNode]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.editingNode.value = {
+      node: wsNode,
+      rawLabel: "bytebase-3.12.2 May 9, 2026, 12:12:02 PM GMT+8",
+    };
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const input = container.querySelector(
+      "[data-testid='rename-input']"
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input?.className).toContain("w-full");
+    expect(input?.className).toContain("h-6");
+
+    const label = input?.closest(".tree-label");
+    expect(label?.className).toContain("overflow-visible");
+
+    const row = input?.closest("[data-item-key='/my/ws-with-long-title']");
+    expect(row?.className).toContain("overflow-visible");
+    expect(row?.className).toContain("py-0");
+
+    const tree = container.querySelector("[data-testid='tree']");
+    expect(tree?.className).toContain(
+      "[&_[role=treeitem]]:overflow-visible"
+    );
+
+    unmount();
+  });
+
+  test("8b. Rename input preserves cursor position while typing", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const folderNode = makeFolderNode("/my/folder1", [], true);
+    defaultMocks.viewContext._sheetTree.value = makeFolderNode("/my", [
+      folderNode,
+    ]);
+    defaultMocks.editingNode.value = {
+      node: folderNode,
+      rawLabel: "abcdef",
+    };
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const input = container.querySelector(
+      "[data-testid='rename-input']"
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    input?.setSelectionRange(3, 3);
+
+    await act(async () => {
+      if (!input) return;
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value"
+      )?.set;
+      valueSetter?.call(input, "abcXdef");
+      input.setSelectionRange(4, 4);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.setSelectionRange(7, 7);
+    });
+    render();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(input?.selectionStart).toBe(4);
+    expect(input?.selectionEnd).toBe(4);
+
+    unmount();
+  });
+
+  test("9. Folder rename updates known folder paths with exact batch filters", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const childFolder = makeFolderNode("/my/old/child");
+    const oldFolder = makeFolderNode("/my/old", [childFolder]);
+    const rootNode = makeFolderNode("/my", [oldFolder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.editingNode.value = {
+      node: oldFolder,
+      rawLabel: "new",
+    };
+    defaultMocks.viewContext.getFoldersForSavedQuery.mockImplementation(
+      (path: string) =>
+        path
+          .replace("/my", "")
+          .split("/")
+          .map((part) => part.trim())
+          .filter(Boolean)
+    );
+    defaultMocks.folderContext.listSubFolders.mockImplementation(
+      (parent: string) => (parent === "/my/old" ? ["/my/old/child"] : [])
+    );
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const input = container.querySelector(
+      "[data-testid='rename-input']"
+    ) as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+
+    await act(async () => {
+      input?.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(
+      defaultMocks.sheetContext.batchUpdateSavedQueryFolderPaths
+    ).toHaveBeenCalledWith("my", [
+      { sourceFolder: ["old"], targetFolder: ["new"] },
+      { sourceFolder: ["old", "child"], targetFolder: ["new", "child"] },
+    ]);
+    expect(defaultMocks.viewContext.rebuildTree).toHaveBeenCalled();
+
+    unmount();
+  });
+
+  test("10. Opening an empty folder fetches that folder's saved queries", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/my/empty", []);
+    const rootNode = makeFolderNode("/my", [folder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.expandedKeys.value = new Set(["/my"]);
+
+    const { container, render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+    render();
+
+    const row = container.querySelector(
+      `[data-item-key="/my/empty"]`
+    ) as HTMLElement | null;
+    expect(row).not.toBeNull();
+    const prefix = row?.querySelector("[data-testid='tree-node-prefix']");
+
+    await act(async () => {
+      prefix?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      defaultMocks.viewContext.fetchSavedQueriesByFolder
+    ).toHaveBeenCalledWith("/my/empty");
+
+    unmount();
+  });
+
+  test("11. Already-expanded empty folder fetches after render", async () => {
+    const defaultMocks = setupDefaultMocks();
+    const folder = makeFolderNode("/my/empty", []);
+    const rootNode = makeFolderNode("/my", [folder]);
+    defaultMocks.viewContext._sheetTree.value = rootNode;
+    defaultMocks.expandedKeys.value = new Set(["/my", "/my/empty"]);
+
+    const { render, unmount } = renderIntoContainer(
+      <SheetTree
+        view="my"
+        onMultiSelectModeChange={vi.fn()}
+        onCheckedNodesChange={vi.fn()}
+      />
+    );
+
+    await act(async () => {
+      render();
+    });
+
+    expect(
+      defaultMocks.viewContext.fetchSavedQueriesByFolder
+    ).toHaveBeenCalledWith("/my/empty");
 
     unmount();
   });

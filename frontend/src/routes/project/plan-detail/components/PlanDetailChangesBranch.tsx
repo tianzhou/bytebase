@@ -66,6 +66,14 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useCurrentUser } from "@/hooks/useAppState";
 import { useOnKeyChange } from "@/hooks/useOnKeyChange";
@@ -405,10 +413,7 @@ export function PlanDetailChangesBranch({
     // Pending draft is local only — update in place without hitting the API.
     if (pendingNewSpec && selectedSpec.id === pendingNewSpec.id) {
       const patched = clone(Plan_SpecSchema, pendingNewSpec);
-      if (
-        patched.config.case === "changeDatabaseConfig" ||
-        patched.config.case === "exportDataConfig"
-      ) {
+      if (patched.config.case === "changeDatabaseConfig") {
         patched.config.value.targets = targets;
       }
       setPendingNewSpec(patched);
@@ -418,10 +423,7 @@ export function PlanDetailChangesBranch({
     const nextSpecs = page.plan.specs.map((spec) => {
       if (spec.id !== selectedSpec.id) return spec;
       const patched = clone(Plan_SpecSchema, spec);
-      if (
-        patched.config.case === "changeDatabaseConfig" ||
-        patched.config.case === "exportDataConfig"
-      ) {
+      if (patched.config.case === "changeDatabaseConfig") {
         patched.config.value.targets = targets;
       }
       return patched;
@@ -552,7 +554,7 @@ export function PlanDetailChangesBranch({
 
   if (!selectedSpec) {
     return (
-      <div className="rounded-md border bg-white px-4 py-3 text-sm text-control-light">
+      <div className="rounded-sm border bg-white px-4 py-3 text-sm text-control-light">
         {t("common.no-data")}
       </div>
     );
@@ -564,9 +566,7 @@ export function PlanDetailChangesBranch({
   const currentTargets =
     selectedSpec.config.case === "changeDatabaseConfig"
       ? (selectedSpec.config.value.targets ?? [])
-      : selectedSpec.config.case === "exportDataConfig"
-        ? (selectedSpec.config.value.targets ?? [])
-        : [];
+      : [];
 
   return (
     <div className="flex w-full flex-1 flex-col">
@@ -584,7 +584,7 @@ export function PlanDetailChangesBranch({
                 aria-label={t("plan.add-spec")}
                 className={cn(
                   ICON_ACTION_CLASS,
-                  "size-7 rounded-md p-0 [touch-action:manipulation]"
+                  "size-7 rounded-xs p-0 [touch-action:manipulation]"
                 )}
                 disabled={Boolean(pendingNewSpec)}
                 onClick={() => setShowAddSpecSheet(true)}
@@ -1479,21 +1479,21 @@ function TargetsSection({
               isValidDatabaseName(target) ? (
                 <div
                   key={target}
-                  className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-lg border px-2 py-1"
+                  className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border px-2 py-1"
                 >
                   <PlanTargetDisplay showEnvironment target={target} />
                 </div>
               ) : isValidDatabaseGroupName(target) ? (
                 <div
                   key={target}
-                  className="min-w-0 max-w-full rounded-lg border px-2 py-1"
+                  className="min-w-0 max-w-full rounded-sm border px-2 py-1"
                 >
                   <DatabaseGroupTarget className="py-1" target={target} />
                 </div>
               ) : (
                 <div
                   key={target}
-                  className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-lg border px-2 py-1"
+                  className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border px-2 py-1"
                 >
                   <span className="truncate text-sm text-control-placeholder">
                     {target}
@@ -1543,7 +1543,7 @@ function TargetsSection({
                   {filteredTargets.map((target) => (
                     <div
                       key={target}
-                      className="w-full rounded-lg border px-2 py-1.5"
+                      className="w-full rounded-sm border px-2 py-1.5"
                     >
                       {isValidDatabaseName(target) ? (
                         <PlanTargetDisplay showEnvironment target={target} />
@@ -1781,8 +1781,7 @@ function DatabaseSelector({
   );
 
   useEffect(() => {
-    const timer = setTimeout(() => void doFetch(true), 300);
-    return () => clearTimeout(timer);
+    void doFetch(true);
   }, [doFetch]);
 
   const toggleDatabase = (name: string) => {
@@ -1815,10 +1814,10 @@ function DatabaseSelector({
         </div>
       ) : (
         <>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-control-light">
-                <th className="w-8 py-2 pr-2">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10">
                   <Checkbox
                     checked={someSelected ? "indeterminate" : allSelected}
                     onCheckedChange={() =>
@@ -1829,63 +1828,57 @@ function DatabaseSelector({
                       )
                     }
                   />
-                </th>
-                <th className="py-2 pr-4 font-medium">
-                  {t("common.database")}
-                </th>
-                <th className="py-2 pr-4 font-medium">
-                  {t("common.instance")}
-                </th>
-                <th className="py-2 pr-4 font-medium">
-                  {t("common.environment")}
-                </th>
-                <th className="py-2 pr-4 font-medium whitespace-nowrap">
+                </TableHead>
+                <TableHead>{t("common.database")}</TableHead>
+                <TableHead>{t("common.instance")}</TableHead>
+                <TableHead>{t("common.environment")}</TableHead>
+                <TableHead className="whitespace-nowrap">
                   {t("common.status")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody striped={false}>
               {databases.map((db) => {
                 const { databaseName } = extractDatabaseResourceName(db.name);
                 const inst = getInstanceResource(db);
                 const env = getDatabaseEnvironment(db);
                 const isSelected = selectedNames.has(db.name);
                 return (
-                  <tr
+                  <TableRow
                     key={db.name}
                     className={cn(
-                      "cursor-pointer border-b hover:bg-control-bg",
+                      "cursor-pointer",
                       isSelected && "bg-accent/5"
                     )}
                     onClick={() => toggleDatabase(db.name)}
                   >
-                    <td className="py-2 pr-2">
+                    <TableCell className="py-2">
                       <Checkbox checked={isSelected} />
-                    </td>
-                    <td className="py-2 pr-4">
+                    </TableCell>
+                    <TableCell className="py-2">
                       <div className="flex items-center gap-x-1.5">
                         {inst && (
                           <EngineIcon engine={inst.engine} className="size-4" />
                         )}
                         <span>{databaseName}</span>
                       </div>
-                    </td>
-                    <td className="py-2 pr-4">{inst?.title}</td>
-                    <td className="py-2 pr-4">
+                    </TableCell>
+                    <TableCell className="py-2">{inst?.title}</TableCell>
+                    <TableCell className="py-2">
                       {env && <EnvironmentLabel environmentName={env.name} />}
-                    </td>
-                    <td className="py-2 pr-4">
+                    </TableCell>
+                    <TableCell className="py-2">
                       {db.syncStatus === SyncStatus.FAILED ? (
                         <XCircle className="size-4 text-error" />
                       ) : (
                         <CheckCircle className="size-4 text-success" />
                       )}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
           {hasMore && (
             <div className="flex justify-center">
               <Button
@@ -1948,43 +1941,38 @@ function DatabaseGroupSelector({
       onValueChange={(value) => onSelectedGroupChange(String(value))}
       className="block"
     >
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-control-light">
-            <th className="w-8 py-2 pr-2" />
-            <th className="py-2 pr-4 font-medium">
-              {t("common.database-group")}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-10" />
+            <TableHead>{t("common.database-group")}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody striped={false}>
           {groups.map((group) => {
             const isSelected = selectedGroup === group.name;
             return (
-              <tr
+              <TableRow
                 key={group.name}
-                className={cn(
-                  "cursor-pointer border-b hover:bg-control-bg",
-                  isSelected && "bg-accent/5"
-                )}
+                className={cn("cursor-pointer", isSelected && "bg-accent/5")}
                 onClick={() =>
                   onSelectedGroupChange(isSelected ? undefined : group.name)
                 }
               >
-                <td className="py-2 pr-2">
+                <TableCell className="py-2">
                   <RadioGroupItem value={group.name} aria-label={group.title} />
-                </td>
-                <td className="py-2 pr-4">
+                </TableCell>
+                <TableCell className="py-2">
                   <div className="flex items-center gap-x-1.5">
                     <FolderTree className="size-4 shrink-0 text-control-light" />
                     <span>{group.title}</span>
                   </div>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </RadioGroup>
   );
 }
@@ -2083,7 +2071,7 @@ export function DatabaseGroupTarget({
           {inlineDatabases.map((database) => (
             <div
               key={database.name}
-              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-lg border bg-gray-50 px-2 py-1 transition-all"
+              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border bg-gray-50 px-2 py-1 transition-all"
             >
               <PlanTargetDisplay showEnvironment target={database.name} />
             </div>

@@ -19,7 +19,7 @@ export declare const file_v1_database_service: GenFile;
 export declare type GetDatabaseRequest = Message<"bytebase.v1.GetDatabaseRequest"> & {
   /**
    * The name of the database to retrieve.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    *
    * @generated from field: string name = 1;
    */
@@ -39,7 +39,8 @@ export declare type BatchGetDatabasesRequest = Message<"bytebase.v1.BatchGetData
   /**
    * The parent resource shared by all databases being retrieved.
    * - projects/{project}: batch get databases in a project;
-   * - instances/{instances}: batch get databases in a instance;
+   * - instances/{instance}: batch get databases in an instance;
+   * - projects/{project}/instances/{instance}: batch get databases in a project instance;
    * Use "-" as wildcard to batch get databases across parent.
    *
    * @generated from field: string parent = 1;
@@ -65,7 +66,7 @@ export declare const BatchGetDatabasesRequestSchema: GenMessage<BatchGetDatabase
  */
 export declare type BatchGetDatabasesResponse = Message<"bytebase.v1.BatchGetDatabasesResponse"> & {
   /**
-   * The databases from the specified request.
+   * One database per requested name, in the same order as `names`.
    *
    * @generated from field: repeated bytebase.v1.Database databases = 1;
    */
@@ -85,7 +86,8 @@ export declare type ListDatabasesRequest = Message<"bytebase.v1.ListDatabasesReq
   /**
    * - projects/{project}: list databases in a project, require "bb.projects.get" permission.
    * - workspaces/{id}: list databases in the workspace, require "bb.databases.list" permission.
-   * - instances/{instances}: list databases in a instance, require "bb.instances.get" permission
+   * - instances/{instance}: list databases in an instance, require "bb.instances.get" permission.
+   * - projects/{project}/instances/{instance}: list databases in a project instance, require "bb.instances.get" permission.
    *
    * @generated from field: string parent = 1;
    */
@@ -120,7 +122,7 @@ export declare type ListDatabasesRequest = Message<"bytebase.v1.ListDatabasesReq
    * - environment: the environment full name in "environments/{id}" format, support "==" operator.
    * - name: the database name, support ".contains()" operator.
    * - project: the project full name in "projects/{id}" format, support "==" operator.
-   * - instance: the instance full name in "instances/{id}" format, support "==" operator.
+   * - instance: the instance full name in "instances/{id}" or "projects/{project}/instances/{id}" format, support "==" operator.
    * - engine: the database engine, check Engine enum for values. Support "==", "in [xx]", "!(in [xx])" operator.
    * - exclude_unassigned: should be "true" or "false", will not show unassigned databases if it's true, support "==" operator.
    * - table: filter by the database table, support "==" and ".contains()" operator.
@@ -131,6 +133,7 @@ export declare type ListDatabasesRequest = Message<"bytebase.v1.ListDatabasesReq
    * environment == "" (find databases which environment is not set)
    * project == "projects/{project resource id}"
    * instance == "instances/{instance resource id}"
+   * instance == "projects/{project resource id}/instances/{instance resource id}"
    * name.contains("database name")
    * engine == "MYSQL"
    * engine in ["MYSQL", "POSTGRES"]
@@ -209,7 +212,7 @@ export declare type UpdateDatabaseRequest = Message<"bytebase.v1.UpdateDatabaseR
    * The database to update.
    *
    * The database's `name` field is used to identify the database to update.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    *
    * @generated from field: bytebase.v1.Database database = 1;
    */
@@ -221,14 +224,6 @@ export declare type UpdateDatabaseRequest = Message<"bytebase.v1.UpdateDatabaseR
    * @generated from field: google.protobuf.FieldMask update_mask = 2;
    */
   updateMask?: FieldMask | undefined;
-
-  /**
-   * If set to true, and the database is not found, a new database will be created.
-   * In this situation, `update_mask` is ignored.
-   *
-   * @generated from field: bool allow_missing = 3;
-   */
-  allowMissing: boolean;
 };
 
 /**
@@ -243,7 +238,7 @@ export declare const UpdateDatabaseRequestSchema: GenMessage<UpdateDatabaseReque
 export declare type BatchUpdateDatabasesRequest = Message<"bytebase.v1.BatchUpdateDatabasesRequest"> & {
   /**
    * The parent resource shared by all databases being updated.
-   * Format: instances/{instance}
+   * Format: instances/{instance} or projects/{project}/instances/{instance}
    * If the operation spans parents, a dash (-) may be accepted as a wildcard.
    * We only support updating the project of databases for now.
    *
@@ -290,7 +285,7 @@ export declare const BatchUpdateDatabasesResponseSchema: GenMessage<BatchUpdateD
 export declare type BatchSyncDatabasesRequest = Message<"bytebase.v1.BatchSyncDatabasesRequest"> & {
   /**
    * The parent resource shared by all databases being updated.
-   * Format: instances/{instance}
+   * Format: instances/{instance} or projects/{project}/instances/{instance}
    * If the operation spans parents, a dash (-) may be accepted as a wildcard.
    *
    * @generated from field: string parent = 1;
@@ -329,7 +324,7 @@ export declare const BatchSyncDatabasesResponseSchema: GenMessage<BatchSyncDatab
 export declare type SyncDatabaseRequest = Message<"bytebase.v1.SyncDatabaseRequest"> & {
   /**
    * The name of the database to sync.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    *
    * @generated from field: string name = 1;
    */
@@ -360,7 +355,7 @@ export declare const SyncDatabaseResponseSchema: GenMessage<SyncDatabaseResponse
 export declare type GetDatabaseMetadataRequest = Message<"bytebase.v1.GetDatabaseMetadataRequest"> & {
   /**
    * The name of the database to retrieve metadata.
-   * Format: instances/{instance}/databases/{database}/metadata
+   * Format: instances/{instance}/databases/{database}/metadata or projects/{project}/instances/{instance}/databases/{database}/metadata
    *
    * @generated from field: string name = 1;
    */
@@ -409,7 +404,7 @@ export declare const GetDatabaseMetadataRequestSchema: GenMessage<GetDatabaseMet
 export declare type GetDatabaseSchemaRequest = Message<"bytebase.v1.GetDatabaseSchemaRequest"> & {
   /**
    * The name of the database to retrieve schema.
-   * Format: instances/{instance}/databases/{database}/schema
+   * Format: instances/{instance}/databases/{database}/schema or projects/{project}/instances/{instance}/databases/{database}/schema
    *
    * @generated from field: string name = 1;
    */
@@ -428,7 +423,7 @@ export declare const GetDatabaseSchemaRequestSchema: GenMessage<GetDatabaseSchem
 export declare type GetDatabaseSDLSchemaRequest = Message<"bytebase.v1.GetDatabaseSDLSchemaRequest"> & {
   /**
    * The name of the database to retrieve SDL schema.
-   * Format: instances/{instance}/databases/{database}/sdlSchema
+   * Format: instances/{instance}/databases/{database}/sdlSchema or projects/{project}/instances/{instance}/databases/{database}/sdlSchema
    *
    * @generated from field: string name = 1;
    */
@@ -489,8 +484,8 @@ export declare type DiffSchemaRequest = Message<"bytebase.v1.DiffSchemaRequest">
   /**
    * The name of the database or changelog.
    * Format:
-   * database: instances/{instance}/databases/{database}
-   * changelog: instances/{instance}/databases/{database}/changelogs/{changelog}
+   * database: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
+   * changelog: instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
    *
    * @generated from field: string name = 1;
    */
@@ -511,7 +506,7 @@ export declare type DiffSchemaRequest = Message<"bytebase.v1.DiffSchemaRequest">
     /**
      * The resource name of the changelog
      * Format:
-     * instances/{instance}/databases/{database}/changelogs/{changelog}
+     * instances/{instance}/databases/{database}/changelogs/{changelog} or projects/{project}/instances/{instance}/databases/{database}/changelogs/{changelog}
      *
      * @generated from field: string changelog = 3;
      */
@@ -548,7 +543,7 @@ export declare const DiffSchemaResponseSchema: GenMessage<DiffSchemaResponse>;
 export declare type DiffMetadataRequest = Message<"bytebase.v1.DiffMetadataRequest"> & {
   /**
    * The database whose current schema is the diff source.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    *
    * @generated from field: string name = 1;
    */
@@ -596,7 +591,7 @@ export declare const DiffMetadataResponseSchema: GenMessage<DiffMetadataResponse
 export declare type Database = Message<"bytebase.v1.Database"> & {
   /**
    * The name of the database.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    * {database} is the database name in the instance.
    *
    * @generated from field: string name = 1;
@@ -702,7 +697,7 @@ export declare type DatabaseMetadata = Message<"bytebase.v1.DatabaseMetadata"> &
   /**
    * The database metadata name.
    *
-   * Format: instances/{instance}/databases/{database}/metadata
+   * Format: instances/{instance}/databases/{database}/metadata or projects/{project}/instances/{instance}/databases/{database}/metadata
    *
    * @generated from field: string name = 1;
    */
@@ -3068,7 +3063,7 @@ export declare const DatabaseSDLSchemaSchema: GenMessage<DatabaseSDLSchema>;
 export declare type GetSchemaStringRequest = Message<"bytebase.v1.GetSchemaStringRequest"> & {
   /**
    * The name of the database.
-   * Format: instances/{instance}/databases/{database}
+   * Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database}
    *
    * @generated from field: string name = 1;
    */
@@ -3229,7 +3224,9 @@ export declare const DatabaseService: GenService<{
   },
   /**
    * Retrieves multiple databases by their names.
-   * Permissions required: bb.databases.get
+   * One resource per requested name, in request order. The first name that
+   * does not resolve fails the whole call (AIP-231: no partial response).
+   * Permissions required: bb.databases.get (on each named database's project)
    *
    * @generated from rpc bytebase.v1.DatabaseService.BatchGetDatabases
    */

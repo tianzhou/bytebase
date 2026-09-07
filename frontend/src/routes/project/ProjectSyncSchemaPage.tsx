@@ -11,7 +11,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { v4 as uuidv4 } from "uuid";
 import { router } from "@/app/router";
 import { buildPlanCreateRoute } from "@/app/router/routeHelpers";
 import { DatabaseSelect } from "@/components/DatabaseSelect";
@@ -50,7 +49,7 @@ import { StepIndicator } from "@/components/ui/step-indicator";
 import { useClickOutside } from "@/hooks/useClickOutside";
 import { useEscapeKey } from "@/hooks/useEscapeKey";
 import { useProjectByName } from "@/hooks/useProjectByName";
-import { keyValueStorage } from "@/lib/keyValueStorage";
+import { saveInitialSQL } from "@/lib/plan/initialSQLStorage";
 import { applyPlanTitleToQuery } from "@/lib/plan/title";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app";
@@ -58,7 +57,6 @@ import { projectNamePrefix } from "@/stores/modules/v1/common";
 import {
   getDateForPbTimestampProtoEs,
   isValidDatabaseName,
-  isValidEnvironmentName,
   type Language,
   languageOfEngineV1,
 } from "@/types";
@@ -71,7 +69,8 @@ import type { Database } from "@/types/proto-es/v1/database_service_pb";
 import { DiffSchemaRequestSchema } from "@/types/proto-es/v1/database_service_pb";
 import type { Project } from "@/types/proto-es/v1/project_service_pb";
 import {
-  databaseV1Url,
+  autoDatabaseChangelogRoute,
+  autoDatabaseRoute,
   engineNameV1,
   extractChangelogUID,
   extractDatabaseResourceName,
@@ -81,6 +80,7 @@ import {
   getDefaultPagination,
   getInstanceResource,
 } from "@/utils";
+import { celString } from "@/utils/v1/celLiteral";
 import {
   extractDatabaseNameAndChangelogUID,
   isValidChangelogName,
@@ -334,7 +334,6 @@ export function ProjectSyncSchemaPage({ projectId }: { projectId: string }) {
     if (currentStep === Step.SELECT_SOURCE_SCHEMA) {
       if (sourceSchemaType === SourceSchemaType.SCHEMA_HISTORY_VERSION) {
         return (
-          isValidEnvironmentName(changelogSource.environmentName) &&
           isValidDatabaseName(changelogSource.databaseName) &&
           !!changelogSource.changelogName
         );
@@ -402,9 +401,16 @@ export function ProjectSyncSchemaPage({ projectId }: { projectId: string }) {
       }
     });
     query.databaseList = Object.keys(sqlMap).join(",");
-    const sqlMapStorageKey = `bb.issues.sql-map.${uuidv4()}`;
-    void keyValueStorage.put(sqlMapStorageKey, sqlMap);
-    query.sqlMapStorageKey = sqlMapStorageKey;
+    try {
+      query.sqlMapStorageKey = saveInitialSQL(sqlMap);
+    } catch {
+      useAppStore.getState().notify({
+        module: "bytebase",
+        style: "CRITICAL",
+        title: t("plan.initial-sql-storage-failed"),
+      });
+      return;
+    }
     if (!project) return; // defensive: should not happen if the page rendered
     applyPlanTitleToQuery(query, project, () =>
       generatePlanTitle(
@@ -417,7 +423,7 @@ export function ProjectSyncSchemaPage({ projectId }: { projectId: string }) {
     router.push(
       buildPlanCreateRoute(extractProjectResourceName(project.name), query)
     );
-  }, [selectedDatabaseNameList, schemaDiffCache, project]);
+  }, [selectedDatabaseNameList, schemaDiffCache, project, t]);
 
   if (!project) return null;
 
@@ -746,7 +752,7 @@ function ChangelogSelector({
         await listChangelogs({
           parent: database,
           pageSize: getDefaultPagination(),
-          filter: `status == "${Changelog_Status[Changelog_Status.DONE]}"`,
+          filter: `status == ${celString(Changelog_Status[Changelog_Status.DONE])}`,
         });
 
       if (cancelled) return;
@@ -780,7 +786,7 @@ function ChangelogSelector({
       parent: database,
       pageToken: nextPageToken,
       pageSize: getDefaultPagination(),
-      filter: `status == "${Changelog_Status[Changelog_Status.DONE]}"`,
+      filter: `status == ${celString(Changelog_Status[Changelog_Status.DONE])}`,
     });
     setEntries((prev) => [...prev, ...more.map(toEntry)]);
     setNextPageToken(token);
@@ -1039,14 +1045,18 @@ function SourceSchemaInfo({
 
   const gotoDatabase = useCallback(() => {
     if (isValidDatabaseName(databaseFromChangelog.name)) {
-      window.open(databaseV1Url(databaseFromChangelog));
+      window.open(
+        router.resolve(autoDatabaseRoute(databaseFromChangelog)).href
+      );
     }
   }, [databaseFromChangelog]);
 
   const gotoChangelog = useCallback(() => {
     if (isValidChangelogName(changelogSourceSchema?.changelogName || "")) {
       window.open(
-        `${databaseV1Url(databaseFromChangelog)}/changelogs/${changelogUID}`
+        router.resolve(
+          autoDatabaseChangelogRoute(databaseFromChangelog, changelogUID ?? "")
+        ).href
       );
     }
   }, [databaseFromChangelog, changelogUID, changelogSourceSchema]);
@@ -1388,7 +1398,7 @@ function SelectTargetDatabasesView({
         sourceEngine={sourceEngine}
         changelogSourceSchema={changelogSourceSchema}
       />
-      <div className="relative border rounded-lg w-full flex flex-row flex-1 overflow-hidden">
+      <div className="relative border rounded-sm w-full flex flex-row flex-1 overflow-hidden">
         {/* Left panel: target database list */}
         <div className="w-1/4 min-w-[256px] max-w-xs h-full border-r">
           <div className="w-full h-full relative flex flex-col justify-start items-start overflow-y-auto pb-2">
@@ -1926,57 +1936,56 @@ function TargetDatabasesSelectPanel({
   const [databases, setDatabases] = useState<Database[]>([]);
   const [loading, setLoading] = useState(true);
   const [dbNextPageToken, setDbNextPageToken] = useState("");
-  const [loadingMoreDbs, setLoadingMoreDbs] = useState(false);
+  const requestGenerationRef = useRef(0);
 
   useEscapeKey(true, onClose);
 
+  const fetchDatabasePage = useCallback(
+    async (pageToken?: string) => {
+      const generation = pageToken
+        ? requestGenerationRef.current
+        : ++requestGenerationRef.current;
+      if (!pageToken) {
+        setDatabases([]);
+        setDbNextPageToken("");
+      }
+      setLoading(true);
+      try {
+        const { databases: fetched, nextPageToken: token } = await useAppStore
+          .getState()
+          .fetchDatabases({
+            parent: project,
+            pageSize: getDefaultPagination(),
+            ...(pageToken ? { pageToken } : {}),
+            filter: {
+              query: searchQuery,
+              engines:
+                engine === Engine.ENGINE_UNSPECIFIED ? undefined : [engine],
+            },
+          });
+        if (generation !== requestGenerationRef.current) return;
+        setDatabases((current) =>
+          pageToken ? [...current, ...fetched] : fetched
+        );
+        setDbNextPageToken(token);
+      } finally {
+        if (generation === requestGenerationRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    [engine, project, searchQuery]
+  );
+
   // Fetch first page of databases
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      const { databases: fetched, nextPageToken: token } = await useAppStore
-        .getState()
-        .fetchDatabases({
-          parent: project,
-          pageSize: getDefaultPagination(),
-        });
-      setDatabases(fetched);
-      setDbNextPageToken(token);
-      setLoading(false);
-    })();
-  }, [project]);
+    void fetchDatabasePage();
+  }, [fetchDatabasePage]);
 
-  const loadMoreDatabases = useCallback(async () => {
-    if (!dbNextPageToken || loadingMoreDbs) return;
-    setLoadingMoreDbs(true);
-    const { databases: more, nextPageToken: token } = await useAppStore
-      .getState()
-      .fetchDatabases({
-        parent: project,
-        pageSize: getDefaultPagination(),
-        pageToken: dbNextPageToken,
-      });
-    setDatabases((prev) => [...prev, ...more]);
-    setDbNextPageToken(token);
-    setLoadingMoreDbs(false);
-  }, [dbNextPageToken, loadingMoreDbs, project]);
-
-  const filteredDatabases = useMemo(() => {
-    const q = searchQuery.toLowerCase();
-    return databases.filter((db) => {
-      const dbName = extractDatabaseResourceName(
-        db.name
-      ).databaseName.toLowerCase();
-      const envName = getDatabaseEnvironment(db).title.toLowerCase();
-      const instName = getInstanceResource(db).title.toLowerCase();
-      const matchesQuery =
-        !q || dbName.includes(q) || envName.includes(q) || instName.includes(q);
-      const matchesEngine =
-        engine === Engine.ENGINE_UNSPECIFIED ||
-        getInstanceResource(db).engine === engine;
-      return matchesQuery && matchesEngine;
-    });
-  }, [databases, searchQuery, engine]);
+  const loadMoreDatabases = useCallback(() => {
+    if (!dbNextPageToken || loading) return;
+    void fetchDatabasePage(dbNextPageToken);
+  }, [dbNextPageToken, fetchDatabasePage, loading]);
 
   const toggleDatabase = useCallback((name: string) => {
     setSelected((prev) => {
@@ -1991,18 +2000,18 @@ function TargetDatabasesSelectPanel({
   }, []);
 
   const toggleAll = useCallback(() => {
-    const allFilteredNames = filteredDatabases.map((db) => db.name);
+    const allDatabaseNames = databases.map((db) => db.name);
     setSelected((prev) => {
-      const allSelected = allFilteredNames.every((name) => prev.has(name));
+      const allSelected = allDatabaseNames.every((name) => prev.has(name));
       const next = new Set(prev);
       if (allSelected) {
-        allFilteredNames.forEach((name) => next.delete(name));
+        allDatabaseNames.forEach((name) => next.delete(name));
       } else {
-        allFilteredNames.forEach((name) => next.add(name));
+        allDatabaseNames.forEach((name) => next.add(name));
       }
       return next;
     });
-  }, [filteredDatabases]);
+  }, [databases]);
 
   const handleConfirm = useCallback(() => {
     onUpdate(Array.from(selected));
@@ -2027,7 +2036,7 @@ function TargetDatabasesSelectPanel({
 
         {/* Database list */}
         <SheetBody className="px-6 py-2">
-          {loading ? (
+          {loading && databases.length === 0 ? (
             <div className="flex items-center justify-center py-8">
               <div className="animate-spin rounded-full size-6 border-b-2 border-control-placeholder" />
             </div>
@@ -2039,8 +2048,8 @@ function TargetDatabasesSelectPanel({
                     <th className="py-2 px-2 w-8 text-left">
                       <Checkbox
                         checked={
-                          filteredDatabases.length > 0 &&
-                          filteredDatabases.every((db) => selected.has(db.name))
+                          databases.length > 0 &&
+                          databases.every((db) => selected.has(db.name))
                         }
                         onCheckedChange={toggleAll}
                       />
@@ -2057,7 +2066,7 @@ function TargetDatabasesSelectPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredDatabases.map((db) => (
+                  {databases.map((db) => (
                     <tr
                       key={db.name}
                       className="border-b hover:bg-control-bg cursor-pointer"
@@ -2096,12 +2105,10 @@ function TargetDatabasesSelectPanel({
                   <Button
                     appearance="secondary"
                     size="sm"
-                    disabled={loadingMoreDbs}
+                    disabled={loading}
                     onClick={loadMoreDatabases}
                   >
-                    {loadingMoreDbs
-                      ? t("common.loading")
-                      : t("common.load-more")}
+                    {loading ? t("common.loading") : t("common.load-more")}
                   </Button>
                 </div>
               )}

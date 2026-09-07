@@ -1,15 +1,14 @@
 import { create } from "@bufbuild/protobuf";
 import { FieldMaskSchema } from "@bufbuild/protobuf/wkt";
 import { LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "@/app/router";
-import { PROJECT_V1_ROUTE_DATABASE_DETAIL } from "@/app/router/handles";
 import { ComponentPermissionGuard } from "@/components/ComponentPermissionGuard";
 import { TransferProjectSheet } from "@/components/database";
+import { SampleExpirationAlert } from "@/components/SampleExpirationAlert";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
@@ -18,7 +17,8 @@ import {
   DatabaseSchema$,
   UpdateDatabaseRequestSchema,
 } from "@/types/proto-es/v1/database_service_pb";
-import { getDatabaseProject } from "@/utils";
+import { autoDatabaseRoute, getDatabaseProject } from "@/utils";
+import { isProjectInstanceDatabase } from "@/utils/v1/database";
 import { DatabaseDetailActions } from "./database-detail/DatabaseDetailActions";
 import { DatabaseDetailHeader } from "./database-detail/DatabaseDetailHeader";
 import { DatabaseCatalogPanel } from "./database-detail/panels/DatabaseCatalogPanel";
@@ -37,64 +37,37 @@ import {
 } from "./database-detail/tabs";
 import { useProjectDatabaseDetail } from "./database-detail/useProjectDatabaseDetail";
 
-const buildDatabaseDetailRoute = (
-  database: {
-    name: string;
-    project: string;
-  },
-  options?: {
-    hash?: string;
-    query?: Record<string, string | undefined>;
-  }
-) => {
-  const databaseMatches = database.name.match(
-    /(?:^|\/)instances\/(?<instanceId>[^/]+)\/databases\/(?<databaseName>[^/]+)(?:$|\/)/
-  );
-  const projectMatches = database.project.match(
-    /(?:^|\/)projects\/(?<projectId>[^/]+)(?:$|\/)/
-  );
-
-  return {
-    name: PROJECT_V1_ROUTE_DATABASE_DETAIL,
-    params: {
-      projectId: projectMatches?.groups?.projectId ?? "",
-      instanceId: databaseMatches?.groups?.instanceId ?? "",
-      databaseName: databaseMatches?.groups?.databaseName ?? "",
-    },
-    hash: options?.hash,
-    query: options?.query,
-  };
-};
-
 export interface ProjectDatabaseDetailPageProps {
   projectId: string;
   instanceId: string;
   databaseName: string;
-  hash?: string;
-  query?: Record<string, string | undefined>;
+  routeHash?: string;
+  routeQuery?: Record<string, string | undefined>;
 }
 
 export function ProjectDatabaseDetailPage({
   projectId,
   instanceId,
   databaseName,
-  hash,
-  query,
+  routeHash: hash,
+  routeQuery: query,
 }: ProjectDatabaseDetailPageProps) {
   const { t } = useTranslation();
+  const parent = query?.parent ?? `instances/${instanceId}`;
+  const databaseRouteQuery = useMemo(
+    () => ({ ...query, parent }),
+    [parent, query]
+  );
   const detail = useProjectDatabaseDetail({
+    parent,
     projectId,
     instanceId,
     databaseName,
-    hash,
-    query,
   });
   const [selectedTab, setSelectedTab] = useState<ProjectDatabaseDetailTab>(() =>
     parseProjectDatabaseDetailTabHash(hash)
   );
   const [showTransferDrawer, setShowTransferDrawer] = useState(false);
-  const [showIncorrectProjectModal, setShowIncorrectProjectModal] =
-    useState(false);
 
   const handleTabChange = useCallback(
     (tab: string | number | null) => {
@@ -104,18 +77,17 @@ export function ProjectDatabaseDetailPage({
 
       const nextTab = parseProjectDatabaseDetailTabHash(tab);
       setSelectedTab(nextTab);
+      const databaseRoute = autoDatabaseRoute(detail.database);
       void router.replace({
-        name: PROJECT_V1_ROUTE_DATABASE_DETAIL,
-        params: {
-          projectId,
-          instanceId,
-          databaseName,
-        },
+        ...databaseRoute,
         hash: `#${nextTab}`,
-        query: query ?? {},
+        query: {
+          ...databaseRouteQuery,
+          ...databaseRoute.query,
+        },
       });
     },
-    [databaseName, instanceId, projectId, query]
+    [databaseRouteQuery, detail.database]
   );
 
   useEffect(() => {
@@ -125,10 +97,6 @@ export function ProjectDatabaseDetailPage({
   const handleSetEnvironment = useCallback(() => {
     handleTabChange(PROJECT_DATABASE_DETAIL_TAB_SETTING);
   }, [handleTabChange]);
-
-  const handleSQLEditorFailed = useCallback(() => {
-    setShowIncorrectProjectModal(true);
-  }, []);
 
   const handleTransferProject = useCallback(
     async (projectName: string) => {
@@ -158,12 +126,15 @@ export function ProjectDatabaseDetailPage({
           title: t("database.successfully-transferred-databases"),
         });
         setShowTransferDrawer(false);
-        void router.replace(
-          buildDatabaseDetailRoute(updatedDatabase, {
-            hash: `#${selectedTab}`,
-            query: query ?? {},
-          })
-        );
+        const databaseRoute = autoDatabaseRoute(updatedDatabase);
+        void router.replace({
+          ...databaseRoute,
+          hash: `#${selectedTab}`,
+          query: {
+            ...databaseRouteQuery,
+            ...databaseRoute.query,
+          },
+        });
       } catch {
         pushNotification({
           module: "bytebase",
@@ -172,7 +143,7 @@ export function ProjectDatabaseDetailPage({
         });
       }
     },
-    [detail.database, query, selectedTab, t]
+    [databaseRouteQuery, detail.database, selectedTab, t]
   );
 
   if (!detail.ready) {
@@ -182,9 +153,24 @@ export function ProjectDatabaseDetailPage({
       </div>
     );
   }
+  const isProjectInstance = detail.database
+    ? isProjectInstanceDatabase(detail.database)
+    : false;
 
   return (
     <div className="flex min-h-full flex-col gap-y-4 p-4">
+      <SampleExpirationAlert
+        instanceName={detail.database.instanceResource?.name ?? parent}
+      />
+
+      {isProjectInstance && (
+        <Alert
+          variant="info"
+          title={t("instance.project-bound-title")}
+          description={t("instance.project-bound-description")}
+        />
+      )}
+
       {!detail.database.effectiveEnvironment && (
         <Alert
           variant="warning"
@@ -200,10 +186,7 @@ export function ProjectDatabaseDetailPage({
       )}
 
       <div className="flex flex-col items-start gap-y-2 xl:flex-row xl:items-center xl:justify-between xl:gap-x-2">
-        <DatabaseDetailHeader
-          database={detail.database}
-          onSQLEditorFailed={handleSQLEditorFailed}
-        />
+        <DatabaseDetailHeader database={detail.database} />
         <DatabaseDetailActions
           database={detail.database}
           isDefaultProject={detail.isDefaultProject}
@@ -262,42 +245,14 @@ export function ProjectDatabaseDetailPage({
         </ComponentPermissionGuard>
       )}
 
-      <Dialog
-        open={showIncorrectProjectModal}
-        onOpenChange={setShowIncorrectProjectModal}
-      >
-        <DialogContent className="p-6">
-          <DialogTitle>{t("common.warning")}</DialogTitle>
-          <p className="mt-3 text-sm text-control-light">
-            {t("common.missing-required-permission", {
-              permissions: "bb.sql.select",
-            })}
-          </p>
-          <div className="mt-6 flex justify-end gap-x-2">
-            <Button
-              appearance="outline"
-              onClick={() => setShowIncorrectProjectModal(false)}
-            >
-              {t("common.cancel")}
-            </Button>
-            <Button
-              onClick={() => {
-                setShowIncorrectProjectModal(false);
-                setShowTransferDrawer(true);
-              }}
-            >
-              {t("database.transfer-project")}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <TransferProjectSheet
-        open={showTransferDrawer}
-        databases={[detail.database]}
-        onClose={() => setShowTransferDrawer(false)}
-        onTransfer={handleTransferProject}
-      />
+      {!isProjectInstance && (
+        <TransferProjectSheet
+          open={showTransferDrawer}
+          databases={[detail.database]}
+          onClose={() => setShowTransferDrawer(false)}
+          onTransfer={handleTransferProject}
+        />
+      )}
     </div>
   );
 }

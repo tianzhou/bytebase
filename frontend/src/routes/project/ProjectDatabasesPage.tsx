@@ -1,14 +1,14 @@
 import { create } from "@bufbuild/protobuf";
 import { FieldMaskSchema } from "@bufbuild/protobuf/wkt";
-import { Plus, SquareTerminal } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { createBehaviorMetric } from "@/app/analytics/behavior";
 import { behaviorAnalytics } from "@/app/analytics/provider";
 import { router, useCurrentRoute } from "@/app/router";
 import {
-  INSTANCE_ROUTE_CREATE,
-  SQL_EDITOR_DATABASE_MODULE,
+  PROJECT_V1_ROUTE_DATABASES,
+  PROJECT_V1_ROUTE_INSTANCE_CREATE,
 } from "@/app/router/handles";
 import { markListScrollRestorationEntry } from "@/app/router/NavigationScrollRestoration";
 import {
@@ -32,6 +32,7 @@ import {
   ProjectPageLayout,
   ProjectPageToolbar,
 } from "@/components/ProjectPageLayout";
+import { SQLEditorButton } from "@/components/SQLEditorButton";
 import { Alert } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -45,14 +46,16 @@ import type { DatabaseFilter } from "@/lib/databaseFilter";
 import { preCreateIssue } from "@/lib/plan/issue";
 import {
   CONNECT_DATABASE_PRODUCT_INTRO,
+  PRODUCT_INTRO_QUERY_KEY,
   PROJECT_INSTANCE_SYNCED_PRODUCT_INTRO,
   useProductIntro,
 } from "@/lib/productIntro";
+import { normalizeInstanceName } from "@/lib/resourceName";
+import { readSelectedGuideScenarioId } from "@/modules/workspace-setup-guide/selection";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import {
   environmentNamePrefix,
-  instanceNamePrefix,
   projectNamePrefix,
 } from "@/stores/modules/v1/common";
 import type { Permission } from "@/types";
@@ -72,7 +75,6 @@ import {
 import { unknownDatabase } from "@/types/v1/database";
 import {
   engineNameV1,
-  extractDatabaseResourceName,
   extractInstanceResourceName,
   getDefaultPagination,
   hasProjectPermissionV2,
@@ -80,6 +82,25 @@ import {
   PERMISSIONS_FOR_DATABASE_CREATE_ISSUE,
   supportedEngineV1List,
 } from "@/utils";
+import { extractProjectResourceName } from "@/utils/v1/project";
+
+const fetchAvailableInstanceCount = async (
+  projectName: string,
+  shouldListProjectInstances: boolean
+) => {
+  const results = await Promise.all([
+    hasWorkspacePermissionV2("bb.instances.list")
+      ? useAppStore.getState().fetchInstanceList({ pageSize: 2 })
+      : Promise.resolve({ instances: [], nextPageToken: "" }),
+    shouldListProjectInstances
+      ? useAppStore
+          .getState()
+          .fetchInstanceList({ parent: projectName, pageSize: 2 })
+      : Promise.resolve({ instances: [], nextPageToken: "" }),
+  ]);
+  const instances = results.flatMap((result) => result.instances);
+  return new Set(instances.map((instance) => instance.name)).size;
+};
 
 export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
@@ -101,6 +122,7 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
       project ? hasProjectPermissionV2(project, permission) : false,
     [project]
   );
+  const canListProjectInstances = hasProjectPermission("bb.instances.list");
 
   const [syncing, setSyncing] = useState(false);
   const [showCreateDrawer, setShowCreateDrawer] = useState(false);
@@ -109,9 +131,13 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
   const [showTransferDrawer, setShowTransferDrawer] = useState(false);
   const [showUnassignConfirm, setShowUnassignConfirm] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
-  const [workspaceHasInstance, setWorkspaceHasInstance] = useState<
-    boolean | undefined
+  const [availableInstanceCount, setAvailableInstanceCount] = useState<
+    number | undefined
   >(undefined);
+  const hasAvailableInstance =
+    availableInstanceCount === undefined
+      ? undefined
+      : availableInstanceCount > 0;
   const [syncingRefreshExhausted, setSyncingRefreshExhausted] = useState(false);
   const autoRefreshCountRef = useRef(0);
 
@@ -131,17 +157,31 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
 
   const searchInstances = useCallback(
     async (keyword: string): Promise<ValueOption[]> => {
-      if (!hasWorkspacePermissionV2("bb.instances.list")) return [];
-      const { instances } = await useAppStore.getState().fetchInstanceList({
+      const params = {
         pageSize: getDefaultPagination(),
         filter: keyword.trim() ? { query: keyword } : undefined,
-      });
+      };
+      const results = await Promise.all([
+        hasWorkspacePermissionV2("bb.instances.list")
+          ? useAppStore.getState().fetchInstanceList(params)
+          : Promise.resolve({ instances: [], nextPageToken: "" }),
+        canListProjectInstances && !isDefault
+          ? useAppStore
+              .getState()
+              .fetchInstanceList({ ...params, parent: projectName })
+          : Promise.resolve({ instances: [], nextPageToken: "" }),
+      ]);
+      const instances = [
+        ...new Map(
+          results.flatMap((result) => result.instances).map((i) => [i.name, i])
+        ).values(),
+      ];
       return instances.map((i) => {
         const id = extractInstanceResourceName(i.name);
-        return { value: id, keywords: [id, i.title] };
+        return { value: i.name, keywords: [id, i.title] };
       });
     },
-    []
+    [canListProjectInstances, isDefault, projectName]
   );
 
   const scopeOptions: ScopeOption[] = useMemo(() => {
@@ -201,7 +241,7 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
 
   const instanceVal = getValueFromScopes(searchParams, "instance");
   const selectedInstance = instanceVal
-    ? `${instanceNamePrefix}${instanceVal}`
+    ? normalizeInstanceName(instanceVal)
     : undefined;
 
   const selectedEngines = useMemo(
@@ -246,7 +286,7 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
       : undefined;
   }, [currentRoute.query]);
   const syncingInstanceName = syncingInstanceId
-    ? `${instanceNamePrefix}${syncingInstanceId}`
+    ? `${projectName}/instances/${syncingInstanceId}`
     : undefined;
 
   const selectedDatabases = useMemo(() => {
@@ -260,7 +300,7 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
     () => selectedDatabases.map((db) => db.name),
     [selectedDatabases]
   );
-  const canCreateInstance = hasWorkspacePermissionV2("bb.instances.create");
+  const canCreateInstance = hasProjectPermission("bb.instances.create");
 
   // Mirror `selectedDatabases` into a ref so the batch-operation handlers
   // below can read the latest value without listing it as a dep. Otherwise
@@ -294,30 +334,27 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
   }, [syncingInstanceId, visibleDatabases.length, refresh]);
 
   useEffect(() => {
-    if (!hasWorkspacePermissionV2("bb.instances.list")) {
-      setWorkspaceHasInstance(false);
-      return;
-    }
-
     let cancelled = false;
-    useAppStore
-      .getState()
-      .fetchInstanceList({ pageSize: 1 })
-      .then(({ instances }) => {
+    setAvailableInstanceCount(undefined);
+    fetchAvailableInstanceCount(
+      projectName,
+      canListProjectInstances && !isDefault
+    )
+      .then((count) => {
         if (!cancelled) {
-          setWorkspaceHasInstance(instances.length > 0);
+          setAvailableInstanceCount(count);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setWorkspaceHasInstance(false);
+          setAvailableInstanceCount(0);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canListProjectInstances, isDefault, projectName]);
 
   // Batch operation handlers
   const handleSyncSchema = useCallback(async () => {
@@ -443,6 +480,12 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
           style: "SUCCESS",
           title: t("database.successfully-transferred-databases"),
         });
+        router.push({
+          name: PROJECT_V1_ROUTE_DATABASES,
+          params: {
+            projectId: extractProjectResourceName(projectName),
+          },
+        });
       } catch {
         pushNotification({
           module: "bytebase",
@@ -494,19 +537,56 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
   const hasVisibleDatabase = visibleDatabases.length > 0;
   const showSyncingInstanceHint =
     !!syncingInstanceId && !hasVisibleDatabase && !syncingRefreshExhausted;
-  const showPostSyncNextAction = !!syncingInstanceId && hasVisibleDatabase;
-  const checkingWorkspaceInstance =
+  const databaseNextActionRequested =
+    (availableInstanceCount === 1 && !!syncingInstanceId) ||
+    currentRoute.query[PRODUCT_INTRO_QUERY_KEY] ===
+      PROJECT_INSTANCE_SYNCED_PRODUCT_INTRO;
+  const [databaseNextActionProject, setDatabaseNextActionProject] = useState<
+    string | undefined
+  >(() => (databaseNextActionRequested ? projectName : undefined));
+  useEffect(() => {
+    if (databaseNextActionRequested) {
+      setDatabaseNextActionProject(projectName);
+    }
+  }, [databaseNextActionRequested, projectName]);
+  const showDatabaseNextAction =
+    hasVisibleDatabase && databaseNextActionProject === projectName;
+  const selectedGuideScenarioId = readSelectedGuideScenarioId();
+  const databaseNextAction =
+    selectedGuideScenarioId === "create-database-change"
+      ? {
+          title: t("db.project-instance-synced-create-change-title"),
+          description: t(
+            "db.project-instance-synced-create-change-description"
+          ),
+          showCreateChange: true,
+          showSqlEditor: false,
+        }
+      : selectedGuideScenarioId === "query-data"
+        ? {
+            title: t("db.project-instance-synced-query-data-title"),
+            description: t("db.project-instance-synced-query-data-description"),
+            showCreateChange: false,
+            showSqlEditor: true,
+          }
+        : {
+            title: t("db.project-instance-synced-title"),
+            description: t("db.project-instance-synced-description"),
+            showCreateChange: true,
+            showSqlEditor: true,
+          };
+  const checkingAvailableInstance =
     !hasVisibleDatabase &&
     !showSyncingInstanceHint &&
     !syncingRefreshExhausted &&
-    workspaceHasInstance === undefined;
+    hasAvailableInstance === undefined;
   const emptyProjectHasInstance =
     !hasVisibleDatabase &&
-    (workspaceHasInstance === true || syncingRefreshExhausted) &&
+    (hasAvailableInstance === true || syncingRefreshExhausted) &&
     !showSyncingInstanceHint;
   const emptyProjectShouldConnectInstance =
     !hasVisibleDatabase &&
-    workspaceHasInstance === false &&
+    hasAvailableInstance === false &&
     !syncingRefreshExhausted &&
     !showSyncingInstanceHint;
 
@@ -523,26 +603,13 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
   }, [projectName, visibleDatabases]);
 
   const handleOpenFirstDatabaseInSQLEditor = useCallback(() => {
-    const firstDatabase = visibleDatabases[0];
-    if (!firstDatabase) return;
     behaviorAnalytics.captureMetric(
       createBehaviorMetric("post sync sql editor clicked", {
         routeId: router.currentRoute.value.name?.toString(),
         resource: projectName,
       })
     );
-    const { instanceName, databaseName } = extractDatabaseResourceName(
-      firstDatabase.name
-    );
-    router.push({
-      name: SQL_EDITOR_DATABASE_MODULE,
-      params: {
-        project: projectId,
-        instance: instanceName,
-        database: databaseName,
-      },
-    });
-  }, [projectId, projectName, visibleDatabases]);
+  }, [projectName]);
 
   useProductIntro({
     id: CONNECT_DATABASE_PRODUCT_INTRO,
@@ -551,20 +618,20 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
     disabled:
       showSyncingInstanceHint ||
       hasVisibleDatabase ||
-      workspaceHasInstance !== false ||
+      hasAvailableInstance !== false ||
       !canCreateInstance,
   });
   useProductIntro({
     id: PROJECT_INSTANCE_SYNCED_PRODUCT_INTRO,
-    title: t("db.project-instance-synced-title"),
-    description: t("db.project-instance-synced-description"),
-    disabled: !showPostSyncNextAction,
+    title: databaseNextAction.title,
+    description: databaseNextAction.description,
+    disabled: !showDatabaseNextAction,
   });
 
   const handleCreateDatabaseAction = useCallback(() => {
-    if (checkingWorkspaceInstance) return;
+    if (checkingAvailableInstance) return;
     if (emptyProjectShouldConnectInstance) {
-      if (!hasWorkspacePermissionV2("bb.instances.create")) return;
+      if (!hasProjectPermission("bb.instances.create")) return;
       behaviorAnalytics.captureMetric(
         createBehaviorMetric("connect database clicked", {
           routeId: router.currentRoute.value.name?.toString(),
@@ -572,15 +639,16 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
         })
       );
       router.push({
-        name: INSTANCE_ROUTE_CREATE,
-        query: { project: projectId },
+        name: PROJECT_V1_ROUTE_INSTANCE_CREATE,
+        params: { projectId },
       });
       return;
     }
     setShowCreateDrawer(true);
   }, [
-    checkingWorkspaceInstance,
+    checkingAvailableInstance,
     emptyProjectShouldConnectInstance,
+    hasProjectPermission,
     projectId,
     projectName,
   ]);
@@ -614,7 +682,7 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
                   : undefined
               }
               disabled={
-                checkingWorkspaceInstance
+                checkingAvailableInstance
                   ? true
                   : hasVisibleDatabase || emptyProjectHasInstance
                     ? !hasProjectPermission("bb.instances.list") ||
@@ -664,39 +732,50 @@ export function ProjectDatabasesPage({ projectId }: { projectId: string }) {
         />
       )}
 
-      {showPostSyncNextAction && (
+      {showDatabaseNextAction && (
         <Alert
           variant="info"
           data-product-intro-target={PROJECT_INSTANCE_SYNCED_PRODUCT_INTRO}
-          title={t("db.project-instance-synced-title")}
+          title={databaseNextAction.title}
           description={
             <div className="flex flex-col gap-y-3">
-              <span>{t("db.project-instance-synced-description")}</span>
+              <span>{databaseNextAction.description}</span>
               <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-2">
-                <PermissionGuard
-                  permissions={["bb.sql.select"]}
-                  project={project}
-                >
-                  <Button
-                    size="sm"
-                    onClick={handleOpenFirstDatabaseInSQLEditor}
+                {databaseNextAction.showCreateChange && (
+                  <PermissionGuard
+                    permissions={PERMISSIONS_FOR_DATABASE_CREATE_ISSUE}
+                    project={project}
                   >
-                    <SquareTerminal className="size-4" />
-                    {t("db.project-instance-synced-sql-editor-action")}
-                  </Button>
-                </PermissionGuard>
-                <PermissionGuard
-                  permissions={PERMISSIONS_FOR_DATABASE_CREATE_ISSUE}
-                  project={project}
-                >
-                  <Button
-                    size="sm"
-                    appearance="outline"
-                    onClick={handleCreateFirstChange}
+                    <Button
+                      size="sm"
+                      appearance={
+                        databaseNextAction.showSqlEditor ? "outline" : undefined
+                      }
+                      onClick={handleCreateFirstChange}
+                    >
+                      {t("db.project-instance-synced-action")}
+                    </Button>
+                  </PermissionGuard>
+                )}
+                {databaseNextAction.showSqlEditor && (
+                  <PermissionGuard
+                    permissions={["bb.sql.select"]}
+                    project={project}
                   >
-                    {t("db.project-instance-synced-action")}
-                  </Button>
-                </PermissionGuard>
+                    <span
+                      className="inline-flex"
+                      onClickCapture={handleOpenFirstDatabaseInSQLEditor}
+                    >
+                      <SQLEditorButton
+                        size="sm"
+                        database={visibleDatabases[0]}
+                        label={t(
+                          "db.project-instance-synced-sql-editor-action"
+                        )}
+                      />
+                    </span>
+                  </PermissionGuard>
+                )}
               </div>
             </div>
           }

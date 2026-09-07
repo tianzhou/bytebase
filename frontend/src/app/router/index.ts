@@ -1,4 +1,5 @@
 import {
+  matchRoutes,
   useLocation,
   useNavigate as useReactRouterNavigate,
   useMatches,
@@ -33,7 +34,7 @@ export {
   PROJECT_V1_ROUTE_DATABASE_DETAIL,
   PROJECT_V1_ROUTE_DATABASES,
   PROJECT_V1_ROUTE_DETAIL,
-  SETTING_ROUTE_PROFILE,
+  ACCOUNT_ROUTE,
   SETTING_ROUTE_WORKSPACE_GENERAL,
   SETTING_ROUTE_WORKSPACE_SUBSCRIPTION,
   SQL_EDITOR_DATABASE_MODULE,
@@ -55,7 +56,6 @@ export {
   WORKSPACE_ROUTE_SEMANTIC_TYPES,
   WORKSPACE_ROUTE_SERVICE_ACCOUNTS,
   WORKSPACE_ROUTE_SQL_REVIEW,
-  WORKSPACE_ROUTE_USER_PROFILE,
   WORKSPACE_ROUTE_USERS,
   WORKSPACE_ROUTE_WORKLOAD_IDENTITIES,
 } from "./handles";
@@ -229,6 +229,20 @@ function currentRouteSnapshot(): ReactRoute {
 export function resolveRoute(to: RouteTarget): ReactResolvedRoute {
   const fullPath = resolveTarget(to);
   return { href: fullPath, fullPath };
+}
+
+export function resolveRouteName(pathname: string): string | undefined {
+  const matches = matchRoutes(
+    // Index routes are registered after their parents and share the same path.
+    getRegisteredRoutes()
+      .reverse()
+      .map(({ name, path }) => ({
+        path,
+        handle: { name },
+      })),
+    pathname
+  );
+  return (matches?.at(-1)?.route.handle as RouteHandle | undefined)?.name;
 }
 
 type PushOptions = Omit<NavigationOptions, "replace">;

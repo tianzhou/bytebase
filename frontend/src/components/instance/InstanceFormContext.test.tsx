@@ -4,17 +4,34 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { Engine, State } from "@/types/proto-es/v1/common_pb";
+import type { DataSource } from "@/types/proto-es/v1/instance_service_pb";
 import {
+  DataSource_AuthenticationType,
+  DataSource_AWSCredentialSchema,
   DataSourceSchema,
   DataSourceType,
   InstanceSchema,
 } from "@/types/proto-es/v1/instance_service_pb";
+import { ProjectSchema } from "@/types/proto-es/v1/project_service_pb";
 import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
 import { unknownInstance } from "@/types/v1/instance";
+import type { EditDataSource } from "./common";
+import { wrapEditDataSource } from "./common";
 import {
   InstanceFormProvider,
   useInstanceFormContext,
 } from "./InstanceFormContext";
+
+const mocks = vi.hoisted(() => ({
+  hasInstancePermission: vi.fn(() => true),
+  pushNotification: vi.fn(),
+  createInstance: vi.fn(),
+  isSaaSMode: false,
+}));
+
+vi.mock("./permission", () => ({
+  hasInstancePermission: mocks.hasInstancePermission,
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -51,7 +68,7 @@ vi.mock("@/types", () => ({
 }));
 
 vi.mock("@/stores", () => ({
-  pushNotification: vi.fn(),
+  pushNotification: mocks.pushNotification,
 }));
 
 let mockEnvironmentList: { id: string; name: string }[] = [];
@@ -59,13 +76,14 @@ let mockEnvironmentList: { id: string; name: string }[] = [];
 vi.mock("@/stores/app", () => {
   const appState = () => ({
     createDataSource: vi.fn(),
-    createInstance: vi.fn(),
+    createInstance: mocks.createInstance,
     updateDataSource: vi.fn(),
     getEnvironmentByName: (name: string) => ({ name }),
     hasInstanceFeature: () => false,
     instanceLicenseCount: () => 1,
     activatedInstanceCount: () => 0,
     currentPlan: () => 1,
+    isSaaSMode: () => mocks.isSaaSMode,
     environmentList: mockEnvironmentList,
   });
   return {
@@ -133,11 +151,28 @@ const Probe = () => {
   return (
     <div
       data-title={ctx.basicInfo.title}
+      data-name={ctx.basicInfo.name}
+      data-parent={ctx.parent}
       data-host={ctx.adminDataSource.host}
       data-environment={ctx.basicInfo.environment}
       data-value-changed={String(ctx.valueChanged)}
       data-is-editing={String(ctx.isEditing)}
+      data-can-update={String(ctx.hasPermission("bb.instances.update"))}
     />
+  );
+};
+
+const ConnectionProbe = ({ host }: { host: string }) => {
+  const ctx = useInstanceFormContext();
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        await ctx.testConnection({ ...ctx.adminDataSource, host });
+      }}
+    >
+      Test
+    </button>
   );
 };
 
@@ -162,8 +197,34 @@ const renderIntoContainer = () => {
 
 describe("InstanceFormProvider", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.hasInstancePermission.mockReturnValue(true);
+    mocks.isSaaSMode = false;
+    mocks.createInstance.mockResolvedValue(create(InstanceSchema, {}));
     mockEnvironmentList = [];
     vi.useRealTimers();
+  });
+
+  test("uses project ownership for create names and permissions", async () => {
+    const project = create(ProjectSchema, { name: "projects/app" });
+    const harness = renderIntoContainer();
+
+    await harness.render(
+      <InstanceFormProvider parent="projects/app" project={project}>
+        <Probe />
+      </InstanceFormProvider>
+    );
+
+    const probe = harness.container.firstElementChild as HTMLElement;
+    expect(probe.dataset.name).toBe("projects/app/instances/-");
+    expect(probe.dataset.parent).toBe("projects/app");
+    expect(probe.dataset.canUpdate).toBe("true");
+    expect(mocks.hasInstancePermission).toHaveBeenCalledWith(
+      project,
+      "bb.instances.update"
+    );
+
+    harness.unmount();
   });
 
   test("selects the first environment by default when creating an instance", async () => {
@@ -178,6 +239,66 @@ describe("InstanceFormProvider", () => {
 
     const probe = harness.container.firstElementChild as HTMLElement;
     expect(probe.dataset.environment).toBe("environments/dev");
+
+    harness.unmount();
+  });
+
+  test("explains local-only hosts in Bytebase Cloud without Docker advice", async () => {
+    mocks.isSaaSMode = true;
+    mocks.createInstance.mockRejectedValue(new Error("connection refused"));
+    const harness = renderIntoContainer();
+
+    await harness.render(
+      <InstanceFormProvider>
+        <ConnectionProbe host="127.1.2.3" />
+      </InstanceFormProvider>
+    );
+    await act(async () => {
+      (harness.container.firstElementChild as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.pushNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "instance.failed-to-connect-instance-saas-local-host"
+        ),
+      })
+    );
+    expect(mocks.pushNotification).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "instance.failed-to-connect-instance-localhost"
+        ),
+      })
+    );
+
+    harness.unmount();
+  });
+
+  test("keeps Docker host advice for self-hosted local connections", async () => {
+    mocks.createInstance.mockRejectedValue(new Error("connection refused"));
+    const harness = renderIntoContainer();
+
+    await harness.render(
+      <InstanceFormProvider>
+        <ConnectionProbe host="0.0.0.0" />
+      </InstanceFormProvider>
+    );
+    await act(async () => {
+      (harness.container.firstElementChild as HTMLButtonElement).click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.pushNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining(
+          "instance.failed-to-connect-instance-localhost"
+        ),
+      })
+    );
 
     harness.unmount();
   });
@@ -337,5 +458,263 @@ describe("InstanceFormProvider", () => {
     ).toBeNull();
 
     harness.unmount();
+  });
+
+  describe("checkDataSource AWS region requirement", () => {
+    const awsDataSource = (region: string, withCredential: boolean) => {
+      const ds = wrapEditDataSource(
+        create(DataSourceSchema, {
+          id: "admin",
+          type: DataSourceType.ADMIN,
+          authenticationType: DataSource_AuthenticationType.AWS_RDS_IAM,
+          region,
+        })
+      );
+      if (withCredential) {
+        ds.iamExtension = {
+          case: "awsCredential",
+          value: create(DataSource_AWSCredentialSchema, {}),
+        };
+      }
+      return ds;
+    };
+
+    const CheckDataSourceProbe = () => {
+      const ctx = useInstanceFormContext();
+      return (
+        <div
+          data-credential-no-region={String(
+            ctx.checkDataSource([awsDataSource("", true)])
+          )}
+          data-credential-with-region={String(
+            ctx.checkDataSource([awsDataSource("us-east-1", true)])
+          )}
+          data-default-chain-no-region={String(
+            ctx.checkDataSource([awsDataSource("", false)])
+          )}
+        />
+      );
+    };
+
+    const instanceOfEngine = (engine: Engine) =>
+      create(InstanceSchema, {
+        name: "instances/aws-check",
+        title: "AWS check",
+        engine,
+        environment: "environments/prod",
+        dataSources: [
+          create(DataSourceSchema, { id: "admin", type: DataSourceType.ADMIN }),
+        ],
+      });
+
+    test("DynamoDB requires a region only with a specific credential", async () => {
+      const harness = renderIntoContainer();
+
+      await harness.render(
+        <InstanceFormProvider instance={instanceOfEngine(Engine.DYNAMODB)}>
+          <CheckDataSourceProbe />
+        </InstanceFormProvider>
+      );
+
+      const probe = harness.container.firstElementChild as HTMLElement;
+      expect(probe.dataset.credentialNoRegion).toBe("false");
+      expect(probe.dataset.credentialWithRegion).toBe("true");
+      expect(probe.dataset.defaultChainNoRegion).toBe("true");
+
+      harness.unmount();
+    });
+
+    test("other engines require a region for AWS IAM even on the default credential chain", async () => {
+      const harness = renderIntoContainer();
+
+      await harness.render(
+        <InstanceFormProvider instance={instanceOfEngine(Engine.POSTGRES)}>
+          <CheckDataSourceProbe />
+        </InstanceFormProvider>
+      );
+
+      const probe = harness.container.firstElementChild as HTMLElement;
+      expect(probe.dataset.credentialNoRegion).toBe("false");
+      expect(probe.dataset.credentialWithRegion).toBe("true");
+      expect(probe.dataset.defaultChainNoRegion).toBe("false");
+
+      harness.unmount();
+    });
+  });
+
+  // The server refuses to carry a stored Kerberos keytab to a destination the
+  // caller moved, so the form has to fail the data source before it offers to
+  // save it — otherwise the refusal arrives as a connection failure.
+  describe("checkDataSource Kerberos keytab resupply", () => {
+    const storedDataSource = create(DataSourceSchema, {
+      id: "admin",
+      type: DataSourceType.ADMIN,
+      host: "hive.example.com",
+      port: "10000",
+      saslConfig: {
+        mechanism: {
+          case: "krbConfig",
+          value: {
+            primary: "bytebase",
+            realm: "EXAMPLE.COM",
+            kdcHost: "kdc.example.com",
+            kdcPort: "88",
+          },
+        },
+      },
+    });
+
+    const editedDataSource = (edit: (ds: EditDataSource) => void) => {
+      const ds = wrapEditDataSource(storedDataSource);
+      edit(ds);
+      return ds;
+    };
+
+    const movedHost = () =>
+      editedDataSource((ds) => {
+        ds.host = "hive-2.example.com";
+      });
+
+    const KeytabProbe = () => {
+      const ctx = useInstanceFormContext();
+      return (
+        <div
+          data-username-only={String(
+            ctx.checkDataSource([
+              editedDataSource((ds) => {
+                ds.username = "hive";
+              }),
+            ])
+          )}
+          data-moved-host={String(ctx.checkDataSource([movedHost()]))}
+          data-moved-kdc={String(
+            ctx.checkDataSource([
+              editedDataSource((ds) => {
+                if (ds.saslConfig?.mechanism?.case === "krbConfig") {
+                  ds.saslConfig.mechanism.value.kdcHost = "kdc-2.example.com";
+                }
+              }),
+            ])
+          )}
+          data-moved-with-keytab={String(
+            ctx.checkDataSource([
+              editedDataSource((ds) => {
+                ds.host = "hive-2.example.com";
+                if (ds.saslConfig?.mechanism?.case === "krbConfig") {
+                  ds.saslConfig.mechanism.value.keytab = new Uint8Array([5, 2]);
+                }
+              }),
+            ])
+          )}
+          data-needs-resupply={String(ctx.needsKeytabResupply(movedHost()))}
+        />
+      );
+    };
+
+    test("a moved destination fails the data source until the keytab is uploaded again", async () => {
+      const harness = renderIntoContainer();
+
+      await harness.render(
+        <InstanceFormProvider
+          instance={create(InstanceSchema, {
+            name: "instances/hive",
+            title: "Hive",
+            engine: Engine.HIVE,
+            environment: "environments/prod",
+            dataSources: [storedDataSource],
+          })}
+        >
+          <KeytabProbe />
+        </InstanceFormProvider>
+      );
+
+      const probe = harness.container.firstElementChild as HTMLElement;
+      expect(probe.dataset.usernameOnly).toBe("true");
+      expect(probe.dataset.movedHost).toBe("false");
+      expect(probe.dataset.movedKdc).toBe("false");
+      expect(probe.dataset.movedWithKeytab).toBe("true");
+      expect(probe.dataset.needsResupply).toBe("true");
+
+      harness.unmount();
+    });
+
+    const ResupplyProbe = ({ build }: { build: () => EditDataSource }) => {
+      const ctx = useInstanceFormContext();
+      return <div data-needs-resupply={String(ctx.needsKeytabResupply(build()))} />;
+    };
+
+    const renderWithStored = async (
+      stored: DataSource[],
+      build: () => EditDataSource
+    ) => {
+      const harness = renderIntoContainer();
+      await harness.render(
+        <InstanceFormProvider
+          instance={create(InstanceSchema, {
+            name: "instances/hive",
+            title: "Hive",
+            engine: Engine.HIVE,
+            environment: "environments/prod",
+            dataSources: stored,
+          })}
+        >
+          <ResupplyProbe build={build} />
+        </InstanceFormProvider>
+      );
+      const probe = harness.container.firstElementChild as HTMLElement;
+      const result = probe.dataset.needsResupply;
+      harness.unmount();
+      return result;
+    };
+
+    // The comparison runs on what the form would send, not on the edit state,
+    // because that is what the server merges and then compares.
+    test("the port the form fills in for the engine counts as a move", async () => {
+      const withoutPort = create(DataSourceSchema, {
+        ...storedDataSource,
+        port: "",
+      });
+      expect(
+        await renderWithStored([withoutPort], () =>
+          wrapEditDataSource(withoutPort)
+        )
+      ).toBe("true");
+    });
+
+    test("an SSH tunnel the form drops for the engine counts as a move", async () => {
+      const withTunnel = create(DataSourceSchema, {
+        ...storedDataSource,
+        sshHost: "bastion.example.com",
+        sshPort: "22",
+      });
+      expect(
+        await renderWithStored([withTunnel], () =>
+          wrapEditDataSource(withTunnel)
+        )
+      ).toBe("true");
+    });
+
+    // checkDataSource runs over every data source, so the stored record has to
+    // be the one with the same ID rather than whichever comes first.
+    test("each data source is compared against its own stored record", async () => {
+      const readonlyDataSource = create(DataSourceSchema, {
+        ...storedDataSource,
+        id: "readonly",
+        type: DataSourceType.READ_ONLY,
+        host: "hive-replica.example.com",
+      });
+      expect(
+        await renderWithStored([storedDataSource, readonlyDataSource], () =>
+          wrapEditDataSource(readonlyDataSource)
+        )
+      ).toBe("false");
+      expect(
+        await renderWithStored([storedDataSource, readonlyDataSource], () => {
+          const ds = wrapEditDataSource(readonlyDataSource);
+          ds.host = "hive-replica-2.example.com";
+          return ds;
+        })
+      ).toBe("true");
+    });
   });
 });

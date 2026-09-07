@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   PROJECT_V1_ROUTE_PLAN_DETAIL_SPECS,
   WORKSPACE_ROUTE_404,
+  WORKSPACE_ROUTE_MCP,
 } from "@/app/router/handles";
+import { buildReactRoute } from "./index";
 import { routes } from "./routes";
+import { sqlEditorRoutes } from "./routes/sqlEditor";
 
 // Guardrail for the "blank body" route bug class. During the Vue→React router
 // migration, several leaf routes were ported as bare `{ path, handle }` objects
@@ -69,7 +72,45 @@ function collectBareLeaves(
   return bare;
 }
 
+describe("workspace root", () => {
+  // The redirect for "/" is decided by `rootGuard` in the index route's loader,
+  // not by a static <Navigate>. `login()` and `signup()` rely on that seam:
+  // they navigate to "/" and expect the guard to resolve the real destination.
+  // Lose the loader and an EDITOR workspace silently lands on the landing page,
+  // which is the customer bug this guards.
+  it("matches an index route carrying a loader", () => {
+    const matched = matchRoutes(routes, "/");
+    const leaf = matched?.at(-1)?.route;
+
+    expect(leaf).toBeDefined();
+    expect(typeof leaf?.loader).toBe("function");
+  });
+});
+
+describe("MCP integration route", () => {
+  it("does not require settings access to open the setup page", () => {
+    const matches = matchRoutes(routes, "/integration/mcp");
+    const route = buildReactRoute(
+      { pathname: "/integration/mcp", search: "", hash: "" },
+      (matches ?? []).map((match) => ({ handle: match.route.handle })),
+      {}
+    );
+
+    expect(route.name).toBe(WORKSPACE_ROUTE_MCP);
+    expect(route.requiredPermissions).toEqual([]);
+  });
+});
+
 describe("react route table reachability", () => {
+  it("marks SQL Editor layout leaves with an explicit null element", () => {
+    const children = sqlEditorRoutes[0].children ?? [];
+
+    expect(children.length).toBeGreaterThan(0);
+    for (const route of children) {
+      expect(route).toHaveProperty("element", null);
+    }
+  });
+
   it("every leaf route renders something or redirects (no blank-body bare leaves)", () => {
     expect(collectBareLeaves(routes)).toEqual([]);
   });

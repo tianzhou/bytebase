@@ -9,7 +9,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"github.com/pkg/errors"
 
@@ -23,6 +22,15 @@ import (
 func (s *Store) GetProjectByResourceID(ctx context.Context, resourceID string) (*ProjectMessage, error) {
 	if v, ok := s.projectCache.Get(resourceID); ok && s.enableCache {
 		return v, nil
+	}
+	if s.enableCache {
+		// Keep the database read and cache publication ordered with project
+		// invalidation for the same reason as ListProjects.
+		s.projectPublishMu.Lock()
+		defer s.projectPublishMu.Unlock()
+		if v, ok := s.projectCache.Get(resourceID); ok {
+			return v, nil
+		}
 	}
 
 	q := qb.Q().Space("SELECT resource_id, workspace, name, setting, deleted FROM project WHERE resource_id = ?", resourceID)
@@ -50,7 +58,7 @@ func (s *Store) GetProjectByResourceID(ctx context.Context, resourceID string) (
 		return nil, err
 	}
 	project.Setting = setting
-	s.storeProjectCache(&project)
+	s.projectCache.Add(project.ResourceID, &project)
 	return &project, nil
 }
 
@@ -65,6 +73,7 @@ func (s *Store) GetInstanceByResourceID(ctx context.Context, resourceID string) 
 		SELECT
 			instance.resource_id,
 			instance.workspace,
+			instance.project,
 			instance.environment,
 			instance.deleted,
 			instance.metadata
@@ -77,11 +86,13 @@ func (s *Store) GetInstanceByResourceID(ctx context.Context, resourceID string) 
 	}
 
 	var instance InstanceMessage
+	var project sql.NullString
 	var environment sql.NullString
 	var metadata []byte
 	if err := s.GetDB().QueryRowContext(ctx, query, args...).Scan(
 		&instance.ResourceID,
 		&instance.Workspace,
+		&project,
 		&environment,
 		&instance.Deleted,
 		&metadata,
@@ -93,6 +104,9 @@ func (s *Store) GetInstanceByResourceID(ctx context.Context, resourceID string) 
 	}
 	if environment.Valid {
 		instance.EnvironmentID = &environment.String
+	}
+	if project.Valid {
+		instance.ProjectID = &project.String
 	}
 	instanceMetadata := &storepb.Instance{}
 	if err := common.ProtojsonUnmarshaler.Unmarshal(metadata, instanceMetadata); err != nil {
@@ -119,6 +133,7 @@ func (s *Store) ListAllInstances(ctx context.Context, showDeleted bool) ([]*Inst
 		SELECT
 			instance.resource_id,
 			instance.workspace,
+			instance.project,
 			instance.environment,
 			instance.deleted,
 			instance.metadata
@@ -140,11 +155,13 @@ func (s *Store) ListAllInstances(ctx context.Context, showDeleted bool) ([]*Inst
 	defer rows.Close()
 	for rows.Next() {
 		var instance InstanceMessage
+		var project sql.NullString
 		var environment sql.NullString
 		var metadata []byte
 		if err := rows.Scan(
 			&instance.ResourceID,
 			&instance.Workspace,
+			&project,
 			&environment,
 			&instance.Deleted,
 			&metadata,
@@ -153,6 +170,9 @@ func (s *Store) ListAllInstances(ctx context.Context, showDeleted bool) ([]*Inst
 		}
 		if environment.Valid {
 			instance.EnvironmentID = &environment.String
+		}
+		if project.Valid {
+			instance.ProjectID = &project.String
 		}
 		instanceMetadata := &storepb.Instance{}
 		if err := common.ProtojsonUnmarshaler.Unmarshal(metadata, instanceMetadata); err != nil {
@@ -180,20 +200,4 @@ func (s *Store) ListAllInstances(ctx context.Context, showDeleted bool) ([]*Inst
 		s.instanceCache.Add(getInstanceCacheKey(instance.ResourceID), instance)
 	}
 	return instances, nil
-}
-
-// DeleteExpiredExportArchivesAll deletes expired export archives across all workspaces.
-// For use by the cleaner runner.
-func (s *Store) DeleteExpiredExportArchivesAll(ctx context.Context, retentionPeriod time.Duration) (int64, error) {
-	cutoffTime := time.Now().Add(-retentionPeriod)
-	q := qb.Q().Space("DELETE FROM export_archive WHERE created_at < ?", cutoffTime)
-	query, args, err := q.ToSQL()
-	if err != nil {
-		return 0, errors.Wrapf(err, "failed to build sql")
-	}
-	result, err := s.GetDB().ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }

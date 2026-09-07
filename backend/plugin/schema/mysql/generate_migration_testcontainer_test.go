@@ -33,9 +33,7 @@ func TestGenerateMigrationWithTestcontainer(t *testing.T) {
 	ctx := context.Background()
 
 	// Start shared MySQL container for all subtests
-	container, err := testcontainer.GetTestMySQLContainer(ctx)
-	require.NoError(t, err)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedMySQLContainer(t)
 
 	// Test cases with various schema changes
 	testCases := []struct {
@@ -631,6 +629,65 @@ GROUP BY region, YEAR(sale_date), MONTH(sale_date);
 ALTER TABLE sales_data ADD CONSTRAINT chk_amount_positive CHECK (amount > 0);
 `,
 			description: "Operations on partitioned tables",
+		},
+		{
+			// The "partitioned_tables" case above only exercises the drop direction, which
+			// generateMigration deduplicates on its own (see tableDrop). This case makes the
+			// rollback re-add the constraints, so it covers the create/alter direction where
+			// each partition used to contribute another copy of the table to the diff
+			// (BYT-10057): the repeated ADD PRIMARY KEY failed with "Multiple primary key
+			// defined" and the repeated CREATE INDEX with "Duplicate key name".
+			name: "reverse_partitioned_table_constraints",
+			initialSchema: `
+CREATE TABLE ads_member_asset_by_account_channel_d (
+    dt DATE NOT NULL,
+    member_id BIGINT NOT NULL,
+    account_type VARCHAR(50) NOT NULL,
+    net_asset_amount DECIMAL(38,10) DEFAULT NULL,
+    PRIMARY KEY (dt, member_id, account_type),
+    KEY sindex (dt, member_id, account_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+PARTITION BY RANGE (TO_DAYS(dt)) (
+    PARTITION p0 VALUES LESS THAN (739000),
+    PARTITION p1 VALUES LESS THAN (739001),
+    PARTITION p2 VALUES LESS THAN (739002),
+    PARTITION p3 VALUES LESS THAN (739003),
+    PARTITION p_future VALUES LESS THAN MAXVALUE
+);
+`,
+			migrationDDL: `
+DROP INDEX sindex ON ads_member_asset_by_account_channel_d;
+ALTER TABLE ads_member_asset_by_account_channel_d DROP PRIMARY KEY;
+`,
+			description: "Re-adding a primary key and an overlapping secondary index on a partitioned table",
+		},
+		{
+			// Recreating the table exercises the partition clause itself: partitioning is
+			// part of the table definition and cannot be added afterwards, so a generated
+			// CREATE TABLE that omits it silently hands the target an unpartitioned copy.
+			// The schema comparison at the end of this test is what catches that, since
+			// partitions are not normalized away.
+			name: "reverse_create_partitioned_table",
+			initialSchema: `
+CREATE TABLE ads_member_asset_by_account_channel_d (
+    dt DATE NOT NULL,
+    member_id BIGINT NOT NULL,
+    account_type VARCHAR(50) NOT NULL,
+    net_asset_amount DECIMAL(38,10) DEFAULT NULL,
+    PRIMARY KEY (dt, member_id, account_type),
+    KEY sindex (dt, member_id, account_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+PARTITION BY RANGE (TO_DAYS(dt)) (
+    PARTITION p0 VALUES LESS THAN (739000),
+    PARTITION p1 VALUES LESS THAN (739001),
+    PARTITION p2 VALUES LESS THAN (739002),
+    PARTITION p_future VALUES LESS THAN MAXVALUE
+);
+`,
+			migrationDDL: `
+DROP TABLE ads_member_asset_by_account_channel_d;
+`,
+			description: "Recreating a partitioned table from metadata",
 		},
 		{
 			name: "generated_columns",
@@ -1636,7 +1693,7 @@ CREATE TABLE some_table (
 			// Step 1: Initialize the database schema and get schema result A
 			// Create a unique test database for parallel execution
 			testDBName := fmt.Sprintf("test_%s", strings.ReplaceAll(uuid.New().String(), "-", "_"))
-			_, err = container.GetDB().Exec(fmt.Sprintf("CREATE DATABASE `%s`", testDBName))
+			_, err := container.GetDB().Exec(fmt.Sprintf("CREATE DATABASE `%s`", testDBName))
 			require.NoError(t, err)
 
 			// Create MySQL driver for this test's database

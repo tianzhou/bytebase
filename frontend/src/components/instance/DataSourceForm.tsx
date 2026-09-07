@@ -8,10 +8,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   FormControlGroup,
   FormControlRow,
+  FormError,
   FormField,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app";
 import { Engine } from "@/types/proto-es/v1/common_pb";
 import {
@@ -92,7 +94,7 @@ export function DataSourceForm({
   optionsOnly = false,
   onDataSourceChange,
   onOpenInfoPanel,
-}: DataSourceFormProps) {
+}: Readonly<DataSourceFormProps>) {
   const { t } = useTranslation();
   const currentPlan = useAppStore((s) => s.currentPlan());
   const isSaaSMode = useAppStore((s) => s.isSaaSMode());
@@ -107,6 +109,7 @@ export function DataSourceForm({
     hasReadonlyReplicaFeature,
     setMissingFeature,
     hideAdvancedFeatures,
+    needsKeytabResupply,
   } = ctx;
 
   const {
@@ -271,6 +274,30 @@ export function DataSourceForm({
         ];
     }
   }, [basicInfo.engine, t]);
+
+  // DynamoDB always authenticates with AWS IAM, but data sources created
+  // before the form exposed credentials still carry PASSWORD. Render those in
+  // the AWS IAM mode and stamp the real authentication type only when a
+  // credential field is edited, so opening an old instance stays pristine.
+  // (In SaaS mode the shared CredentialSourceForm instead forces
+  // specific-credential mode on open — the policy every IAM engine inherits
+  // there, since the default credential chain is the host's own identity.)
+  const dynamoDBDataSource = useMemo(
+    () => ({
+      ...dataSource,
+      authenticationType: DataSource_AuthenticationType.AWS_RDS_IAM,
+    }),
+    [dataSource]
+  );
+  const updateDynamoDB = useCallback(
+    (updates: Partial<EditDataSource>) => {
+      update({
+        authenticationType: DataSource_AuthenticationType.AWS_RDS_IAM,
+        ...updates,
+      });
+    },
+    [update]
+  );
 
   const extraConnectionParamsList = useMemo(() => {
     const params = dataSource.extraConnectionParameters || {};
@@ -496,6 +523,12 @@ export function DataSourceForm({
     DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM;
   const isIAM = isAzureIAM || isAwsIAM || isGoogleIAM;
 
+  const [keytabFileName, setKeytabFileName] = useState("");
+
+  // The stored keytab cannot follow the data source to a new destination, so
+  // the operator has to upload it again before this edit can be saved.
+  const keytabResupplyRequired = needsKeytabResupply(dataSource);
+
   const handleKeytabUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -504,6 +537,7 @@ export function DataSourceForm({
       const data = new Uint8Array(reader.result as ArrayBuffer);
       if (dataSource.saslConfig?.mechanism?.case === "krbConfig") {
         const krbValue = dataSource.saslConfig.mechanism.value;
+        setKeytabFileName(file.name);
         update({
           saslConfig: create(SASLConfigSchema, {
             ...dataSource.saslConfig,
@@ -633,7 +667,8 @@ export function DataSourceForm({
                     className="sm:col-span-3 sm:col-start-1"
                     title={
                       <>
-                        Principal <span className="text-error">*</span>
+                        {t("instance.kerberos-principal")}{" "}
+                        <span className="text-error">*</span>
                       </>
                     }
                   >
@@ -644,7 +679,7 @@ export function DataSourceForm({
                           dataSource.saslConfig.mechanism.value.primary ?? ""
                         }
                         disabled={!allowEdit}
-                        placeholder="primary"
+                        placeholder={t("instance.kerberos-primary-placeholder")}
                         onChange={(e) => {
                           const updated = { ...dataSource };
                           if (
@@ -665,7 +700,9 @@ export function DataSourceForm({
                           dataSource.saslConfig.mechanism.value.instance ?? ""
                         }
                         disabled={!allowEdit}
-                        placeholder="instance, optional"
+                        placeholder={t(
+                          "instance.kerberos-instance-placeholder"
+                        )}
                         onChange={(e) => {
                           const updated = { ...dataSource };
                           if (
@@ -686,7 +723,7 @@ export function DataSourceForm({
                           dataSource.saslConfig.mechanism.value.realm ?? ""
                         }
                         disabled={!allowEdit}
-                        placeholder="realm"
+                        placeholder={t("instance.kerberos-realm-placeholder")}
                         onChange={(e) => {
                           const updated = { ...dataSource };
                           if (
@@ -704,7 +741,8 @@ export function DataSourceForm({
                     className="sm:col-span-3 sm:col-start-1"
                     title={
                       <>
-                        KDC <span className="text-error">*</span>
+                        {t("instance.kerberos-kdc")}{" "}
+                        <span className="text-error">*</span>
                       </>
                     }
                   >
@@ -742,7 +780,9 @@ export function DataSourceForm({
                           dataSource.saslConfig.mechanism.value.kdcHost ?? ""
                         }
                         disabled={!allowEdit}
-                        placeholder="KDC host"
+                        placeholder={t(
+                          "instance.kerberos-kdc-host-placeholder"
+                        )}
                         onChange={(e) => {
                           const updated = { ...dataSource };
                           if (
@@ -763,7 +803,9 @@ export function DataSourceForm({
                           dataSource.saslConfig.mechanism.value.kdcPort ?? ""
                         }
                         disabled={!allowEdit}
-                        placeholder="KDC port, optional"
+                        placeholder={t(
+                          "instance.kerberos-kdc-port-placeholder"
+                        )}
                         onChange={(e) => {
                           if (
                             e.target.value &&
@@ -786,11 +828,23 @@ export function DataSourceForm({
                     className="sm:col-span-3 sm:col-start-1"
                     title={
                       <>
-                        Keytab File <span className="text-error">*</span>
+                        {t("instance.keytab-file")}
+                        {(dataSource.pendingCreate ||
+                          keytabResupplyRequired) && (
+                          <>
+                            {" "}
+                            <span className="text-error">*</span>
+                          </>
+                        )}
                       </>
                     }
                   >
-                    <div className="mt-3 border-2 border-dashed rounded-lg p-6 text-center">
+                    <div
+                      className={cn(
+                        "mt-3 border-2 border-dashed rounded-sm p-6 text-center",
+                        keytabResupplyRequired && "border-error"
+                      )}
+                    >
                       <input
                         type="file"
                         accept=".keytab"
@@ -802,9 +856,26 @@ export function DataSourceForm({
                         htmlFor="keytab-upload"
                         className="cursor-pointer textinfolabel"
                       >
-                        Click or Drag your .keytab file here
+                        {t("instance.keytab-upload-placeholder")}
                       </label>
+                      {keytabFileName && (
+                        <p className="mt-2 textinfolabel truncate">
+                          {keytabFileName}
+                        </p>
+                      )}
                     </div>
+                    {/* The write-only hint offers to keep the stored keytab,
+                        which is the offer the resupply error withdraws. */}
+                    {!dataSource.pendingCreate && !keytabResupplyRequired && (
+                      <p className="mt-1 textinfolabel">
+                        {t("instance.keytab-write-only")}
+                      </p>
+                    )}
+                    {keytabResupplyRequired && (
+                      <FormError className="mt-1">
+                        {t("instance.keytab-resupply-required")}
+                      </FormError>
+                    )}
                   </FormField>
                 </>
               )}
@@ -855,23 +926,12 @@ export function DataSourceForm({
 
               {/* AWS Region */}
               {isAwsIAM && (
-                <FormField
-                  className="sm:col-span-3 sm:col-start-1"
-                  title={
-                    <>
-                      {t("instance.database-region")}{" "}
-                      <span className="text-error">*</span>
-                    </>
-                  }
-                >
-                  <Input
-                    value={dataSource.region ?? ""}
-                    className="w-full"
-                    disabled={!allowEdit}
-                    placeholder="database region, for example, us-east-1"
-                    onChange={(e) => update({ region: e.target.value })}
-                  />
-                </FormField>
+                <AwsRegionField
+                  region={dataSource.region ?? ""}
+                  required
+                  allowEdit={allowEdit}
+                  onChange={(region) => update({ region })}
+                />
               )}
 
               {/* Password / External Secret */}
@@ -1654,6 +1714,24 @@ export function DataSourceForm({
             </>
           )}
 
+          {/* DynamoDB AWS IAM credentials */}
+          {basicInfo.engine === Engine.DYNAMODB && (
+            <>
+              <CredentialSourceForm
+                dataSource={dynamoDBDataSource}
+                engine={basicInfo.engine}
+                allowEdit={allowEdit}
+                onDataSourceChange={updateDynamoDB}
+              />
+              <AwsRegionField
+                region={dataSource.region ?? ""}
+                required={dataSource.iamExtension?.case === "awsCredential"}
+                allowEdit={allowEdit}
+                onChange={(region) => updateDynamoDB({ region })}
+              />
+            </>
+          )}
+
           {/* Oracle SID/Service Name */}
           {basicInfo.engine === Engine.ORACLE && (
             <OracleSIDServiceNameInput
@@ -2125,5 +2203,38 @@ function OracleSIDServiceNameInput({
         }}
       />
     </div>
+  );
+}
+
+function AwsRegionField({
+  region,
+  required,
+  allowEdit,
+  onChange,
+}: Readonly<{
+  region: string;
+  required: boolean;
+  allowEdit: boolean;
+  onChange: (region: string) => void;
+}>) {
+  const { t } = useTranslation();
+  return (
+    <FormField
+      className="sm:col-span-3 sm:col-start-1"
+      title={
+        <>
+          {t("instance.database-region")}
+          {required && <span className="text-error"> *</span>}
+        </>
+      }
+    >
+      <Input
+        value={region}
+        className="w-full"
+        disabled={!allowEdit}
+        placeholder={t("instance.database-region-placeholder")}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </FormField>
   );
 }

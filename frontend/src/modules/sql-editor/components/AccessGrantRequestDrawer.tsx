@@ -57,6 +57,8 @@ interface Props {
   readonly query?: string;
   readonly unmask?: boolean;
   readonly export?: boolean;
+  readonly schema?: string;
+  readonly container?: string;
   readonly onClose: () => void;
 }
 
@@ -102,11 +104,21 @@ function AccessGrantRequestDrawerInner({
       ?.database;
     return database ? [database] : [];
   }, [stableProps.targets]);
+  const defaultConnectionContext = useMemo(() => {
+    const tabsState = getSQLEditorTabsState();
+    return tabsState.tabsById.get(tabsState.currentTabId)?.connection;
+  }, []);
 
   const [targets, setTargets] = useState<string[]>(defaultTargets);
   const [query, setQuery] = useState(stableProps.query ?? "");
   const [unmask, setUnmask] = useState(stableProps.unmask ?? false);
   const [exportResult, setExportResult] = useState(stableProps.export ?? false);
+  const [schema] = useState(
+    stableProps.schema ?? defaultConnectionContext?.schema ?? ""
+  );
+  const [container] = useState(
+    stableProps.container ?? defaultConnectionContext?.table ?? ""
+  );
   const [duration, setDuration] = useState<number>(4);
   const [customExpireTime, setCustomExpireTime] = useState<string | undefined>(
     undefined
@@ -257,6 +269,8 @@ function AccessGrantRequestDrawerInner({
         export: exportResult,
         reason,
         expiration,
+        schema,
+        container,
       });
 
       const response = await accessGrantServiceClientConnect.createAccessGrant(
@@ -294,7 +308,7 @@ function AccessGrantRequestDrawerInner({
   return (
     <SQLEditorThemeScope theme={active} asContents>
       <SheetHeader>
-        <SheetTitle>{t("sql-editor.request-data-access")}</SheetTitle>
+        <SheetTitle>{t("sql-editor.request-access-grant")}</SheetTitle>
       </SheetHeader>
       <SheetBody>
         <div className="flex flex-col gap-y-6">
@@ -340,8 +354,8 @@ function AccessGrantRequestDrawerInner({
               // Drawer Monaco portals outside `.sqleditor--wrapper`, so opt the
               // canvas into the transparent-background rule and back it with the
               // themed `bg-background` (from `sheetStyle`'s `--color-background`)
-              // so it matches the active theme like the worksheet editor.
-              className="border rounded-[3px] h-40 bg-background sqleditor--monaco-transparent"
+              // so it matches the active theme like the saved query editor.
+              className="border rounded-xs h-40 bg-background sqleditor--monaco-transparent"
               content={query}
               language="sql"
               autoCompleteContext={autoCompleteContext}
@@ -382,7 +396,7 @@ function AccessGrantRequestDrawerInner({
             }
             description={
               maximumExpirationDays !== undefined
-                ? t("project.members.request-role.max-expiration-hint", {
+                ? t("common.expiration-max-hint", {
                     days: maximumExpirationDays,
                   })
                 : undefined
@@ -403,13 +417,11 @@ function AccessGrantRequestDrawerInner({
               />
             )}
             {expirationIsInPast && (
-              <FormError>
-                {t("project.members.request-role.expiration-must-be-future")}
-              </FormError>
+              <FormError>{t("common.expiration-must-be-future")}</FormError>
             )}
             {expirationExceedsMax && maximumExpirationDays !== undefined && (
               <FormError>
-                {t("project.members.request-role.expiration-exceeds-max", {
+                {t("common.expiration-exceeds-max", {
                   days: maximumExpirationDays,
                 })}
               </FormError>
@@ -457,6 +469,8 @@ export function AccessGrantRequestDrawer({
   query,
   unmask,
   export: exportResult,
+  schema,
+  container,
   onClose,
 }: Props) {
   const propsRef = useRef({
@@ -464,6 +478,8 @@ export function AccessGrantRequestDrawer({
     query,
     unmask,
     export: exportResult,
+    schema,
+    container,
     onClose,
   });
   // Freeze props while drawer is open so inner form stays stable during close animation
@@ -501,7 +517,7 @@ export function AccessGrantRequestDrawer({
         onPointerDown={stopDrawerEvent}
       >
         <AccessGrantRequestDrawerInner
-          key={`${targets?.join(",")}-${query}-${unmask}-${exportResult}`}
+          key={`${targets?.join(",")}-${query}-${unmask}-${exportResult}-${schema}-${container}`}
           stableProps={stableProps}
           onClose={onClose}
         />

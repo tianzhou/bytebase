@@ -311,7 +311,12 @@ export function AccessPane() {
       const instanceName = database.replace(/\/databases\/.*$/, "");
       await getOrFetchDatabaseByName(database);
       await sqlEditorEvents.emit("execute-sql", {
-        connection: { instance: instanceName, database },
+        connection: {
+          instance: instanceName,
+          database,
+          schema: grant.schema || undefined,
+          table: grant.container || undefined,
+        },
         statement: grant.query,
         batchQueryContext: { databases: grant.targets },
       });
@@ -351,7 +356,7 @@ export function AccessPane() {
                   className="mr-1"
                 />
               )}
-              {t("sql-editor.request-access")}
+              {t("sql-editor.request-access-grant")}
             </Button>
           )}
         </PermissionGuard>
@@ -392,7 +397,7 @@ export function AccessPane() {
           </div>
         ) : (
           <div className="w-full flex items-center justify-center py-8 textinfolabel">
-            {t("sql-editor.no-access-requests")}
+            {t("sql-editor.no-access-grants")}
           </div>
         ))}
 
@@ -401,6 +406,8 @@ export function AccessPane() {
           query={pendingCreate?.query}
           unmask={pendingCreate?.unmask}
           export={pendingCreate?.export}
+          schema={pendingCreate?.schema}
+          container={pendingCreate?.container}
           targets={pendingCreate?.targets}
           onClose={handleDrawerClose}
         />

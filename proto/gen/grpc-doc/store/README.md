@@ -37,12 +37,14 @@
   
 - [store/audit_log.proto](#store_audit_log-proto)
     - [AuditLog](#bytebase-store-AuditLog)
+    - [MCPDelegation](#bytebase-store-MCPDelegation)
     - [RequestMetadata](#bytebase-store-RequestMetadata)
   
     - [AuditLog.Severity](#bytebase-store-AuditLog-Severity)
   
 - [store/auth.proto](#store_auth-proto)
     - [EmailVerificationCodePurpose](#bytebase-store-EmailVerificationCodePurpose)
+    - [LoginAttemptKind](#bytebase-store-LoginAttemptKind)
   
 - [store/changelog.proto](#store_changelog-proto)
     - [ChangelogPayload](#bytebase-store-ChangelogPayload)
@@ -107,9 +109,6 @@
     - [TablePartitionMetadata.Type](#bytebase-store-TablePartitionMetadata-Type)
     - [TaskMetadata.State](#bytebase-store-TaskMetadata-State)
   
-- [store/export_archive.proto](#store_export_archive-proto)
-    - [ExportArchivePayload](#bytebase-store-ExportArchivePayload)
-  
 - [store/group.proto](#store_group-proto)
     - [GroupMember](#bytebase-store-GroupMember)
     - [GroupPayload](#bytebase-store-GroupPayload)
@@ -164,7 +163,6 @@
     - [PlanConfig](#bytebase-store-PlanConfig)
     - [PlanConfig.ChangeDatabaseConfig](#bytebase-store-PlanConfig-ChangeDatabaseConfig)
     - [PlanConfig.CreateDatabaseConfig](#bytebase-store-PlanConfig-CreateDatabaseConfig)
-    - [PlanConfig.ExportDataConfig](#bytebase-store-PlanConfig-ExportDataConfig)
     - [PlanConfig.Spec](#bytebase-store-PlanConfig-Spec)
   
 - [store/issue_comment.proto](#store_issue_comment-proto)
@@ -173,10 +171,12 @@
     - [IssueCommentPayload.IssueUpdate](#bytebase-store-IssueCommentPayload-IssueUpdate)
     - [IssueCommentPayload.PlanUpdate](#bytebase-store-IssueCommentPayload-PlanUpdate)
     - [IssueCommentPayload.ReviewSubmission](#bytebase-store-IssueCommentPayload-ReviewSubmission)
+    - [IssueCommentPayload.StatementAnchor](#bytebase-store-IssueCommentPayload-StatementAnchor)
   
 - [store/oauth2.proto](#store_oauth2-proto)
     - [OAuth2AuthorizationCodeConfig](#bytebase-store-OAuth2AuthorizationCodeConfig)
     - [OAuth2ClientConfig](#bytebase-store-OAuth2ClientConfig)
+    - [OAuth2RefreshTokenConfig](#bytebase-store-OAuth2RefreshTokenConfig)
   
 - [store/plan_check_run.proto](#store_plan_check_run-proto)
     - [ChangedResourceDatabase](#bytebase-store-ChangedResourceDatabase)
@@ -239,11 +239,28 @@
     - [SQLReviewRule.Level](#bytebase-store-SQLReviewRule-Level)
     - [SQLReviewRule.Type](#bytebase-store-SQLReviewRule-Type)
   
+- [store/review_run.proto](#store_review_run-proto)
+    - [ReviewRun](#bytebase-store-ReviewRun)
+    - [ReviewRunPayload](#bytebase-store-ReviewRunPayload)
+  
+    - [ReviewRun.Status](#bytebase-store-ReviewRun-Status)
+  
 - [store/revision.proto](#store_revision-proto)
     - [RevisionPayload](#bytebase-store-RevisionPayload)
   
 - [store/role.proto](#store_role-proto)
     - [RolePermissions](#bytebase-store-RolePermissions)
+  
+- [store/sample_instance.proto](#store_sample_instance-proto)
+    - [SaaSSampleInstanceSetupPayload](#bytebase-store-SaaSSampleInstanceSetupPayload)
+    - [SelfHostSampleInstanceSetupPayload](#bytebase-store-SelfHostSampleInstanceSetupPayload)
+    - [SelfHostSampleInstanceSetupPayload.Instance](#bytebase-store-SelfHostSampleInstanceSetupPayload-Instance)
+  
+- [store/saved_query.proto](#store_saved_query-proto)
+    - [SavedQueryBinding](#bytebase-store-SavedQueryBinding)
+    - [SavedQueryPayload](#bytebase-store-SavedQueryPayload)
+  
+    - [SavedQueryBinding.Level](#bytebase-store-SavedQueryBinding-Level)
   
 - [store/server_config.proto](#store_server_config-proto)
     - [ServerConfigPayload](#bytebase-store-ServerConfigPayload)
@@ -274,6 +291,7 @@
     - [EnvironmentSetting](#bytebase-store-EnvironmentSetting)
     - [EnvironmentSetting.Environment](#bytebase-store-EnvironmentSetting-Environment)
     - [EnvironmentSetting.Environment.TagsEntry](#bytebase-store-EnvironmentSetting-Environment-TagsEntry)
+    - [MCPSetting](#bytebase-store-MCPSetting)
     - [SQLEditorThemeSetting](#bytebase-store-SQLEditorThemeSetting)
     - [SQLEditorThemeSetting.TokensEntry](#bytebase-store-SQLEditorThemeSetting-TokensEntry)
     - [SemanticTypeSetting](#bytebase-store-SemanticTypeSetting)
@@ -291,10 +309,10 @@
     - [EmailSetting.SMTPConfig.Authentication](#bytebase-store-EmailSetting-SMTPConfig-Authentication)
     - [EmailSetting.SMTPConfig.Encryption](#bytebase-store-EmailSetting-SMTPConfig-Encryption)
     - [EmailSetting.Type](#bytebase-store-EmailSetting-Type)
+    - [MCPSetting.Capability](#bytebase-store-MCPSetting-Capability)
     - [SettingName](#bytebase-store-SettingName)
     - [WorkspaceApprovalSetting.Rule.Source](#bytebase-store-WorkspaceApprovalSetting-Rule-Source)
     - [WorkspaceProfileSetting.DatabaseChangeMode](#bytebase-store-WorkspaceProfileSetting-DatabaseChangeMode)
-    - [WorkspaceProfileSetting.MCPCapability](#bytebase-store-WorkspaceProfileSetting-MCPCapability)
   
 - [store/signal.proto](#store_signal-proto)
     - [Signal](#bytebase-store-Signal)
@@ -357,9 +375,6 @@
 - [store/vcs_provider_user.proto](#store_vcs_provider_user-proto)
     - [VCSProviderUserPayload](#bytebase-store-VCSProviderUserPayload)
   
-- [store/worksheet.proto](#store_worksheet-proto)
-    - [WorkSheetOrganizerPayload](#bytebase-store-WorkSheetOrganizerPayload)
-  
 - [store/workspace.proto](#store_workspace-proto)
     - [WorkspacePayload](#bytebase-store-WorkspacePayload)
   
@@ -399,6 +414,8 @@
 | reason | [string](#string) |  |  |
 | requested_duration | [google.protobuf.Duration](#google-protobuf-Duration) |  | The requested duration for the access grant. Stored when the user provides a TTL instead of an absolute expire_time. The server computes expire_time from this value at activation time. |
 | export | [bool](#bool) |  | Whether export the query result. |
+| schema | [string](#string) |  | The default schema to execute the query. |
+| container | [string](#string) |  | The container name to execute the query against, used for CosmosDB only. |
 
 
 
@@ -626,6 +643,7 @@ StatementType represents the type of SQL statement.
 | INSERT | 60 | DML statements |
 | UPDATE | 61 |  |
 | DELETE | 62 |  |
+| MERGE | 63 |  |
 
 
 
@@ -842,6 +860,30 @@ Status represents the approver&#39;s decision state.
 | latency | [google.protobuf.Duration](#google-protobuf-Duration) |  | The latency of the RPC. |
 | service_data | [google.protobuf.Any](#google-protobuf-Any) |  | The service-specific data about the request, response, and other activities. |
 | request_metadata | [RequestMetadata](#bytebase-store-RequestMetadata) |  | Metadata about the operation. |
+| mcp_delegation | [MCPDelegation](#bytebase-store-MCPDelegation) |  | MCP delegation provenance. Present exactly when the entry belongs to MCP: the audited call arrived through the MCP server&#39;s delegated credential, or it is one of the two MCP doors that sit outside the API — the /mcp connection gate and the OAuth2 consent that mints the credential it checks. Never set for public API calls. Presence of this message is the MCP-origin marker. |
+
+
+
+
+
+
+<a name="bytebase-store-MCPDelegation"></a>
+
+### MCPDelegation
+Provenance of a call that reached the API through the MCP (Model Context
+Protocol) server&#39;s delegated credential. The values are copied verbatim from
+the verified credential&#39;s grant state; empty fields record that the grant
+stored nothing (legacy sessions), never a resolved or synthesized value.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| scope | [string](#string) |  | The OAuth2 grant&#39;s consented scope, e.g. &#34;mcp:read-only&#34;. Empty when the grant recorded no scope. |
+| resource | [string](#string) |  | The grant&#39;s stored MCP resource URI. Empty for pre-grant legacy sessions. |
+| client_id | [string](#string) |  | The OAuth2 client the grant was consented to. Empty for legacy web-session tokens at /mcp. |
+| correlation_id | [string](#string) |  | Correlates the audit rows an MCP session produces. Minted at the /mcp boundary and session-scoped: the MCP SDK hands tool handlers the initialize-time context, so one MCP session carries one correlation ID across all of its tool calls.
+
+Empty on the entries that belong to no session — a refused consent, which never reached that boundary, and a refused connection, which is decided before the SDK resolves a session. Filling those with a fresh value would read as a session ID that correlates exactly one row, and a mid-session refusal would get an ID different from the rows the session already wrote. |
 
 
 
@@ -912,6 +954,28 @@ Stored as the enum name string in email_verification_code.purpose column.
 | EMAIL_VERIFICATION_CODE_PURPOSE_UNSPECIFIED | 0 |  |
 | LOGIN | 1 |  |
 | PASSWORD_RESET | 2 |  |
+| REAUTH | 3 | Re-authentication proof for a credential change (CredentialProof.email_code). Never accepted by Login. |
+
+
+
+<a name="bytebase-store-LoginAttemptKind"></a>
+
+### LoginAttemptKind
+LoginAttemptKind names what a login_attempt row counts. Stored as the enum
+name string in login_attempt.kind column. The kind also says what the
+identity column holds: the three credential kinds below count failed guesses
+against a person, share one attempt limit, and are cleared by a successful
+verification.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| LOGIN_ATTEMPT_KIND_UNSPECIFIED | 0 |  |
+| PASSWORD | 1 |  |
+| EMAIL_CODE | 2 | Submitting a 6-digit code. Sign-in, password reset and re-authentication share one bucket per email, so a guess anywhere counts everywhere. |
+| MFA | 3 |  |
+| EMAIL_CODE_SEND | 4 | Sending those codes rather than guessing them — the opposite direction, and the reason it is a separate kind. Its identity is the sending deployment and not a person, so exhausting it throttles outbound mail and locks no account, and nothing clears it because a delivered email is the thing counted and there is no success to forgive.
+
+It also reads last_attempt_at differently: for this kind the column is the window&#39;s start, not the latest send, so the count resets on a fixed schedule. The kinds above intentionally reset only after a quiet window — wrong for a volume budget, where a steady trickle would never reset and &#34;N per hour&#34; would become &#34;N ever&#34;. |
 
 
  
@@ -2095,37 +2159,6 @@ LIST, HASH (https://www.postgresql.org/docs/current/ddl-partitioning.html)
 
 
 
-<a name="store_export_archive-proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## store/export_archive.proto
-
-
-
-<a name="bytebase-store-ExportArchivePayload"></a>
-
-### ExportArchivePayload
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| file_format | [ExportFormat](#bytebase-store-ExportFormat) |  | The exported file format. e.g. JSON, CSV, SQL |
-
-
-
-
-
- 
-
- 
-
- 
-
- 
-
-
-
 <a name="store_group-proto"></a>
 <p align="right"><a href="#top">Top</a></p>
 
@@ -2437,7 +2470,6 @@ OIDCIdentityProviderConfig is the structure for OIDC identity provider config.
 | master_password | [string](#string) |  |  |
 | obfuscated_master_password | [string](#string) |  |  |
 | redis_type | [DataSource.RedisType](#bytebase-store-DataSource-RedisType) |  |  |
-| cluster | [string](#string) |  | Cluster is the cluster name for the data source. Used by CockroachDB. |
 | extra_connection_parameters | [DataSource.ExtraConnectionParametersEntry](#bytebase-store-DataSource-ExtraConnectionParametersEntry) | repeated | Extra connection parameters for the database connection. For PostgreSQL HA, this can be used to set target_session_attrs=read-write |
 | project_id | [string](#string) |  | project_id and instance_id are the GCP resource identifiers. project_id is used by Spanner and BigQuery; instance_id is used by Spanner. For these engines, host and port optionally override the default Google API endpoint (e.g. a Private Service Connect endpoint like spanner-nonprod.p.googleapis.com). |
 | instance_id | [string](#string) |  |  |
@@ -2885,7 +2917,6 @@ Type represents the category of issue.
 | ISSUE_TYPE_UNSPECIFIED | 0 |  |
 | DATABASE_CHANGE | 1 | Issue for database schema or data changes. |
 | ROLE_GRANT | 2 | Role grant request. |
-| DATABASE_EXPORT | 3 | Issue for exporting data from databases. |
 | ACCESS_GRANT | 4 | Temporary access grant request. |
 
 
@@ -2961,24 +2992,6 @@ Type represents the category of issue.
 
 
 
-<a name="bytebase-store-PlanConfig-ExportDataConfig"></a>
-
-### PlanConfig.ExportDataConfig
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| targets | [string](#string) | repeated | The list of targets. Multi-database format: [instances/{instance-id}/databases/{database-name}]. Single database group format: [projects/{project}/databaseGroups/{databaseGroup}]. |
-| sheet_sha256 | [string](#string) |  | The SHA256 hash of the sheet content (hex-encoded). |
-| format | [ExportFormat](#bytebase-store-ExportFormat) |  | The format of the exported file. |
-| password | [string](#string) | optional | The zip password provided by users. Leave it empty if there is no need to encrypt the zip file. |
-
-
-
-
-
-
 <a name="bytebase-store-PlanConfig-Spec"></a>
 
 ### PlanConfig.Spec
@@ -2990,7 +3003,6 @@ Type represents the category of issue.
 | id | [string](#string) |  | A UUID4 string that uniquely identifies the Spec. |
 | create_database_config | [PlanConfig.CreateDatabaseConfig](#bytebase-store-PlanConfig-CreateDatabaseConfig) |  |  |
 | change_database_config | [PlanConfig.ChangeDatabaseConfig](#bytebase-store-PlanConfig-ChangeDatabaseConfig) |  |  |
-| export_data_config | [PlanConfig.ExportDataConfig](#bytebase-store-PlanConfig-ExportDataConfig) |  |  |
 
 
 
@@ -3026,6 +3038,7 @@ Type represents the category of issue.
 | issue_update | [IssueCommentPayload.IssueUpdate](#bytebase-store-IssueCommentPayload-IssueUpdate) |  |  |
 | plan_update | [IssueCommentPayload.PlanUpdate](#bytebase-store-IssueCommentPayload-PlanUpdate) |  |  |
 | review_submission | [IssueCommentPayload.ReviewSubmission](#bytebase-store-IssueCommentPayload-ReviewSubmission) |  |  |
+| statement_anchor | [IssueCommentPayload.StatementAnchor](#bytebase-store-IssueCommentPayload-StatementAnchor) |  | The statement context an inline comment references. Set at creation and immutable afterward; never set together with an event. |
 
 
 
@@ -3097,6 +3110,26 @@ ReviewSubmission records that an issue entered review.
 
 
 
+
+<a name="bytebase-store-IssueCommentPayload-StatementAnchor"></a>
+
+### IssueCommentPayload.StatementAnchor
+StatementAnchor records the anchored statement revision and range.
+The SQL excerpt and current/changed/unavailable state are computed on
+read against the anchored sheet and the current plan, not stored.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| spec_id | [string](#string) |  | UUID of the anchored plan spec (PlanConfig.Spec.id); may no longer resolve after the spec is deleted from the plan. |
+| sheet_sha256 | [string](#string) |  | SHA256 hex of the anchored sheet revision. |
+| start_position | [Position](#bytebase-store-Position) |  | The anchored range. When both columns are 0, the anchor spans whole lines from start_position.line to end_position.line inclusive — overriding Position&#39;s &#34;column 0 means unknown&#34; convention. When both columns are set, start_position is inclusive and end_position is exclusive, in one-based lines and code-point columns (see Position). Setting exactly one column to 0 is invalid. |
+| end_position | [Position](#bytebase-store-Position) |  |  |
+
+
+
+
+
  
 
  
@@ -3125,6 +3158,8 @@ ReviewSubmission records that an issue entered review.
 | redirect_uri | [string](#string) |  |  |
 | code_challenge | [string](#string) |  |  |
 | code_challenge_method | [string](#string) |  |  |
+| resource | [string](#string) |  | The canonical resource URI (RFC 8707) this grant is bound to, validated at consent time against the configured external URL. Empty for clients that omit the resource parameter. |
+| scope | [string](#string) |  | The single mode consented to, normalized from the client&#39;s requested scope set to its maximum. Empty means no scope was requested. |
 
 
 
@@ -3143,6 +3178,25 @@ ReviewSubmission records that an issue entered review.
 | redirect_uris | [string](#string) | repeated |  |
 | grant_types | [string](#string) | repeated |  |
 | token_endpoint_auth_method | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-OAuth2RefreshTokenConfig"></a>
+
+### OAuth2RefreshTokenConfig
+OAuth2RefreshTokenConfig is the consented grant state carried from the
+authorization code onto every refresh token issued from it, and re-issued
+unchanged by each refresh. Kept as a message rather than flat columns so the
+grant can gain fields without a schema migration.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| resource | [string](#string) |  | The canonical resource URI (RFC 8707) this grant is bound to, validated at consent time against the configured external URL. Empty for clients that omit the resource parameter. |
+| scope | [string](#string) |  | The single mode consented to, normalized from the client&#39;s requested scope set to its maximum. Empty means no scope was requested. |
 
 
 
@@ -3596,6 +3650,7 @@ Project contains settings and configuration for a Bytebase project.
 | allow_request_role | [bool](#bool) |  |  |
 | data_classification_config_id | [string](#string) |  | The data classification configuration ID for the project. |
 | allow_just_in_time_access | [bool](#bool) |  | Once enabled, users can request and use the just-in-time access in the SQL Editor. |
+| allow_last_plan_editor_approval | [bool](#bool) |  | Whether to allow the last Plan editor to approve a database change issue. |
 
 
 
@@ -4077,6 +4132,63 @@ The severity level for SQL review rules.
 
 
 
+<a name="store_review_run-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/review_run.proto
+
+
+
+<a name="bytebase-store-ReviewRun"></a>
+
+### ReviewRun
+ReviewRun is the status slot of one reviewer (rule engine or AI) on one
+issue. Results live in issue comments; the run carries none.
+
+
+
+
+
+
+<a name="bytebase-store-ReviewRunPayload"></a>
+
+### ReviewRunPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| error | [string](#string) |  | Fatal execution error for the FAILED status, e.g. &#34;metadata not synced: instances/prod/databases/db1, db2, db3 (&#43;497 more)&#34;. Written by the executor or by the reaper. |
+
+
+
+
+
+ 
+
+
+<a name="bytebase-store-ReviewRun-Status"></a>
+
+### ReviewRun.Status
+Strictly 1:1 with the status CHECK constraint — no unpersisted values.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| STATUS_UNSPECIFIED | 0 |  |
+| AVAILABLE | 1 |  |
+| RUNNING | 2 |  |
+| DONE | 3 |  |
+| FAILED | 4 |  |
+
+
+ 
+
+ 
+
+ 
+
+
+
 <a name="store_revision-proto"></a>
 <p align="right"><a href="#top">Top</a></p>
 
@@ -4097,6 +4209,7 @@ The severity level for SQL review rules.
 | sheet_sha256 | [string](#string) |  | The SHA256 hash of the sheet content (hex-encoded). |
 | task_run | [string](#string) |  | The task run associated with the revision. Can be empty. Format: projects/{project}/plans/{plan}/rollout/stages/{stage}/tasks/{task}/taskRuns/{taskRun} |
 | type | [SchemaChangeType](#bytebase-store-SchemaChangeType) |  | The type of the revision. |
+| project | [string](#string) |  | The project that authored this revision&#39;s change — where the plan or release that produced it ran. Stamped by the server at creation from the database&#39;s then-current project; rows predating the field are backfilled from corroborated provenance (migration 3.22.5). Not a scope: revisions stay keyed by (instance, db_name) and follow the database across project transfers, while the statement&#39;s sheet stays readable under this project. Can be empty when no owner could be corroborated; such statements are unreadable and the revision carries no sheet name. |
 
 
 
@@ -4134,6 +4247,141 @@ The severity level for SQL review rules.
 
 
  
+
+ 
+
+ 
+
+ 
+
+
+
+<a name="store_sample_instance-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/sample_instance.proto
+
+
+
+<a name="bytebase-store-SaaSSampleInstanceSetupPayload"></a>
+
+### SaaSSampleInstanceSetupPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| project_id | [string](#string) |  |  |
+| instance_id | [string](#string) |  |  |
+| title | [string](#string) |  |  |
+| environment_id | [string](#string) | optional |  |
+| database_name | [string](#string) |  |  |
+| role_name | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-SelfHostSampleInstanceSetupPayload"></a>
+
+### SelfHostSampleInstanceSetupPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| instances | [SelfHostSampleInstanceSetupPayload.Instance](#bytebase-store-SelfHostSampleInstanceSetupPayload-Instance) | repeated |  |
+
+
+
+
+
+
+<a name="bytebase-store-SelfHostSampleInstanceSetupPayload-Instance"></a>
+
+### SelfHostSampleInstanceSetupPayload.Instance
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| instance_id | [string](#string) |  |  |
+| title | [string](#string) |  |  |
+| environment_id | [string](#string) | optional |  |
+| port_offset | [int32](#int32) |  |  |
+| database_name | [string](#string) |  |  |
+| role_name | [string](#string) |  |  |
+| project_id | [string](#string) | optional |  |
+
+
+
+
+
+ 
+
+ 
+
+ 
+
+ 
+
+
+
+<a name="store_saved_query-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/saved_query.proto
+
+
+
+<a name="bytebase-store-SavedQueryBinding"></a>
+
+### SavedQueryBinding
+One grant on a saved query. Stored in saved_query.bindings, which holds a
+protojson array of these messages at the jsonb root rather than a wrapper
+object, so the `@&gt;` containment probes the access queries run hit the GIN
+index directly.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| level | [SavedQueryBinding.Level](#bytebase-store-SavedQueryBinding-Level) |  |  |
+| members | [string](#string) | repeated | Principals in the same resource-name form the IAM policy payloads use: &#34;users/{email}&#34; and &#34;groups/{email}&#34;. The v1 API takes the binding form (&#34;user:&#34;, &#34;group:&#34;) and converts once on write, as the project policy does. Groups are named by reference and never expanded. |
+
+
+
+
+
+
+<a name="bytebase-store-SavedQueryPayload"></a>
+
+### SavedQueryPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| database | [string](#string) |  | The connected database, stored as its canonical resource name: instances/{instance}/databases/{database} for a workspace instance, projects/{project}/instances/{instance}/databases/{database} for a project instance. Validated against the saved query&#39;s own project at write time; the reference is soft and may dangle after the database is deleted or transferred, degrading to &#34;no database&#34; in the UI. |
+
+
+
+
+
+ 
+
+
+<a name="bytebase-store-SavedQueryBinding-Level"></a>
+
+### SavedQueryBinding.Level
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| LEVEL_UNSPECIFIED | 0 |  |
+| VIEWER | 1 |  |
+| EDITOR | 2 |  |
+
 
  
 
@@ -4606,6 +4854,28 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 
 
 
+<a name="bytebase-store-MCPSetting"></a>
+
+### MCPSetting
+MCPSetting is what an MCP (Model Context Protocol) session may do in this
+workspace. It is its own setting rather than a field of the workspace profile
+because the set grows, and because the /mcp kill switch reads it on every
+request and should not share a row — or a parse failure — with branding and
+sign-in configuration.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| capability | [MCPSetting.Capability](#bytebase-store-MCPSetting-Capability) |  | The maximum capability available to MCP sessions in this workspace, acting as an admin-set ceiling. Enforced server-side at three points: the /mcp endpoint decides whether a connection is admitted at all, the ceiling gate on the internal MCP chain decides, per request, which method classes are served, and under READ_ONLY the SQL clamp decides, per statement, whether it only reads. |
+| ignore_masking_exemptions | [bool](#bool) |  | Whether a request that arrived over MCP stops applying the caller&#39;s own unmasking provisioning. Two mechanisms let a user see a real value and this suppresses both: the masking exemptions granted to them, and the unmask carried by an access grant. The same user in the console is untouched.
+
+It cannot force masking where there is none. Masking substitutes values in query results, so this does not reach data copied into a column carrying no masking policy, and it does nothing on the engines Bytebase does not mask. It narrows what an agent reads through the paths Bytebase masks; it is not a confidentiality boundary. |
+
+
+
+
+
+
 <a name="bytebase-store-SQLEditorThemeSetting"></a>
 
 ### SQLEditorThemeSetting
@@ -4738,12 +5008,11 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 | domains | [string](#string) | repeated | The workspace domain, e.g., bytebase.com. |
 | enforce_identity_domain | [bool](#bool) |  | Only user and group from the domains can be created and login. |
 | database_change_mode | [WorkspaceProfileSetting.DatabaseChangeMode](#bytebase-store-WorkspaceProfileSetting-DatabaseChangeMode) |  | The workspace database change mode. |
-| disallow_password_signin | [bool](#bool) |  | Whether to disallow password signin. (Except workspace admins) |
+| disallow_password_signin | [bool](#bool) |  | Whether password sign-in is disabled for all end users. |
 | enable_metric_collection | [bool](#bool) |  | Whether to enable metric collection for the workspace. |
 | inactive_session_timeout | [google.protobuf.Duration](#google-protobuf-Duration) |  | The session expiration time if not activity detected for the user. Value &lt;= 0 means no limit. |
 | enable_audit_log_stdout | [bool](#bool) |  | Whether to enable audit logging to stdout in structured JSON format. Requires TEAM or ENTERPRISE license. |
 | watermark | [bool](#bool) |  | Whether to display watermark on pages. Requires ENTERPRISE license. |
-| directory_sync_token | [string](#string) |  | The token for directory sync authentication. |
 | password_restriction | [WorkspaceProfileSetting.PasswordRestriction](#bytebase-store-WorkspaceProfileSetting-PasswordRestriction) |  | Password restriction settings. |
 | access_token_duration | [google.protobuf.Duration](#google-protobuf-Duration) |  | The duration for access token. Default is 1 hour. |
 | enable_debug | [bool](#bool) |  | Whether debug mode is enabled. |
@@ -4753,7 +5022,7 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 | sql_editor_theme_id | [string](#string) |  | Enforced SQL Editor theme id: OPAQUE — a frontend-resolved built-in preset id OR a custom theme&#39;s uuid. Empty ⇒ default light. |
 | sql_editor_custom_theme | [SQLEditorThemeSetting](#bytebase-store-SQLEditorThemeSetting) |  | The enforced CUSTOM theme&#39;s full definition — present ONLY when sql_editor_theme_id is a custom uuid. tokens is always complete. |
 | maximum_role_expiration | [google.protobuf.Duration](#google-protobuf-Duration) |  | The max expiration duration for request role. Deprecated: use just-in-time access request flows instead. |
-| mcp_capability | [WorkspaceProfileSetting.MCPCapability](#bytebase-store-WorkspaceProfileSetting-MCPCapability) |  | The maximum capability available to MCP (Model Context Protocol) sessions in this workspace, acting as an admin-set ceiling. Unset is treated as READ_WRITE for backward compatibility; DISABLED rejects all MCP connections. Enforced server-side by the /mcp endpoint. |
+| directory_sync_token_hash | [string](#string) |  | Hex-encoded SHA-256 of the SCIM directory sync token. The plaintext is shown once at rotation and never stored. SHA-256 rather than a slow KDF because the token is 122 bits of crypto/rand, not a human-chosen secret. |
 
 
 
@@ -4885,6 +5154,20 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 
 
 
+<a name="bytebase-store-MCPSetting-Capability"></a>
+
+### MCPSetting.Capability
+Capability is the ceiling: a session runs at this level or lower.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| CAPABILITY_UNSPECIFIED | 0 |  |
+| DISABLED | 1 | MCP connections are rejected. |
+| READ_ONLY | 3 | MCP may inspect metadata and run read-only queries. (Enforced from P1b.) |
+| READ_WRITE | 4 | MCP may perform mutations, still bounded by the user&#39;s RBAC. |
+
+
+
 <a name="bytebase-store-SettingName"></a>
 
 ### SettingName
@@ -4902,6 +5185,7 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 | SEMANTIC_TYPES | 7 |  |
 | ENVIRONMENT | 8 |  |
 | EMAIL | 9 |  |
+| MCP | 10 |  |
 
 
 
@@ -4931,23 +5215,6 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 | DATABASE_CHANGE_MODE_UNSPECIFIED | 0 |  |
 | PIPELINE | 1 | A more advanced database change process, including custom approval workflows and other advanced features. Default to this mode. |
 | EDITOR | 2 | A simple database change process in SQL editor. Users can execute SQL directly. |
-
-
-
-<a name="bytebase-store-WorkspaceProfileSetting-MCPCapability"></a>
-
-### WorkspaceProfileSetting.MCPCapability
-MCPCapability is the maximum capability an MCP (Model Context Protocol)
-session may have in the workspace. It is a ceiling: a session runs at this
-level or lower. Unset (UNSPECIFIED) is treated as READ_WRITE so existing
-workspaces are unaffected.
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| MCP_CAPABILITY_UNSPECIFIED | 0 |  |
-| DISABLED | 1 | MCP connections are rejected. |
-| READ_ONLY | 3 | MCP may inspect metadata and run read-only queries. (Enforced from P1b.) |
-| READ_WRITE | 4 | MCP may perform mutations, still bounded by the user&#39;s RBAC. |
 
 
  
@@ -5124,7 +5391,6 @@ Type represents the type of database operation to perform.
 | TASK_TYPE_UNSPECIFIED | 0 |  |
 | DATABASE_CREATE | 1 | Create a new database. |
 | DATABASE_MIGRATE | 2 | Apply schema/data migrations to an existing database. Execution strategy is determined by release type (VERSIONED/DECLARATIVE) or sheet content for non-release tasks. |
-| DATABASE_EXPORT | 3 | Export data from a database. |
 
 
  
@@ -5211,7 +5477,6 @@ TaskRunResult contains the outcome and metadata from a task run execution.
 | ----- | ---- | ----- | ----------- |
 | detail | [string](#string) |  | Error message for failed task runs. Empty for successful or canceled runs. |
 | has_prior_backup | [bool](#bool) |  | Indicates whether a prior backup was created for this task run. When true, the task run can be rolled back using the backup tables. Backup details are available in the task run logs (PRIOR_BACKUP log entries). |
-| export_archive_id | [string](#string) |  | Resource ID of the export archive generated for export tasks. |
 
 
 
@@ -5643,10 +5908,11 @@ WorkloadIdentityConfig stores OIDC configuration for workload identity.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| provider_type | [WorkloadIdentityConfig.ProviderType](#bytebase-store-WorkloadIdentityConfig-ProviderType) |  | Provider type (currently only GITHUB is supported) |
+| provider_type | [WorkloadIdentityConfig.ProviderType](#bytebase-store-WorkloadIdentityConfig-ProviderType) |  | Provider configuration mode. |
 | issuer_url | [string](#string) |  | OIDC issuer URL |
 | allowed_audiences | [string](#string) | repeated | Allowed audiences for token validation |
 | subject_pattern | [string](#string) |  | Subject pattern to match against token subject claim |
+| jwks_url | [string](#string) |  | Optional JWKS endpoint. When empty, use OIDC discovery from issuer_url. |
 
 
 
@@ -5672,13 +5938,14 @@ PrincipalType is the type of a principal.
 <a name="bytebase-store-WorkloadIdentityConfig-ProviderType"></a>
 
 ### WorkloadIdentityConfig.ProviderType
-ProviderType identifies the CI/CD platform.
+ProviderType identifies the workload identity configuration mode.
 
 | Name | Number | Description |
 | ---- | ------ | ----------- |
 | PROVIDER_TYPE_UNSPECIFIED | 0 |  |
 | GITHUB | 1 |  |
 | GITLAB | 2 |  |
+| OIDC | 3 |  |
 
 
  
@@ -5706,38 +5973,6 @@ ProviderType identifies the CI/CD platform.
 | ----- | ---- | ----- | ----------- |
 | user_name | [string](#string) |  |  |
 | display_name | [string](#string) |  |  |
-
-
-
-
-
- 
-
- 
-
- 
-
- 
-
-
-
-<a name="store_worksheet-proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## store/worksheet.proto
-
-
-
-<a name="bytebase-store-WorkSheetOrganizerPayload"></a>
-
-### WorkSheetOrganizerPayload
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| starred | [bool](#bool) |  |  |
-| folders | [string](#string) | repeated | The folder path for a worksheet. For example, if the folders is [A, B, C], means the worksheet is in the A/B/C subfolder. |
 
 
 

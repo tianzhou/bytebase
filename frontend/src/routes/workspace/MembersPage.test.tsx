@@ -12,35 +12,39 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const {
-  mockGetIntroStateByKey,
+  mockUseProductIntro,
   mockPushNotification,
-  mockSaveIntroStateByKey,
   mockUpdateProjectIamPolicy,
   maximumRoleExpirationSeconds,
   maximumRequestExpirationSeconds,
+  accountSelectProps,
 } = vi.hoisted(() => ({
-  mockGetIntroStateByKey: vi.fn(),
+  mockUseProductIntro: vi.fn(),
   mockPushNotification: vi.fn(),
-  mockSaveIntroStateByKey: vi.fn(),
   mockUpdateProjectIamPolicy: vi.fn(),
   maximumRoleExpirationSeconds: { value: undefined as number | undefined },
   maximumRequestExpirationSeconds: { value: undefined as number | undefined },
+  accountSelectProps: { value: undefined as { accountParents?: string[] } | undefined },
 }));
 
 vi.mock("@/components/AccountMultiSelect", () => ({
   AccountMultiSelect: ({
     onChange,
+    accountParents,
   }: {
     onChange: (members: string[]) => void;
-  }) =>
-    createElement(
+    accountParents?: string[];
+  }) => {
+    accountSelectProps.value = { accountParents };
+    return createElement(
       "button",
       {
         "data-testid": "account-select",
         onClick: () => onChange(["user:dev1@example.com"]),
       },
       "select account"
-    ),
+    );
+  },
 }));
 
 vi.mock("@/components/DatabaseResourceSelector", () => ({
@@ -121,10 +125,16 @@ vi.mock("@/components/ui/button", () => ({
     onClick,
     variant: _variant,
     size: _size,
+    ...props
   }: ButtonHTMLAttributes<HTMLButtonElement> & {
     size?: string;
     variant?: string;
-  }) => createElement("button", { disabled, onClick }, children),
+  }) => createElement("button", { ...props, disabled, onClick }, children),
+}));
+
+vi.mock("@/lib/productIntro", () => ({
+  GRANT_ACCESS_PRODUCT_INTRO: "grant-access",
+  useProductIntro: mockUseProductIntro,
 }));
 
 vi.mock("@/components/ui/checkbox", () => ({
@@ -201,7 +211,6 @@ vi.mock("@/lib/project-member/utils", () => ({
 vi.mock("@/app/router", () => ({
   useNavigate: () => vi.fn(),
   WORKSPACE_ROUTE_GROUPS: "groups",
-  WORKSPACE_ROUTE_USER_PROFILE: "user-profile",
 }));
 
 vi.mock("@/modules/cel", () => ({
@@ -318,6 +327,7 @@ vi.mock("@/stores/app", () => {
     }),
     // Migrated off the Pinia actuator/setting/subscription store mocks.
     isSaaSMode: () => false,
+    workspaceResourceName: () => "workspaces/default",
     userCountInIam: () => 1,
     userCountLimit: () => 10,
     hasFeature: () => true,
@@ -334,8 +344,6 @@ vi.mock("@/stores/app", () => {
           ? undefined
           : { seconds: BigInt(maximumRequestExpirationSeconds.value) },
     }),
-    getIntroStateByKey: mockGetIntroStateByKey,
-    saveIntroStateByKey: mockSaveIntroStateByKey,
   });
   const useAppStore = (selector?: (state: unknown) => unknown) =>
     selector ? selector(buildState()) : buildState();
@@ -366,7 +374,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   maximumRoleExpirationSeconds.value = undefined;
   maximumRequestExpirationSeconds.value = undefined;
-  mockGetIntroStateByKey.mockReturnValue(false);
+  accountSelectProps.value = undefined;
   projectIamPolicy.bindings = [];
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -387,6 +395,13 @@ async function renderPage(): Promise<void> {
   });
 }
 
+async function renderWorkspacePage(): Promise<void> {
+  await act(async () => {
+    root.render(createElement(MembersPage));
+    await Promise.resolve();
+  });
+}
+
 async function flush(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -395,14 +410,21 @@ async function flush(): Promise<void> {
 }
 
 describe("MembersPage project role grant drawer", () => {
-  it("marks the member quick-start item visited on mount", async () => {
+  it("provides workspace and project parents to the account selector", async () => {
     await renderPage();
 
-    expect(mockGetIntroStateByKey).toHaveBeenCalledWith("member.visit");
-    expect(mockSaveIntroStateByKey).toHaveBeenCalledWith({
-      key: "member.visit",
-      newState: true,
+    const grantButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "settings.members.grant-access"
+    ) as HTMLButtonElement;
+    await act(async () => {
+      grantButton.click();
     });
+    await flush();
+
+    expect(accountSelectProps.value?.accountParents).toEqual([
+      "workspaces/default",
+      "projects/sample-project",
+    ]);
   });
 
   it("uses maximum role expiration instead of request expiration for direct role grants", async () => {
@@ -427,7 +449,7 @@ describe("MembersPage project role grant drawer", () => {
     await flush();
 
     expect(container.textContent).not.toContain(
-      "project.members.request-role.max-expiration-hint"
+      "common.expiration-max-hint"
     );
 
     maximumRoleExpirationSeconds.value = 7 * 24 * 60 * 60;
@@ -452,7 +474,7 @@ describe("MembersPage project role grant drawer", () => {
     await flush();
 
     expect(container.textContent).toContain(
-      "project.members.request-role.max-expiration-hint"
+      "common.expiration-max-hint"
     );
   });
 
@@ -554,5 +576,31 @@ describe("MembersPage project role grant drawer", () => {
       title: "project.members.request-role.failed-to-build-expression",
     });
     expect(mockUpdateProjectIamPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MembersPage onboarding intro", () => {
+  it("binds Grant Access only on the editable workspace page", async () => {
+    await renderWorkspacePage();
+
+    expect(mockUseProductIntro).toHaveBeenCalledWith({
+      id: "grant-access",
+      title: "workspace-setup-guide.intro.grant-access-title",
+      description: "workspace-setup-guide.intro.grant-access-description",
+      disabled: false,
+    });
+    const grantButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "settings.members.grant-access"
+    );
+    expect(grantButton).toHaveAttribute(
+      "data-product-intro-target",
+      "grant-access"
+    );
+
+    mockUseProductIntro.mockClear();
+    await renderPage();
+    expect(mockUseProductIntro).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "grant-access", disabled: true })
+    );
   });
 });

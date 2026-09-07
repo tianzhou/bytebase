@@ -2,6 +2,7 @@ import { create as createProto } from "@bufbuild/protobuf";
 import { createContextValues } from "@connectrpc/connect";
 import { instanceServiceClientConnect } from "@/api";
 import { silentContextKey } from "@/api/context-key";
+import { projectNamePrefix } from "@/stores/modules/v1/common";
 import { Engine, State } from "@/types/proto-es/v1/common_pb";
 import {
   AddDataSourceRequestSchema,
@@ -13,6 +14,7 @@ import {
   type Instance,
   ListInstanceDatabaseRequestSchema,
   ListInstancesRequestSchema,
+  PrepareSampleProjectInstanceRequestSchema,
   RemoveDataSourceRequestSchema,
   SyncInstanceRequestSchema,
   UndeleteInstanceRequestSchema,
@@ -29,39 +31,44 @@ import {
   UNKNOWN_INSTANCE_NAME,
 } from "@/types/v1/instance";
 import { isValidProjectName } from "@/types/v1/project";
-import { extractInstanceResourceName, hasWorkspacePermissionV2 } from "@/utils";
+import {
+  extractInstanceResourceName,
+  extractProjectResourceName,
+  hasProjectPermissionV2,
+  hasWorkspacePermissionV2,
+} from "@/utils";
+import { celString, celStringList } from "@/utils/v1/celLiteral";
 import type { AppSliceCreator, InstanceFilter, InstanceSlice } from "./types";
 import { getLabelFilter, toError } from "./utils";
 
-const getListInstanceFilter = (params: InstanceFilter): string => {
+export const getListInstanceFilter = (params: InstanceFilter): string => {
   const list: string[] = [];
   const search = params.query?.trim().toLowerCase();
   if (search) {
-    list.push(
-      `(name.contains("${search}") || resource_id.contains("${search}"))`
-    );
+    const value = celString(search);
+    list.push(`(name.contains(${value}) || resource_id.contains(${value}))`);
   }
   if (isValidProjectName(params.project)) {
-    list.push(`project == "${params.project}"`);
+    list.push(`project == ${celString(params.project)}`);
   }
   if (params.environment === unknownEnvironment().name) {
     list.push(`environment == ""`);
   } else if (isValidEnvironmentName(params.environment)) {
-    list.push(`environment == "${params.environment}"`);
+    list.push(`environment == ${celString(params.environment)}`);
   }
   if (params.host) {
-    list.push(`host.contains("${params.host}")`);
+    list.push(`host.contains(${celString(params.host)})`);
   }
   if (params.port) {
-    list.push(`port.contains("${params.port}")`);
+    list.push(`port.contains(${celString(params.port)})`);
   }
   if (params.engines && params.engines.length > 0) {
     list.push(
-      `engine in [${params.engines.map((e) => `"${Engine[e]}"`).join(", ")}]`
+      `engine in ${celStringList(params.engines.map((e) => Engine[e]))}`
     );
   }
   if (params.state === State.DELETED) {
-    list.push(`state == "${State[params.state]}"`);
+    list.push(`state == ${celString(State[params.state])}`);
   }
   if (params.labels) {
     list.push(...getLabelFilter(params.labels));
@@ -152,10 +159,17 @@ export const createInstanceSlice: AppSliceCreator<InstanceSlice> = (
     getOrFetchInstanceByName: async (name, silent = false) => {
       const cached = get().instancesByName[name];
       if (cached) return cached;
-      if (
-        !isValidInstanceName(name) ||
-        !hasWorkspacePermissionV2("bb.instances.get")
-      ) {
+      if (!isValidInstanceName(name)) {
+        return unknownInstance;
+      }
+      const projectID = extractProjectResourceName(name);
+      const project = projectID
+        ? get().projectsByName[`${projectNamePrefix}${projectID}`]
+        : undefined;
+      const canGetInstance = projectID
+        ? !!project && hasProjectPermissionV2(project, "bb.instances.get")
+        : hasWorkspacePermissionV2("bb.instances.get");
+      if (!canGetInstance) {
         return unknownInstance;
       }
       // Propagate fetch failures (e.g. NotFound) to the caller — callers such
@@ -173,10 +187,10 @@ export const createInstanceSlice: AppSliceCreator<InstanceSlice> = (
       const validateOnlyValue = validateOnly ?? false;
       const response = await instanceServiceClientConnect.createInstance(
         createProto(CreateInstanceRequestSchema, {
+          parent: options?.parent,
           instance,
           instanceId: extractInstanceResourceName(instance.name),
           validateOnly: validateOnlyValue,
-          initialDatabaseProject: options?.initialDatabaseProject,
         }),
         {
           contextValues: createContextValues().set(
@@ -187,8 +201,23 @@ export const createInstanceSlice: AppSliceCreator<InstanceSlice> = (
       );
       if (!validateOnlyValue) {
         upsertInstances([response]);
+        await get()
+          .refreshServerInfo()
+          .catch(() => undefined);
       }
       return response;
+    },
+
+    prepareSampleProjectInstance: async (parent) => {
+      const response =
+        await instanceServiceClientConnect.prepareSampleProjectInstance(
+          createProto(PrepareSampleProjectInstanceRequestSchema, { parent })
+        );
+      const instance = upsertInstances([response])[0];
+      await get()
+        .refreshServerInfo()
+        .catch(() => undefined);
+      return instance;
     },
 
     updateInstance: async (instance, updateMask) => {
@@ -237,17 +266,18 @@ export const createInstanceSlice: AppSliceCreator<InstanceSlice> = (
         })
       ),
 
-    batchSyncInstances: async (instanceNameList, enableFullSync) => {
+    batchSyncInstances: async (instanceNameList, enableFullSync, parent) => {
       await instanceServiceClientConnect.batchSyncInstances(
         createProto(BatchSyncInstancesRequestSchema, {
+          parent,
           requests: instanceNameList.map((name) => ({ name, enableFullSync })),
         })
       );
     },
 
-    batchUpdateInstances: async (requests) => {
+    batchUpdateInstances: async (requests, parent) => {
       const response = await instanceServiceClientConnect.batchUpdateInstances(
-        createProto(BatchUpdateInstancesRequestSchema, { requests })
+        createProto(BatchUpdateInstancesRequestSchema, { parent, requests })
       );
       return upsertInstances(response.instances);
     },
@@ -316,6 +346,7 @@ export const createInstanceSlice: AppSliceCreator<InstanceSlice> = (
     fetchInstanceList: async (params) => {
       const response = await instanceServiceClientConnect.listInstances(
         createProto(ListInstancesRequestSchema, {
+          parent: params.parent,
           pageSize: params.pageSize,
           pageToken: params.pageToken,
           orderBy: params.orderBy,

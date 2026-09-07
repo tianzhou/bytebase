@@ -13,13 +13,11 @@ import (
 )
 
 func TestQueryConnSearchPathIncludesPublicAfterSelectedSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
-	pgContainer := testcontainer.GetTestPgContainer(ctx, t)
-	defer pgContainer.Close(ctx)
-
-	rawDB := pgContainer.GetDB()
-	require.NoError(t, rawDB.Ping())
+	pgContainer := testcontainer.SharedPgContainer(t)
+	dbName, rawDB := testcontainer.NewPgDatabase(t)
 	_, err := rawDB.ExecContext(ctx, `
 		CREATE SCHEMA app;
 		CREATE TABLE public.lookup_precedence (marker text);
@@ -46,7 +44,7 @@ func TestQueryConnSearchPathIncludesPublicAfterSelectedSchema(t *testing.T) {
 			Username: "postgres",
 		},
 		Password:          "root-password",
-		ConnectionContext: db.ConnectionContext{DatabaseName: "postgres"},
+		ConnectionContext: db.ConnectionContext{DatabaseName: dbName},
 	})
 	require.NoError(t, err)
 	defer driver.Close(ctx)
@@ -70,13 +68,11 @@ func TestQueryConnSearchPathIncludesPublicAfterSelectedSchema(t *testing.T) {
 }
 
 func TestQueryConnSearchPathEscapesSelectedSchemaName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
-	pgContainer := testcontainer.GetTestPgContainer(ctx, t)
-	defer pgContainer.Close(ctx)
-
-	rawDB := pgContainer.GetDB()
-	require.NoError(t, rawDB.Ping())
+	pgContainer := testcontainer.SharedPgContainer(t)
+	dbName, rawDB := testcontainer.NewPgDatabase(t)
 	_, err := rawDB.ExecContext(ctx, `
 		CREATE SCHEMA "app""schema";
 		CREATE TABLE "app""schema".lookup_precedence (marker text);
@@ -91,7 +87,7 @@ func TestQueryConnSearchPathEscapesSelectedSchemaName(t *testing.T) {
 			Username: "postgres",
 		},
 		Password:          "root-password",
-		ConnectionContext: db.ConnectionContext{DatabaseName: "postgres"},
+		ConnectionContext: db.ConnectionContext{DatabaseName: dbName},
 	})
 	require.NoError(t, err)
 	defer driver.Close(ctx)

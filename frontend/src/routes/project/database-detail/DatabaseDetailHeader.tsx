@@ -31,13 +31,7 @@ const extractDatabaseParts = (resource: string) => {
   };
 };
 
-export function DatabaseDetailHeader({
-  database,
-  onSQLEditorFailed,
-}: {
-  database: Database;
-  onSQLEditorFailed?: (database: Database) => void;
-}) {
+export function DatabaseDetailHeader({ database }: { database: Database }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const { databaseName } = useMemo(
@@ -86,7 +80,6 @@ export function DatabaseDetailHeader({
       borderTopColor: `rgb(${environmentColorRgb})`,
       color: `rgb(${environmentColorRgb})`,
       padding: "0 6px",
-      borderRadius: "4px",
     };
   }, [environmentColorRgb]);
 
@@ -101,11 +94,15 @@ export function DatabaseDetailHeader({
   return (
     <div className="flex min-w-0 flex-1 shrink-0 flex-col gap-y-2">
       <div className="flex w-full min-w-0 flex-col">
-        <div className="flex items-center gap-x-2 truncate text-xl font-bold text-main">
-          {databaseName}
+        <div className="flex min-w-0 items-center gap-x-2 text-xl font-bold text-main">
+          <span className="min-w-0 truncate" title={databaseName}>
+            {databaseName}
+          </span>
         </div>
-        <div className="mt-1 flex w-full min-w-0 items-center gap-x-1 text-sm text-control-light">
-          <span className="truncate">{database.name}</span>
+        <div className="mt-1 flex w-fit max-w-full min-w-0 items-center gap-x-1 text-sm text-control-light">
+          <span className="min-w-0 truncate" title={database.name}>
+            {database.name}
+          </span>
           <button
             type="button"
             className="inline-flex shrink-0 items-center p-0.5 text-control-light hover:text-main"
@@ -129,7 +126,7 @@ export function DatabaseDetailHeader({
           {isValidEnv ? (
             <RouterLink
               to={{ path: `/${formatEnvironmentName(environment.id)}` }}
-              className="inline-flex cursor-pointer items-center gap-x-1 hover:underline"
+              className="inline-flex cursor-pointer items-center gap-x-1 rounded-sm hover:underline"
               style={environmentBadgeStyle}
               onClick={(e) => e.stopPropagation()}
             >
@@ -158,10 +155,7 @@ export function DatabaseDetailHeader({
             <span>{extractReleaseUID(database.release)}</span>
           </div>
         )}
-        <DatabaseSQLEditorButton
-          database={database}
-          onFailed={onSQLEditorFailed}
-        />
+        <DatabaseSQLEditorButton database={database} />
       </div>
     </div>
   );

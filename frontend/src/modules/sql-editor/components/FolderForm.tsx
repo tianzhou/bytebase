@@ -8,27 +8,32 @@ import type { TreeDataNode } from "@/components/ui/tree";
 import { Tree } from "@/components/ui/tree";
 import { cn } from "@/lib/utils";
 import {
+  type SavedQueryFolderNode,
   useSheetContextByView,
-  type WorksheetFolderNode,
 } from "@/modules/sql-editor/model/Sheet";
 import { TreeNodePrefix } from "./TreeNodePrefix";
 
 type Props = {
   readonly folder: string;
   readonly onFolderChange: (folder: string) => void;
+  readonly includeRoot?: boolean;
 };
 
 function toTreeData(
-  node: WorksheetFolderNode
-): TreeDataNode<WorksheetFolderNode> {
+  node: SavedQueryFolderNode
+): TreeDataNode<SavedQueryFolderNode> {
   return {
     id: node.key,
     data: node,
-    children: node.children.map(toTreeData),
+    children: node.children.filter((child) => !child.loadMore).map(toTreeData),
   };
 }
 
-export function FolderForm({ folder, onFolderChange }: Props) {
+export function FolderForm({
+  folder,
+  onFolderChange,
+  includeRoot = false,
+}: Props) {
   const { t } = useTranslation();
 
   const { folderTree, folderContext } = useSheetContextByView("my");
@@ -97,9 +102,11 @@ export function FolderForm({ folder, onFolderChange }: Props) {
     queueMicrotask(() => setShowPopover(false));
   };
 
-  const treeData = folderTree.children.map(toTreeData);
+  const treeData = includeRoot
+    ? [toTreeData(folderTree)]
+    : folderTree.children.filter((child) => !child.loadMore).map(toTreeData);
 
-  const searchMatch = (node: TreeDataNode<WorksheetFolderNode>) => {
+  const searchMatch = (node: TreeDataNode<SavedQueryFolderNode>) => {
     if (!folderPath) return true;
     return node.data.key.includes(folderPath);
   };
@@ -133,9 +140,10 @@ export function FolderForm({ folder, onFolderChange }: Props) {
             style={{ width: "var(--anchor-width)" }}
             className="p-1"
           >
-            <Tree<WorksheetFolderNode>
+            <Tree<SavedQueryFolderNode>
               data={treeData}
               selectedIds={folderPath ? [folderPath] : []}
+              expandedIds={includeRoot ? [rootPath] : undefined}
               searchTerm={folderPath || undefined}
               searchMatch={searchMatch}
               height={240}

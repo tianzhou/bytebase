@@ -4,6 +4,8 @@ import { DashboardLayout } from "@/app/layouts/DashboardLayout";
 import { RouteErrorPage } from "@/app/RouteErrorPage";
 import { rootGuard } from "@/app/router/guard";
 import {
+  ACCOUNT_ROUTE,
+  ACCOUNT_ROUTE_TWO_FACTOR,
   DATABASE_ROUTE_DASHBOARD,
   ENVIRONMENT_V1_ROUTE_DASHBOARD,
   INSTANCE_ROUTE_CREATE,
@@ -22,6 +24,9 @@ import {
   PROJECT_V1_ROUTE_DATABASES,
   PROJECT_V1_ROUTE_DETAIL,
   PROJECT_V1_ROUTE_GITOPS,
+  PROJECT_V1_ROUTE_INSTANCE_CREATE,
+  PROJECT_V1_ROUTE_INSTANCE_DETAIL,
+  PROJECT_V1_ROUTE_INSTANCES,
   PROJECT_V1_ROUTE_ISSUE_DETAIL,
   PROJECT_V1_ROUTE_ISSUES,
   PROJECT_V1_ROUTE_MASKING_EXEMPTION,
@@ -43,8 +48,6 @@ import {
   PROJECT_V1_ROUTE_WEBHOOK_DETAIL,
   PROJECT_V1_ROUTE_WEBHOOKS,
   PROJECT_V1_ROUTE_WORKLOAD_IDENTITIES,
-  SETTING_ROUTE_PROFILE,
-  SETTING_ROUTE_PROFILE_TWO_FACTOR,
   SETTING_ROUTE_WORKSPACE,
   SETTING_ROUTE_WORKSPACE_GENERAL,
   SETTING_ROUTE_WORKSPACE_SUBSCRIPTION,
@@ -70,7 +73,6 @@ import {
   WORKSPACE_ROUTE_SQL_REVIEW,
   WORKSPACE_ROUTE_SQL_REVIEW_CREATE,
   WORKSPACE_ROUTE_SQL_REVIEW_DETAIL,
-  WORKSPACE_ROUTE_USER_PROFILE,
   WORKSPACE_ROUTE_USERS,
   WORKSPACE_ROUTE_WORKLOAD_IDENTITIES,
 } from "@/app/router/handles";
@@ -156,14 +158,6 @@ const workspaceLevelRoutes: RouteObject[] = [
     ),
   },
   {
-    path: "users/:principalEmail",
-    handle: { name: WORKSPACE_ROUTE_USER_PROFILE },
-    lazy: lazyPage(
-      () => import("@/routes/workspace/ProfilePage"),
-      (m) => m.ProfilePage
-    ),
-  },
-  {
     path: "403",
     handle: { name: WORKSPACE_ROUTE_403 },
     lazy: lazyPage(
@@ -233,7 +227,10 @@ const workspaceLevelRoutes: RouteObject[] = [
   {
     path: "idps",
     handle: {
-      requiredPermissionList: (): Permission[] => ["bb.identityProviders.get"],
+      requiredPermissionList: (): Permission[] => [
+        "bb.identityProviders.get",
+        "bb.identityProviders.list",
+      ],
     },
     element: <RouteGroupOutlet />,
     children: [
@@ -419,7 +416,6 @@ const workspaceLevelRoutes: RouteObject[] = [
         path: "mcp",
         handle: {
           name: WORKSPACE_ROUTE_MCP,
-          requiredPermissionList: (): Permission[] => ["bb.settings.get"],
         },
         lazy: lazyPage(
           () => import("@/routes/workspace/MCPPage"),
@@ -430,29 +426,33 @@ const workspaceLevelRoutes: RouteObject[] = [
   },
 ];
 
-// Workspace settings routes (`/setting/**`), SettingRouteShell layout.
+// Personal account routes (`/account/**`). Separate from `/setting/**` so
+// "my account" is not a sibling of the workspace's own settings.
+const accountRoutes: RouteObject[] = [
+  {
+    path: "account",
+    handle: { name: ACCOUNT_ROUTE },
+    lazy: lazyPage(
+      () => import("@/routes/workspace/AccountSettingsPage"),
+      (m) => m.AccountSettingsPage
+    ),
+  },
+  {
+    path: "account/two-factor",
+    handle: { name: ACCOUNT_ROUTE_TWO_FACTOR },
+    lazy: lazyPage(
+      () => import("@/routes/workspace/TwoFactorSetupPage"),
+      (m) => m.TwoFactorSetupPage
+    ),
+  },
+];
+
 const workspaceSettingRoutes: RouteObject[] = [
   {
     path: "setting",
     handle: { name: SETTING_ROUTE_WORKSPACE },
     element: <RouteGroupOutlet />,
     children: [
-      {
-        path: "profile",
-        handle: { name: SETTING_ROUTE_PROFILE },
-        lazy: lazyPage(
-          () => import("@/routes/workspace/ProfilePage"),
-          (m) => m.ProfilePage
-        ),
-      },
-      {
-        path: "profile/two-factor",
-        handle: { name: SETTING_ROUTE_PROFILE_TWO_FACTOR },
-        lazy: lazyPage(
-          () => import("@/routes/workspace/TwoFactorSetupPage"),
-          (m) => m.TwoFactorSetupPage
-        ),
-      },
       {
         path: "general",
         handle: {
@@ -569,6 +569,39 @@ const projectV1Routes: RouteObject[] = [
         // tab (mirrors the legacy vue-router DETAIL → ISSUES redirect). `issues`
         // is relative to the parent `projects/:projectId`.
         element: <Navigate to="issues" replace />,
+      },
+      {
+        path: "instances/new",
+        handle: {
+          name: PROJECT_V1_ROUTE_INSTANCE_CREATE,
+          requiredPermissionList: (): Permission[] => ["bb.instances.create"],
+        },
+        lazy: lazyPage(
+          () => import("@/routes/project/ProjectCreateInstancePage"),
+          (m) => m.ProjectCreateInstancePage
+        ),
+      },
+      {
+        path: "instances",
+        handle: {
+          name: PROJECT_V1_ROUTE_INSTANCES,
+          requiredPermissionList: (): Permission[] => ["bb.instances.list"],
+        },
+        lazy: lazyPage(
+          () => import("@/routes/project/ProjectInstancesPage"),
+          (m) => m.ProjectInstancesPage
+        ),
+      },
+      {
+        path: "instances/:instanceId",
+        handle: {
+          name: PROJECT_V1_ROUTE_INSTANCE_DETAIL,
+          requiredPermissionList: (): Permission[] => ["bb.instances.get"],
+        },
+        lazy: lazyPage(
+          () => import("@/routes/project/ProjectInstanceDetailPage"),
+          (m) => m.ProjectInstanceDetailPage
+        ),
       },
       {
         path: "databases",
@@ -966,6 +999,7 @@ export const dashboardRoutes: RouteObject[] = [
             errorElement: <RouteErrorPage inline />,
             children: [
               ...workspaceLevelRoutes,
+              ...accountRoutes,
               ...workspaceSettingRoutes,
               ...environmentV1Routes,
               ...instanceRoutes,

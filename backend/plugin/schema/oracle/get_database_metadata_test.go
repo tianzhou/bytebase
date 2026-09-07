@@ -744,9 +744,7 @@ COMMENT ON COLUMN ORDER_LINE_ITEMS.FULFILLMENT_STATUS IS 'Status: PENDING, PICKE
 func TestGetDatabaseMetadataWithTestcontainer(t *testing.T) {
 	ctx := context.Background()
 
-	// Start Oracle container
-	container := testcontainer.GetTestOracleContainer(ctx, t)
-	t.Cleanup(func() { container.Close(ctx) })
+	container := testcontainer.SharedOracleContainer(t)
 
 	host := container.GetHost()
 	port := container.GetPort()

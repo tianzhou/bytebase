@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { HighlightLabelText } from "@/components/HighlightLabelText";
 import { LAYER_SURFACE_CLASS } from "@/components/ui/layer";
 import { cn } from "@/lib/utils";
+import { DEBOUNCE_SEARCH_DELAY } from "@/types/common";
 
 // ============================================================
 // Types
@@ -312,7 +313,7 @@ export function AdvancedSearch({
           if (asyncRequestRef.current !== requestID) return;
           setAsyncLoading(false);
         });
-    }, 300);
+    }, DEBOUNCE_SEARCH_DELAY);
     return () => {
       clearTimeout(asyncSearchRef.current);
     };
@@ -446,7 +447,7 @@ export function AdvancedSearch({
         if (text !== params.query) {
           onParamsChange({ ...params, query: text });
         }
-      }, 300);
+      }, DEBOUNCE_SEARCH_DELAY);
     },
     [currentScope, params, onParamsChange]
   );
@@ -696,7 +697,7 @@ export function AdvancedSearch({
                   data-search-scope-id={scope.id}
                   data-search-scope-index={originalIndex}
                   className={cn(
-                    "inline-flex max-w-[16rem] min-w-0 shrink-0 items-center gap-1 rounded-xs bg-control-bg px-1.5 py-0.5 text-xs whitespace-nowrap dark:bg-zinc-700 dark:text-gray-100",
+                    "inline-flex h-6 max-w-[16rem] min-w-0 shrink-0 items-center gap-1 rounded-xs bg-control-bg px-1.5 text-xs whitespace-nowrap dark:bg-zinc-700 dark:text-gray-100",
                     focusedTagIndex === originalIndex && "ring-1 ring-accent"
                   )}
                   onClick={(e) => {
@@ -708,11 +709,14 @@ export function AdvancedSearch({
                   }}
                 >
                   <span className="text-control">{scope.id}:</span>
-                  <span className="min-w-0 truncate" title={scope.value}>
+                  <span
+                    className="inline-flex h-full min-w-0 items-center overflow-hidden truncate"
+                    title={scope.value}
+                  >
                     {renderTagValue(scope)}
                   </span>
                   <button
-                    className="ml-0.5 hover:text-error"
+                    className="ml-0.5 inline-flex size-4 shrink-0 items-center justify-center hover:text-error"
                     onClick={(e) => {
                       e.stopPropagation();
                       removeScope(originalIndex);

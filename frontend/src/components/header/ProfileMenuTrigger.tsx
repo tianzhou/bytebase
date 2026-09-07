@@ -2,13 +2,13 @@ import { ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ACCOUNT_ROUTE,
   isSqlEditorRouteName,
-  SETTING_ROUTE_PROFILE,
-  SQL_EDITOR_HOME_MODULE,
   useCurrentRoute,
   useNavigate,
   WORKSPACE_ROUTE_LANDING,
 } from "@/app/router";
+import { SQLEditorButton } from "@/components/SQLEditorButton";
 import { UserAvatar } from "@/components/UserAvatar";
 import {
   DropdownMenu,
@@ -22,13 +22,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
-  useAppFeature,
+  useIntroStateByKey,
   useOptionalCurrentUser,
-  useQuickstartReset,
-  useServerInfo,
   useSubscription,
   useWorkspace,
+  useWorkspaceSetupGuideResume,
 } from "@/hooks/useAppState";
+import { guideCompletionAcknowledgedKey } from "@/modules/workspace-setup-guide/progress";
+import { getGuideJourney } from "@/modules/workspace-setup-guide/scenarios";
+import {
+  readGuideWorkspaceUsage,
+  readSelectedGuideScenarioId,
+} from "@/modules/workspace-setup-guide/selection";
 import { useAppStore } from "@/stores/app";
 import { PlanType } from "@/types/proto-es/v1/subscription_service_pb";
 import { isDev } from "@/utils/util";
@@ -46,13 +51,22 @@ export function ProfileMenuTrigger({
 }: ProfileMenuProps) {
   const { t, i18n } = useTranslation();
   const currentUser = useOptionalCurrentUser();
-  const serverInfo = useServerInfo();
   const { subscription, uploadLicense } = useSubscription();
   const workspace = useWorkspace();
   const route = useCurrentRoute();
   const navigate = useNavigate();
-  const resetQuickstartProgress = useQuickstartReset();
-  const hideQuickStart = useAppFeature("bb.feature.hide-quick-start");
+  const resumeWorkspaceSetupGuide = useWorkspaceSetupGuideResume();
+  const scenarioId = readSelectedGuideScenarioId();
+  const workspaceUsage = readGuideWorkspaceUsage();
+  const journey = getGuideJourney(scenarioId, workspaceUsage);
+  const completionAcknowledged = useIntroStateByKey(
+    guideCompletionAcknowledgedKey(journey.id)
+  );
+  const allowMultipleMembers =
+    workspaceUsage === "team" && !completionAcknowledged;
+  const workspaceSetupGuideEnabled = useAppStore((state) =>
+    state.workspaceSetupGuideEnabled(allowMultipleMembers)
+  );
   const currentPlan = subscription?.plan ?? PlanType.FREE;
   const devLicenseOptions = [
     {
@@ -71,39 +85,34 @@ export function ProfileMenuTrigger({
       plan: PlanType.ENTERPRISE,
     },
   ];
-  const quickStartEnabled =
-    !hideQuickStart &&
-    Boolean(serverInfo?.enableSample) &&
-    (serverInfo?.activatedUserCount ?? 0) <= 1;
   const customLogo = workspace?.logo ?? "";
   const [open, setOpen] = useState(false);
 
   const wrapperClass = useMemo(() => {
     if (!customLogo) {
-      return "flex items-center justify-center rounded-3xl bg-gray-100";
+      return "flex items-center justify-center rounded-full bg-gray-100";
     }
     return size === "small"
-      ? "flex items-center justify-center rounded-3xl bg-gray-100 md:px-1 md:py-0.5"
-      : "flex items-center justify-center rounded-3xl bg-gray-100 md:px-2 md:py-1.5";
+      ? "flex items-center justify-center rounded-full bg-gray-100 md:px-1 md:py-0.5"
+      : "flex items-center justify-center rounded-full bg-gray-100 md:px-2 md:py-1.5";
   }, [customLogo, size]);
 
   const logoClass = size === "small" ? "mr-2" : "mr-4";
 
-  const sqlEditorMenuLabel = isSqlEditorRouteName(route.name)
+  const isInSQLEditor = isSqlEditorRouteName(route.name);
+  const sqlEditorMenuLabel = isInSQLEditor
     ? t("settings.general.workspace.default-landing-page.go-to-workspace")
     : t("settings.general.workspace.default-landing-page.go-to-sql-editor");
 
   const handleProfileNavigate = () => {
     if (!link) return;
     setOpen(false);
-    void navigate.push({ name: SETTING_ROUTE_PROFILE });
+    void navigate.push({ name: ACCOUNT_ROUTE });
   };
 
   const handleWorkspaceToggle = () => {
     const target = navigate.resolve({
-      name: isSqlEditorRouteName(route.name)
-        ? WORKSPACE_ROUTE_LANDING
-        : SQL_EDITOR_HOME_MODULE,
+      name: WORKSPACE_ROUTE_LANDING,
     });
     setOpen(false);
     window.open(target.fullPath, "_blank", "noopener,noreferrer");
@@ -227,20 +236,34 @@ export function ProfileMenuTrigger({
             </DropdownMenuSubmenu>
           ) : null}
 
-          {quickStartEnabled ? (
+          {workspaceSetupGuideEnabled ? (
             <DropdownMenuItem
               onClick={() => {
-                resetQuickstartProgress();
+                resumeWorkspaceSetupGuide();
                 setOpen(false);
               }}
             >
-              {t("quick-start.self")}
+              {t("workspace-setup-guide.getting-started")}
             </DropdownMenuItem>
           ) : null}
 
-          <DropdownMenuItem onClick={handleWorkspaceToggle}>
-            {sqlEditorMenuLabel}
-          </DropdownMenuItem>
+          {isInSQLEditor ? (
+            <DropdownMenuItem onClick={handleWorkspaceToggle}>
+              {sqlEditorMenuLabel}
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              render={
+                <SQLEditorButton
+                  openInNewTab
+                  appearance="secondary"
+                  size="sm"
+                  className="w-full justify-start"
+                  label={sqlEditorMenuLabel}
+                />
+              }
+            />
+          )}
 
           <DropdownMenuSeparator className="mx-0" />
 

@@ -1,8 +1,9 @@
 import { Check, ChevronDown, ChevronRight, XCircle } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import gitopsWorkflowImage from "@/assets/gitops-workflow.svg";
 import { CreateWorkloadIdentitySheet } from "@/components/CreateWorkloadIdentitySheet";
+import { DatabaseSelect } from "@/components/DatabaseSelect";
 import { ExternalUrlAlert } from "@/components/ExternalUrlAlert";
 import { PermissionGuard } from "@/components/PermissionGuard";
 import { ProjectPageLayout } from "@/components/ProjectPageLayout";
@@ -21,20 +22,17 @@ import { DatabaseGroupView } from "@/types/proto-es/v1/database_group_service_pb
 import type { WorkloadIdentity } from "@/types/proto-es/v1/workload_identity_service_pb";
 import { WorkloadIdentityConfig_ProviderType } from "@/types/proto-es/v1/workload_identity_service_pb";
 import {
-  extractDatabaseResourceName,
-  getDefaultPagination,
   getWorkloadIdentityProviderText,
   hasProjectPermissionV2,
   parseWorkloadIdentitySubjectPattern,
+  resolveWorkloadIdentityProviderType,
 } from "@/utils";
+import { WorkloadIdentitySelect } from "./WorkloadIdentitySelect";
 
 export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   const { t } = useTranslation();
   const serverInfo = useAppStore((s) => s.serverInfo);
   const projectsByName = useAppStore((s) => s.projectsByName);
-  const listWorkloadIdentities = useAppStore(
-    (state) => state.listWorkloadIdentities
-  );
   const fetchWorkloadIdentity = useAppStore(
     (state) => state.fetchWorkloadIdentity
   );
@@ -58,45 +56,11 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   const [showReleaseYaml, setShowReleaseYaml] = useState(true);
   const [showGitlabCiYaml, setShowGitlabCiYaml] = useState(true);
 
-  // Workload identity options
-  const [wiOptions, setWiOptions] = useState<ComboboxOption[]>([]);
-  const [wiSearch, setWiSearch] = useState("");
   const selectedIdentity = useAppStore((state) =>
     selectedIdentityName
       ? state.getWorkloadIdentity(selectedIdentityName)
       : undefined
   );
-
-  const fetchWorkloadIdentities = useCallback(
-    async (search: string) => {
-      const all: ComboboxOption[] = [];
-      let pageToken: string | undefined;
-      // Fetch all pages so every identity is discoverable.
-      do {
-        const resp = await listWorkloadIdentities({
-          parent: projectName,
-          filter: { query: search },
-          pageToken,
-          pageSize: getDefaultPagination(),
-          showDeleted: false,
-        });
-        for (const wi of resp.workloadIdentities) {
-          all.push({
-            value: wi.name,
-            label: wi.title || wi.email,
-            description: wi.email,
-          });
-        }
-        pageToken = resp.nextPageToken || undefined;
-      } while (pageToken);
-      setWiOptions(all);
-    },
-    [projectName, listWorkloadIdentities]
-  );
-
-  useEffect(() => {
-    fetchWorkloadIdentities(wiSearch).catch(() => {});
-  }, [wiSearch, fetchWorkloadIdentities]);
 
   // Database group options
   const [dbGroupOptions, setDbGroupOptions] = useState<ComboboxOption[]>([]);
@@ -115,34 +79,6 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
       .catch(() => {});
   }, [projectName]);
 
-  // Database options for individual selection
-  const [dbOptions, setDbOptions] = useState<ComboboxOption[]>([]);
-  const [dbSearch, setDbSearch] = useState("");
-  useEffect(() => {
-    const fetchAllDatabases = async () => {
-      const all: ComboboxOption[] = [];
-      let pageToken: string | undefined;
-      do {
-        const resp = await useAppStore.getState().fetchDatabases({
-          parent: projectName,
-          filter: dbSearch ? { query: dbSearch } : {},
-          pageSize: getDefaultPagination(),
-          pageToken,
-        });
-        for (const db of resp.databases) {
-          all.push({
-            value: db.name,
-            label: extractDatabaseResourceName(db.name).databaseName,
-            description: db.name,
-          });
-        }
-        pageToken = resp.nextPageToken || undefined;
-      } while (pageToken);
-      setDbOptions(all);
-    };
-    fetchAllDatabases().catch(() => {});
-  }, [projectName, dbSearch]);
-
   // Fetch the selected identity into the store cache so getWorkloadIdentity
   // returns the real object (with workloadIdentityConfig) instead of a stub.
   useEffect(() => {
@@ -152,21 +88,24 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   }, [selectedIdentityName, fetchWorkloadIdentity]);
 
   const selectedConfig = selectedIdentity?.workloadIdentityConfig;
+  // Resolved, not read raw: the subject parser below resolves an unspecified
+  // provider from the subject prefix, so a page reading the stored enum would
+  // render this identity's repository under a "provider does not match" alert
+  // naming no provider.
+  const selectedProviderType =
+    resolveWorkloadIdentityProviderType(selectedConfig) ??
+    WorkloadIdentityConfig_ProviderType.PROVIDER_TYPE_UNSPECIFIED;
 
   // Sync active tab with selected identity provider
   useEffect(() => {
-    if (
-      selectedConfig?.providerType ===
-      WorkloadIdentityConfig_ProviderType.GITLAB
-    ) {
+    if (selectedProviderType === WorkloadIdentityConfig_ProviderType.GITLAB) {
       setActiveTab("gitlab");
     } else if (
-      selectedConfig?.providerType ===
-      WorkloadIdentityConfig_ProviderType.GITHUB
+      selectedProviderType === WorkloadIdentityConfig_ProviderType.GITHUB
     ) {
       setActiveTab("github");
     }
-  }, [selectedConfig?.providerType]);
+  }, [selectedProviderType]);
 
   const parsedSubject = useMemo(() => {
     if (!selectedIdentity) return undefined;
@@ -176,17 +115,16 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   const repoUrl = useMemo(() => {
     const parsed = parsedSubject;
     if (!parsed?.owner || !parsed.repo) return "";
-    const providerType = selectedConfig?.providerType;
-    if (providerType === WorkloadIdentityConfig_ProviderType.GITHUB) {
+    if (selectedProviderType === WorkloadIdentityConfig_ProviderType.GITHUB) {
       return `https://github.com/${parsed.owner}/${parsed.repo}`;
     }
-    if (providerType === WorkloadIdentityConfig_ProviderType.GITLAB) {
+    if (selectedProviderType === WorkloadIdentityConfig_ProviderType.GITLAB) {
       const issuer = selectedConfig?.issuerUrl ?? "https://gitlab.com";
       const base = issuer.replace(/\/$/, "");
       return `${base}/${parsed.owner}/${parsed.repo}`;
     }
     return "";
-  }, [parsedSubject, selectedConfig]);
+  }, [parsedSubject, selectedConfig, selectedProviderType]);
 
   const branch = parsedSubject?.branch || "main";
 
@@ -213,7 +151,8 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   }, [targetTab, selectedDatabaseGroupName, selectedDatabaseNames]);
 
   const targetsPlaceholder =
-    targetsString || "instances/{instance}/databases/{database}";
+    targetsString ||
+    `projects/${projectId}/instances/{instance}/databases/{database}`;
   const runsOn = useSelfhostRunner ? "self-hosted" : "ubuntu-latest";
 
   const handleTargetTabChange = (tab: "GROUP" | "DATABASE") => {
@@ -227,7 +166,6 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
 
   const handleWorkloadIdentityCreated = (wi: WorkloadIdentity) => {
     setSelectedIdentityName(wi.name);
-    fetchWorkloadIdentities("");
   };
 
   const canCreateWorkloadIdentity = project
@@ -290,11 +228,11 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
   const providerMismatchGithub =
     selectedConfig &&
     activeTab === "github" &&
-    selectedConfig.providerType !== WorkloadIdentityConfig_ProviderType.GITHUB;
+    selectedProviderType !== WorkloadIdentityConfig_ProviderType.GITHUB;
   const providerMismatchGitlab =
     selectedConfig &&
     activeTab === "gitlab" &&
-    selectedConfig.providerType !== WorkloadIdentityConfig_ProviderType.GITLAB;
+    selectedProviderType !== WorkloadIdentityConfig_ProviderType.GITLAB;
 
   return (
     <ProjectPageLayout className="gap-y-1">
@@ -380,12 +318,11 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
               {t("gitops.checklist.workload-identity")}
             </span>
             <div className="flex items-center gap-x-3">
-              <Combobox
+              <WorkloadIdentitySelect
+                projectName={projectName}
                 value={selectedIdentityName}
-                options={wiOptions}
                 placeholder={t("gitops.workload-identity.select-placeholder")}
-                onChange={setSelectedIdentityName}
-                onSearch={setWiSearch}
+                onChange={(name) => setSelectedIdentityName(name)}
                 className="max-w-lg"
               />
               <PermissionGuard
@@ -453,11 +390,11 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
                   </p>
                 </>
               ) : (
-                <MultiDatabaseSelect
+                <DatabaseSelect
+                  multiple
                   value={selectedDatabaseNames}
-                  options={dbOptions}
-                  onChange={setSelectedDatabaseNames}
-                  onSearch={setDbSearch}
+                  onChange={(names) => setSelectedDatabaseNames(names)}
+                  projectName={projectName}
                 />
               )}
             </div>
@@ -501,7 +438,8 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
                 className="mb-3"
                 description={t("gitops.workflow.provider-not-match", {
                   provider: getWorkloadIdentityProviderText(
-                    selectedConfig!.providerType
+                    selectedProviderType,
+                    t("settings.members.workload-identity-generic-oidc")
                   ),
                 })}
               />
@@ -549,7 +487,8 @@ export function ProjectGitOpsPage({ projectId }: { projectId: string }) {
                 className="mb-3"
                 description={t("gitops.workflow.provider-not-match", {
                   provider: getWorkloadIdentityProviderText(
-                    selectedConfig!.providerType
+                    selectedProviderType,
+                    t("settings.members.workload-identity-generic-oidc")
                   ),
                 })}
               />
@@ -720,59 +659,6 @@ function StepItem({
         {number}
       </span>
       <p className="text-sm text-control-light">{children}</p>
-    </div>
-  );
-}
-
-function MultiDatabaseSelect({
-  value,
-  options,
-  onChange,
-  onSearch,
-}: {
-  value: string[];
-  options: ComboboxOption[];
-  onChange: (value: string[]) => void;
-  onSearch: (query: string) => void;
-}) {
-  const { t } = useTranslation();
-
-  const handleToggle = (dbName: string) => {
-    if (value.includes(dbName)) {
-      onChange(value.filter((n) => n !== dbName));
-    } else {
-      onChange([...value, dbName]);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-y-2">
-      <Combobox
-        value=""
-        options={options.filter((o) => !value.includes(o.value))}
-        placeholder={t("database.select")}
-        onChange={handleToggle}
-        onSearch={onSearch}
-      />
-      {value.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {value.map((name) => (
-            <span
-              key={name}
-              className="inline-flex items-center gap-x-1 px-2 py-0.5 text-xs bg-gray-100 rounded-xs"
-            >
-              {extractDatabaseResourceName(name).databaseName}
-              <button
-                type="button"
-                className="hover:text-error"
-                onClick={() => onChange(value.filter((n) => n !== name))}
-              >
-                <XCircle className="w-3 h-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

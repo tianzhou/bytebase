@@ -95,7 +95,7 @@ export function GrantAccessDialog({
             (resource.columns ?? []).join(","),
           ].join("|")
         )
-        .sort()
+        .sort((a, b) => a.localeCompare(b))
         .join("||"),
     [initialDatabaseResources]
   );
@@ -419,7 +419,7 @@ export function GrantAccessDialog({
                   onValueChange={(value) => onRadioChange(value as RadioValue)}
                 >
                   <Tooltip content={t("issue.role-grant.all-databases-tip")}>
-                    <RadioGroupItem value="ALL" disabled={modeChangeProcessing}>
+                    <RadioGroupItem value="ALL" disabled>
                       {t("issue.role-grant.all-databases")}
                     </RadioGroupItem>
                   </Tooltip>
@@ -432,6 +432,7 @@ export function GrantAccessDialog({
                       <FeatureBadge
                         feature={PlanFeature.FEATURE_DATA_MASKING}
                         instance={instance}
+                        clickable={false}
                       />
                       <span>{t("issue.role-grant.use-cel")}</span>
                     </div>
@@ -445,6 +446,7 @@ export function GrantAccessDialog({
                       <FeatureBadge
                         feature={PlanFeature.FEATURE_DATA_MASKING}
                         instance={instance}
+                        clickable={false}
                       />
                       <span>{t("issue.role-grant.manually-select")}</span>
                     </div>
@@ -457,6 +459,7 @@ export function GrantAccessDialog({
                   projectName={projectName}
                   value={databaseResources}
                   includeColumns
+                  readonly
                   onChange={setDatabaseResources}
                 />
               )}
@@ -466,6 +469,7 @@ export function GrantAccessDialog({
                   factorList={factorList}
                   optionConfigMap={factorOptionConfigMap}
                   factorOperatorOverrideMap={factorOperatorOverrideMap}
+                  readonly
                   onUpdate={setExpr}
                 />
               )}

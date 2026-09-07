@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   fetchDatabases: vi.fn(),
   batchUpdateDatabases: vi.fn(),
   captureMetric: vi.fn(),
+  onCreated: vi.fn(),
   context: undefined as Record<string, unknown> | undefined,
 }));
 
@@ -61,6 +62,7 @@ vi.mock("@/app/analytics/provider", () => ({
 vi.mock("@/stores/app", () => {
   const appState = {
     hasFeature: () => true,
+    isSaaSMode: () => false,
     createInstance: mocks.createInstance,
     fetchDatabases: mocks.fetchDatabases,
     batchUpdateDatabases: mocks.batchUpdateDatabases,
@@ -79,8 +81,7 @@ vi.mock("@/stores", () => ({
 vi.mock("@/utils", () => ({
   convertKVListToLabels: (list: { key: string; value: string }[]) =>
     Object.fromEntries(list.map(({ key, value }) => [key, value])),
-  extractInstanceResourceName: (name: string) =>
-    name.replace(/^instances\//, ""),
+  extractInstanceResourceName: (name: string) => name.split("/").at(-1) ?? "",
   isValidSpannerDataSource: (ds: { projectId: string; instanceId: string }) =>
     ds.projectId !== "" && ds.instanceId !== "",
   isValidBigQueryDataSource: (ds: { projectId: string }) =>
@@ -227,7 +228,7 @@ beforeEach(() => {
 
 describe("InstanceFormButtons", () => {
   test("uses project-aware create action text when creating from a project", async () => {
-    mocks.routerCurrentQuery = { project: "demo" };
+    mocks.context = { ...mocks.context, parent: "projects/demo" };
     const container = document.createElement("div");
     const root = createRoot(container);
 
@@ -246,12 +247,20 @@ describe("InstanceFormButtons", () => {
   });
 
   test("passes project context to instance creation without client-side database transfer", async () => {
-    mocks.routerCurrentQuery = { project: "demo" };
+    mocks.routerCurrentName = "workspace.project.instance.create";
+    mocks.context = { ...mocks.context, parent: "projects/demo" };
+    mocks.createInstance.mockResolvedValue(
+      create(InstanceSchema, {
+        name: "projects/demo/instances/prod",
+        title: "Production",
+        engine: Engine.POSTGRES,
+      })
+    );
     const container = document.createElement("div");
     const root = createRoot(container);
 
     await act(async () => {
-      root.render(<InstanceFormButtons />);
+      root.render(<InstanceFormButtons onCreated={mocks.onCreated} />);
     });
 
     const createButton = Array.from(container.querySelectorAll("button")).find(
@@ -267,24 +276,20 @@ describe("InstanceFormButtons", () => {
       expect.anything(),
       false,
       {
-        initialDatabaseProject: "projects/demo",
+        parent: "projects/demo",
       }
     );
     expect(mocks.fetchDatabases).not.toHaveBeenCalled();
     expect(mocks.batchUpdateDatabases).not.toHaveBeenCalled();
-    expect(mocks.routerPush).toHaveBeenCalledWith({
-      name: "workspace.project.database",
-      params: { projectId: "demo" },
-      query: {
-        intro: "project-instance-synced",
-        syncingInstance: "prod",
-      },
-    });
+    expect(mocks.onCreated).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "projects/demo/instances/prod" })
+    );
+    expect(mocks.routerPush).not.toHaveBeenCalled();
     expect(mocks.context?.onDismiss).not.toHaveBeenCalled();
     expect(mocks.captureMetric).toHaveBeenCalledWith({
       event: "instance create clicked",
       properties: {
-        route_id: "workspace.instance.create",
+        route_id: "workspace.project.instance.create",
         resource: "projects/demo",
       },
     });
@@ -386,9 +391,7 @@ describe("InstanceFormButtons", () => {
         syncDatabases: create(SyncDatabasesSchema, { databases: [] }),
       }),
       false,
-      {
-        initialDatabaseProject: undefined,
-      }
+      undefined
     );
 
     await act(async () => {
@@ -461,6 +464,10 @@ describe("InstanceFormButtons", () => {
     expect(container.textContent).toContain(
       "instance.connection-recovery.tls.description"
     );
+    expect(container.textContent).toContain(
+      "instance.failed-to-connect-instance"
+    );
+    expect(container.textContent).not.toContain("common.warning");
     expect(context.emitShowConnectionOptions).not.toHaveBeenCalled();
     expect(mocks.createInstance).not.toHaveBeenCalled();
 
@@ -497,6 +504,75 @@ describe("InstanceFormButtons", () => {
     expect(
       container.querySelector('[data-testid="alert-dialog-content"]')
     ).toHaveClass("max-w-2xl");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  // Pins the contract every field-level validation in this form rests on:
+  // failing checkDataSource is what keeps a data source away from the
+  // connection test, so the operator reads the form's own message instead of a
+  // connection failure. The keytab resupply gate is one caller of it; this
+  // test covers the wiring, not that gate — InstanceFormContext.test.tsx
+  // covers which data sources checkDataSource fails.
+  test("a failing data source check keeps both save actions off the connection test", async () => {
+    const adminDataSource = create(DataSourceSchema, {
+      id: "admin",
+      type: DataSourceType.ADMIN,
+      host: "prod.example.com",
+      port: "5432",
+    });
+    const editState = {
+      ...adminDataSource,
+      pendingCreate: false,
+      updatedPassword: "",
+      updatedMasterPassword: "",
+      updatedToken: "",
+    };
+    mocks.context = {
+      ...mocks.context,
+      instance: create(InstanceSchema, {
+        name: "instances/prod",
+        title: "Production",
+        engine: Engine.POSTGRES,
+        dataSources: [adminDataSource],
+      }),
+      isCreating: false,
+      adminDataSource: editState,
+      editingDataSource: editState,
+      checkDataSource: vi.fn(() => false),
+      valueChanged: true,
+    };
+    const context = mocks.context as {
+      testConnection: ReturnType<typeof vi.fn>;
+    };
+
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<InstanceFormButtons />);
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const updateButton = buttons.find((button) =>
+      button.textContent?.includes("common.update")
+    ) as HTMLButtonElement;
+    const testConnectionButton = buttons.find((button) =>
+      button.textContent?.includes("instance.test-connection")
+    ) as HTMLButtonElement;
+
+    expect(updateButton.disabled).toBe(true);
+    expect(testConnectionButton.disabled).toBe(true);
+
+    await act(async () => {
+      updateButton.click();
+      testConnectionButton.click();
+      await flushPromises();
+    });
+
+    expect(context.testConnection).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

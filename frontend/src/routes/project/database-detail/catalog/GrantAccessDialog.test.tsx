@@ -101,13 +101,16 @@ vi.mock("@/components/DatabaseResourceSelector", () => ({
     value,
     includeColumns,
     onChange,
+    readonly,
   }: {
     value: unknown;
     includeColumns?: boolean;
     onChange?: (resources: unknown[]) => void;
+    readonly?: boolean;
   }) => (
     <div
       data-include-columns={String(includeColumns)}
+      data-readonly={String(readonly)}
       data-testid="database-resource-selector"
     >
       {JSON.stringify(value)}
@@ -137,12 +140,16 @@ vi.mock("@/components/ExprEditor", () => ({
   ExprEditor: ({
     expr,
     onUpdate,
+    readonly,
   }: {
     expr: unknown;
     onUpdate: (expr: unknown) => void;
+    readonly?: boolean;
   }) => (
     <div>
-      <div data-testid="expr-editor">{JSON.stringify(expr)}</div>
+      <div data-readonly={String(readonly)} data-testid="expr-editor">
+        {JSON.stringify(expr)}
+      </div>
       <button
         data-testid="expr-editor-set-column-scope"
         onClick={() =>
@@ -169,7 +176,9 @@ vi.mock("@/components/FeatureAttention", () => ({
 }));
 
 vi.mock("@/components/FeatureBadge", () => ({
-  FeatureBadge: () => <div data-testid="feature-badge" />,
+  FeatureBadge: ({ clickable }: { clickable?: boolean }) => (
+    <div data-clickable={String(clickable)} data-testid="feature-badge" />
+  ),
 }));
 
 vi.mock("@/components/ui/feature-modal", () => ({
@@ -370,6 +379,19 @@ describe("GrantAccessDialog", () => {
     mocks.stringifyConditionExpression.mockClear();
   });
 
+  test("keeps badges inside modal-opening radio controls non-clickable", async () => {
+    const { container, unmount } = renderGrantAccessDialog();
+    await flush();
+
+    const badges = container.querySelectorAll('[data-testid="feature-badge"]');
+    expect(badges).toHaveLength(2);
+    for (const badge of badges) {
+      expect(badge.getAttribute("data-clickable")).toBe("false");
+    }
+
+    unmount();
+  });
+
   test("preserves selected scope when switching from select to expression mode", async () => {
     const { container, unmount } = renderGrantAccessDialog();
     await flush();
@@ -399,6 +421,33 @@ describe("GrantAccessDialog", () => {
     expect(exprEditor?.textContent).toContain(
       JSON.stringify(mocks.convertedExpr)
     );
+
+    unmount();
+  });
+
+  test("keeps catalog resources readonly while allowing scoped mode changes", async () => {
+    const { container, unmount } = renderGrantAccessDialog();
+    await flush();
+
+    let radioList = getRadios(container);
+    expect(isDisabled(radioList[0])).toBe(true);
+    expect(isDisabled(radioList[1])).toBe(false);
+    expect(isDisabled(radioList[2])).toBe(false);
+    expect(
+      container
+        .querySelector('[data-testid="database-resource-selector"]')
+        ?.getAttribute("data-readonly")
+    ).toBe("true");
+
+    await click(radioList[1]!);
+
+    radioList = getRadios(container);
+    expect(isChecked(radioList[1])).toBe(true);
+    expect(
+      container
+        .querySelector('[data-testid="expr-editor"]')
+        ?.getAttribute("data-readonly")
+    ).toBe("true");
 
     unmount();
   });

@@ -1,4 +1,4 @@
-FROM node:24.18.0-slim AS frontend
+FROM node:24.18.1-slim AS frontend
 ARG GIT_COMMIT
 
 RUN npm i -g pnpm@11.17.0
@@ -10,7 +10,7 @@ COPY . .
 RUN pnpm --dir ./frontend i
 RUN pnpm --dir ./frontend release-docker
 
-FROM golang:1.26.5-alpine3.23 AS backend
+FROM golang:1.27.1-alpine3.23 AS backend
 ARG VERSION
 ARG GIT_COMMIT
 
