@@ -336,26 +336,26 @@ func createPostgreSQLTLSMaterial() (string, string, []byte, []byte, error) {
 	return tlsDir, caPath, certificate, key, nil
 }
 
+// waitDBPing returns once the database accepts a connection. The container's
+// log wait has already passed by the time this runs, so the first ping nearly
+// always succeeds; the poll only covers the gap between "ready" in the log and
+// the listener. A 3 s ticker here used to add 3 s to every container start.
 func waitDBPing(ctx context.Context, db *sql.DB) error {
-	started := time.Now()
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	timeout := time.After(10 * time.Minute)
-outerLoop:
 	for {
+		if err := db.PingContext(ctx); err == nil {
+			return nil
+		}
 		select {
 		case <-ticker.C:
-			if err := db.PingContext(ctx); err == nil {
-				if time.Since(started) > 1*time.Minute {
-					fmt.Printf("Total wait time: %s\n", time.Since(started))
-				}
-				break outerLoop
-			}
 		case <-timeout:
 			return errors.Errorf("start container timeout reached")
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	return nil
 }
 
 // GetTestPgContainer is a helper function for tests that creates a PostgreSQL container
