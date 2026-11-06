@@ -7,7 +7,15 @@ import {
   useState,
 } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { SegmentedControl } from "@/components/ui/segmented-control";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useServerState } from "@/hooks/useAppState";
 import { Engine } from "@/types/proto-es/v1/common_pb";
 import {
@@ -48,6 +56,11 @@ function CredentialSourceForm({
     dataSource.authenticationType ===
       DataSource_AuthenticationType.AWS_RDS_IAM ||
     dataSource.authenticationType === DataSource_AuthenticationType.AZURE_IAM;
+
+  const usesCompactFieldTitles =
+    dataSource.authenticationType ===
+      DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM ||
+    dataSource.authenticationType === DataSource_AuthenticationType.AWS_RDS_IAM;
 
   const isDefaultCredentialDisabled = isSaaSMode && isIAMAuthentication;
 
@@ -147,21 +160,6 @@ function CredentialSourceForm({
     isDefaultCredentialDisabled,
   ]);
 
-  const options = useMemo(
-    () => [
-      {
-        label: t("common.default"),
-        value: "default" as CredentialSource,
-        disabled: isDefaultCredentialDisabled,
-      },
-      {
-        label: t("instance.iam-extension.specific-credential"),
-        value: "specific-credential" as CredentialSource,
-      },
-    ],
-    [t, isDefaultCredentialDisabled]
-  );
-
   const handleCredentialSourceChange = (value: CredentialSource) => {
     if (!allowEdit) return;
     if (value === "default") {
@@ -223,29 +221,46 @@ function CredentialSourceForm({
     <div className="flex flex-col gap-4 sm:col-span-3 sm:col-start-1">
       <FormField
         validationField="iamExtension"
-        title={t("instance.iam-extension.credential-source")}
+        title={
+          usesCompactFieldTitles ? (
+            <span className="textlabel">
+              {t("instance.iam-extension.credential-source")}
+            </span>
+          ) : (
+            t("instance.iam-extension.credential-source")
+          )
+        }
+        description={
+          credentialSource === "default" ? (
+            <DefaultCredentialInfo
+              authenticationType={dataSource.authenticationType}
+            />
+          ) : undefined
+        }
       >
-        <SegmentedControl
-          value={credentialSource}
-          onValueChange={(value) =>
-            handleCredentialSourceChange(value as CredentialSource)
-          }
-          ariaLabel={t("instance.iam-extension.credential-source")}
-          options={options.map((option) => ({
-            ...option,
-            tooltip: option.disabled
-              ? t("instance.iam-extension.saas-default-credential-restriction")
-              : undefined,
-          }))}
-          disabled={!allowEdit}
-          size="sm"
-        />
-
-        {credentialSource === "default" && (
-          <DefaultCredentialInfo
-            authenticationType={dataSource.authenticationType}
-          />
-        )}
+        <div className="flex flex-col gap-y-1">
+          <div className="flex items-center gap-x-3">
+            <Switch
+              id="specificCredential"
+              checked={credentialSource === "specific-credential"}
+              disabled={!allowEdit || isDefaultCredentialDisabled}
+              aria-label={t("instance.iam-extension.credential-source")}
+              onCheckedChange={(checked) =>
+                handleCredentialSourceChange(
+                  checked ? "specific-credential" : "default"
+                )
+              }
+            />
+            <label htmlFor="specificCredential" className="text-sm">
+              {t("instance.iam-extension.specific-credential")}
+            </label>
+          </div>
+          {isDefaultCredentialDisabled && (
+            <p className="text-sm text-control-light">
+              {t("instance.iam-extension.saas-default-credential-restriction")}
+            </p>
+          )}
+        </div>
       </FormField>
 
       {credentialSource === "specific-credential" && (
@@ -352,21 +367,56 @@ function CloudSQLIPTypeField({
   }));
 
   return (
-    <FormField title={t("instance.cloud-sql-ip-type.label")}>
-      <SegmentedControl
-        value={String(current)}
-        onValueChange={(next) => onChange(Number(next))}
-        ariaLabel={t("instance.cloud-sql-ip-type.label")}
-        options={options.map((option) => ({
-          value: String(option.value),
-          label: option.label,
-        }))}
-        disabled={!allowEdit}
-        size="sm"
-      />
-      <p className="text-sm text-control-light">
-        {t("instance.cloud-sql-ip-type.description")}
-      </p>
+    <FormField
+      title={
+        <span className="textlabel">
+          {t("instance.cloud-sql-ip-type.label")}
+        </span>
+      }
+      description={t("instance.cloud-sql-ip-type.description")}
+    >
+      {options.length === 2 ? (
+        <RadioGroup
+          className="gap-x-4"
+          value={String(current)}
+          onValueChange={(next) =>
+            onChange(Number(next) as DataSource_CloudSQLIPType)
+          }
+          aria-label={t("instance.cloud-sql-ip-type.label")}
+        >
+          {options.map((option) => (
+            <RadioGroupItem
+              key={option.value}
+              value={String(option.value)}
+              disabled={!allowEdit}
+            >
+              {option.label}
+            </RadioGroupItem>
+          ))}
+        </RadioGroup>
+      ) : (
+        <Select
+          value={String(current)}
+          onValueChange={(next) => {
+            if (next) onChange(Number(next) as DataSource_CloudSQLIPType);
+          }}
+          disabled={!allowEdit}
+        >
+          <SelectTrigger
+            aria-label={t("instance.cloud-sql-ip-type.label")}
+            className="w-full sm:w-80"
+          >
+            <SelectValue>{label(current)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={String(option.value)}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
     </FormField>
   );
 }
@@ -460,10 +510,11 @@ function AwsCredentialFields({
     <div className="flex flex-col gap-4">
       <FormField
         validationField="iamExtension.accessKeyId"
-        title={"Access Key ID"}
+        title={<span className="textlabel">Access Key ID</span>}
       >
         <Input
           aria-label={"Access Key ID"}
+          data-agent-sensitive
           className="w-full"
           disabled={!allowEdit}
           placeholder={t("common.sensitive-placeholder")}
@@ -471,9 +522,10 @@ function AwsCredentialFields({
           onChange={(e) => onFieldChange("accessKeyId", e.target.value)}
         />
       </FormField>
-      <FormField title={"Secret Access Key"}>
+      <FormField title={<span className="textlabel">Secret Access Key</span>}>
         <Input
           aria-label={"Secret Access Key"}
+          data-agent-sensitive
           className="w-full"
           disabled={!allowEdit}
           placeholder={t("common.sensitive-placeholder")}
@@ -481,9 +533,10 @@ function AwsCredentialFields({
           onChange={(e) => onFieldChange("secretAccessKey", e.target.value)}
         />
       </FormField>
-      <FormField title={"Session Token"}>
+      <FormField title={<span className="textlabel">Session Token</span>}>
         <Input
           aria-label={"Session Token"}
+          data-agent-sensitive
           className="w-full"
           disabled={!allowEdit}
           placeholder={t("common.sensitive-placeholder")}
@@ -493,7 +546,7 @@ function AwsCredentialFields({
       </FormField>
       <FormField
         validationField="iamExtension.roleArn"
-        title={t("instance.role-arn")}
+        title={<span className="textlabel">{t("instance.role-arn")}</span>}
       >
         <Input
           aria-label={t("instance.role-arn")}
@@ -508,7 +561,9 @@ function AwsCredentialFields({
         </div>
       </FormField>
 
-      <FormField title={t("instance.external-id")}>
+      <FormField
+        title={<span className="textlabel">{t("instance.external-id")}</span>}
+      >
         <Input
           aria-label={t("instance.external-id")}
           className="w-full"
@@ -564,10 +619,13 @@ function GcpCredentialField({
   return (
     <FormField
       validationField="iamExtension.content"
-      title={t("instance.iam-extension.specific-credential")}
-    >
-      <div className="flex flex-col gap-y-1 w-full">
-        <p className="textinfolabel">
+      title={
+        <span className="textlabel">
+          {t("instance.iam-extension.specific-credential")}
+        </span>
+      }
+      description={
+        <>
           <span>{t("instance.create-gcp-credentials")}</span>
           <a
             href="https://docs.bytebase.com/get-started/connect/gcp?source=console"
@@ -591,9 +649,13 @@ function GcpCredentialField({
               />
             </svg>
           </a>
-        </p>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-y-1 w-full">
         <Textarea
           aria-label={t("instance.iam-extension.specific-credential")}
+          data-agent-sensitive
           value={value}
           placeholder={t("instance.type-or-paste-credentials-write-only")}
           className={`w-full h-24 whitespace-pre-wrap resize-none ${isDragOver ? "border-accent" : ""}`}
@@ -615,7 +677,7 @@ function DefaultCredentialInfo({
   const { t } = useTranslation();
 
   return (
-    <div className="text-sm leading-5 text-control-light">
+    <div className="text-sm leading-5 text-control-placeholder">
       {authenticationType === DataSource_AuthenticationType.AZURE_IAM && (
         <Trans
           t={t}

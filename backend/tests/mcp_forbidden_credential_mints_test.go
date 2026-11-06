@@ -1,9 +1,14 @@
 package tests
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,10 +20,12 @@ import (
 	"github.com/bytebase/bytebase/backend/generated-go/v1/v1connect"
 )
 
-// deniedMCPRows returns the audit rows an MCP session produced for one method.
+// mcpAuditRows returns the audit rows an MCP session stored for one method.
 // Filtering on McpDelegation is what makes a row attributable to the agent
 // rather than to the same human working in the console.
-func deniedMCPRows(ctx context.Context, t *testing.T, ctl *controller, workspace, method string) []*v1pb.AuditLog {
+// TestMCPReadOnlyCeilingRefusesAWrite reads a stored row through this, which
+// keeps an empty result meaningful.
+func mcpAuditRows(ctx context.Context, t *testing.T, ctl *controller, workspace, method string) []*v1pb.AuditLog {
 	t.Helper()
 	resp, err := ctl.auditLogServiceClient.SearchAuditLogs(ctx, connect.NewRequest(&v1pb.SearchAuditLogsRequest{
 		Parent:  workspace,
@@ -215,9 +222,7 @@ func TestMCPCannotMintCredentialsForOtherPrincipals(t *testing.T) {
 	}))
 	a.Error(err, "the address the MCP session tried to rebind to must own no account")
 
-	// All five carry the audit annotation, so all five denials are on the
-	// operator's audit page — a denied credential mint is precisely the event
-	// worth investigating.
+	// All five are refused before their handlers, so none is stored.
 	for method, label := range map[string]string{
 		"/bytebase.v1.ServiceAccountService/CreateServiceAccount": "CreateServiceAccount",
 		"/bytebase.v1.ServiceAccountService/UpdateServiceAccount": "UpdateServiceAccount",
@@ -225,12 +230,7 @@ func TestMCPCannotMintCredentialsForOtherPrincipals(t *testing.T) {
 		"/bytebase.v1.UserService/CreateUser":                     "CreateUser",
 		"/bytebase.v1.UserService/UpdateEmail":                    "UpdateEmail",
 	} {
-		rows := deniedMCPRows(ctx, t, ctl, workspaceName, method)
-		a.Len(rows, 1, "the denied %s must produce exactly one audit row", label)
-		a.Equal(int32(connect.CodePermissionDenied), rows[0].Status.GetCode(),
-			"the %s row must record the denial, not a success", label)
-		a.NotEmpty(rows[0].McpDelegation.GetCorrelationId(),
-			"the %s denial must be correlatable back to the agent session", label)
+		a.Empty(mcpAuditRows(ctx, t, ctl, workspaceName, method), "the refused %s is never stored", label)
 	}
 
 	// The console keeps working. The gate lives on the internal MCP chain, so
@@ -420,13 +420,9 @@ func TestMCPCannotWriteTrustAnchorsOrShipStoredSecrets(t *testing.T) {
 		a.NotContains(wi.Email, wiID, "the workload identity must never have been written")
 	}
 
-	// All six produce a denial row, and two of them only since 1b-2. Four carry
-	// the audit annotation; TestIdentityProvider and TestEmailSetting carry
-	// none, so until the gate started marking its own refusals they were
-	// refused silently — the two methods in this batch that would have carried
-	// a stored secret to an address the agent chose were the two that left no
-	// trace. This assertion is what tells anyone who touches the marking that
-	// the coverage is load-bearing.
+	// All six are refused before their handlers, so none is stored. The stream
+	// line's redaction of TestIdentityProvider's request is pinned by
+	// TestMCPGateRefusalIsStreamedWithoutAnAuditAnnotation.
 	for method, label := range map[string]string{
 		"/bytebase.v1.IdentityProviderService/CreateIdentityProvider": "CreateIdentityProvider",
 		"/bytebase.v1.IdentityProviderService/UpdateIdentityProvider": "UpdateIdentityProvider",
@@ -435,20 +431,8 @@ func TestMCPCannotWriteTrustAnchorsOrShipStoredSecrets(t *testing.T) {
 		"/bytebase.v1.IdentityProviderService/TestIdentityProvider":   "TestIdentityProvider (no audit annotation)",
 		"/bytebase.v1.SettingService/TestEmailSetting":                "TestEmailSetting (no audit annotation)",
 	} {
-		rows := deniedMCPRows(ctx, t, ctl, workspaceName, method)
-		a.Len(rows, 1, "the denied %s must produce exactly one audit row", label)
-		a.Equal(int32(connect.CodePermissionDenied), rows[0].Status.GetCode(),
-			"the %s row must record the denial", label)
+		a.Empty(mcpAuditRows(ctx, t, ctl, workspaceName, method), "the refused %s is never stored", label)
 	}
-
-	// What the row must NOT carry: TestIdentityProvider's request names the
-	// stored client secret's destination and supplies a code, and recording a
-	// denial verbatim would put both in a log the denial exists to protect.
-	idpRow := deniedMCPRows(ctx, t, ctl, workspaceName,
-		"/bytebase.v1.IdentityProviderService/TestIdentityProvider")[0]
-	a.NotContains(idpRow.Request, "anything", "the supplied authorization code must be masked in the row")
-	a.Contains(idpRow.Request, "collector.attacker.example.com",
-		"the host the agent named is the point of the row and stays readable")
 }
 
 // TestMCPCannotRetargetADataSource covers the same "carry a stored secret to a
@@ -527,9 +511,7 @@ func TestMCPCannotRetargetADataSource(t *testing.T) {
 	a.Equal(realHost, after.Msg.DataSources[0].Host,
 		"the data source must still point where the operator put it")
 
-	// The same retarget WITHOUT validate_only, denied identically. The pair is
-	// an A/B on one flag: same method, same session, same refusal — and only
-	// one of them is auditable, which is the point of the assertions below.
+	// The same retarget WITHOUT validate_only, denied identically.
 	persisting := callAPIOnSession(ctx, t, session, "InstanceService/UpdateDataSource", map[string]any{
 		"name":       instance.Msg.Name,
 		"dataSource": map[string]any{"id": dataSourceID, "host": "attacker.example.com"},
@@ -541,27 +523,11 @@ func TestMCPCannotRetargetADataSource(t *testing.T) {
 		Name: "workspaces/-",
 	}))
 	a.NoError(err)
-	rows := deniedMCPRows(ctx, t, ctl, workspace.Msg.Name, "/bytebase.v1.InstanceService/UpdateDataSource")
-	t.Logf("audit rows for the two denied retargets (one validate-only): %d", len(rows))
-
-	// Both denials are on the audit page. UpdateDataSource carries audit = true
-	// and is not carved out of workspace-parent resolution, and createAuditLog
-	// now skips a validate-only request only when the call SUCCEEDED — a dry
-	// run Bytebase accepted changed nothing worth recording, a refused one is
-	// worth exactly as much as any other refusal.
-	//
-	// This is the assertion that discriminates the two. Before, the
-	// validate-only denial returned from createAuditLog's first statement
-	// before the denial was ever considered, so this pair — same method, same
-	// session, same refusal, one flag apart — produced ONE row, and the
-	// validate-only variant is precisely the one that leaves no other trace:
-	// it dials the caller's host and persists nothing.
-	a.Len(rows, 2,
-		"both denials are auditable: setting validate_only must not turn off the record of being refused")
-	for _, row := range rows {
-		a.Equal(int32(connect.CodePermissionDenied), row.GetStatus().GetCode(),
-			"each row must carry the denial, not a blank status")
-	}
+	// Both are refused before the handler, so neither is stored. That the
+	// validate_only flag does not drop the refusal's stream line is pinned by
+	// TestAuditSinks.
+	a.Empty(mcpAuditRows(ctx, t, ctl, workspace.Msg.Name, "/bytebase.v1.InstanceService/UpdateDataSource"),
+		"a gate refusal is never stored")
 
 	// The console keeps working — the gate is on the internal MCP chain only.
 	_, err = ctl.instanceServiceClient.UpdateDataSource(ctx, connect.NewRequest(&v1pb.UpdateDataSourceRequest{
@@ -572,17 +538,15 @@ func TestMCPCannotRetargetADataSource(t *testing.T) {
 	a.NoError(err, "a normal session must still be able to update a data source")
 }
 
-// TestMCPCannotRewriteItsOwnCeiling covers the one method refused for what it
-// governs rather than for what it hands out.
+// TestMCPCannotRewriteItsOwnCeiling pins that a READ_WRITE session cannot change
+// the settings that bound it.
 //
 // SettingService/UpdateSetting writes value.mcp.capability, which IS the MCP
-// ceiling — the workspace switch that decides whether MCP sessions are served
-// at all, and at 1b-2 whether they are served read-only.
-// A session that can widen its own ceiling is not bounded by it, and "flip the
-// workspace MCP switch" stops being one of the three levers that contain a
-// runaway agent. The same method also keeps the stored SMTP password when
-// value.email.smtp omits it while accepting a new host, which hands over the
-// relay that carries password resets — TestEmailSetting's persisting twin.
+// ceiling. The same method keeps the stored SMTP password when value.email.smtp
+// omits it while accepting a new host, and keeps the stored AI key when the mask
+// names only the endpoint. The gate serves it only with a confirmation that
+// administer_workspace issues for the approval rules alone, and call_api cannot
+// carry one.
 //
 // The ceiling assertion is the load-bearing one: it reads the setting back
 // through the console afterwards, so this discriminates a gate that refuses
@@ -598,6 +562,7 @@ func TestMCPCannotRewriteItsOwnCeiling(t *testing.T) {
 	}))
 	a.NoError(err)
 
+	a.NoError(ctl.setMCPCapability(ctx, v1pb.MCPSetting_READ_WRITE))
 	ceilingBefore, err := ctl.getMCPCapability(ctx)
 	a.NoError(err)
 
@@ -638,10 +603,10 @@ func TestMCPCannotRewriteItsOwnCeiling(t *testing.T) {
 	session := openMCPSession(ctx, t, ctl, ctl.authInterceptor.token)
 	defer session.Close()
 
-	widened := callAPIOnSession(ctx, t, session, "SettingService/UpdateSetting", map[string]any{
+	rewritten := callAPIOnSession(ctx, t, session, "SettingService/UpdateSetting", map[string]any{
 		"setting": map[string]any{
 			"name":  "settings/MCP",
-			"value": map[string]any{"mcp": map[string]any{"capability": "READ_WRITE"}},
+			"value": map[string]any{"mcp": map[string]any{"capability": "DISABLED"}},
 		},
 		"updateMask": "value.mcp.capability",
 	})
@@ -669,19 +634,19 @@ func TestMCPCannotRewriteItsOwnCeiling(t *testing.T) {
 		"updateMask": "value.ai.endpoint",
 	})
 
-	t.Logf("MCP UpdateSetting{mcp_capability: READ_WRITE} → status=%d error=%q", widened.Status, widened.Error)
+	t.Logf("MCP UpdateSetting{mcp_capability: DISABLED} → status=%d error=%q", rewritten.Status, rewritten.Error)
 	t.Logf("MCP UpdateSetting{email.smtp → attacker} → status=%d error=%q", redirected.Status, redirected.Error)
 	t.Logf("MCP UpdateSetting{ai.endpoint → attacker} → status=%d error=%q", retargeted.Status, retargeted.Error)
 
 	for name, out := range map[string]mcpCallResult{
-		"ceiling":     widened,
+		"ceiling":     rewritten,
 		"smtp relay":  redirected,
 		"ai endpoint": retargeted,
 	} {
 		a.Equal(http.StatusForbidden, out.Status, "the %s write must be refused before dispatch", name)
-		a.Contains(out.Error, "not available to MCP sessions", "the %s write must be refused by the gate", name)
-		a.Contains(out.Error, "the switch meant to contain it",
-			"the %s denial must name the boundary, not a credential it did not hand out", name)
+		a.Contains(out.Error, "carries no such confirmation", "the %s write must be refused by the gate", name)
+		a.Contains(out.Error, "Change other settings signed in to the Bytebase console",
+			"the %s denial must send the user to the console", name)
 	}
 
 	after, err := ctl.getMCPCapability(ctx)
@@ -705,21 +670,10 @@ func TestMCPCannotRewriteItsOwnCeiling(t *testing.T) {
 	a.Equal("https://api.openai.com", ai.Msg.GetValue().GetAi().GetEndpoint(),
 		"the endpoint the stored API key is sent to must not have moved")
 
-	// UpdateSetting is audited and is NOT one of the reset-flow methods carved
-	// out of workspace-parent resolution, so unlike those its denials do reach
-	// the operator's audit page. Three denied attempts, three rows.
-	rows := deniedMCPRows(ctx, t, ctl, workspace.Msg.Name, "/bytebase.v1.SettingService/UpdateSetting")
-	a.Len(rows, 3, "each denied settings write must be on the audit page")
-	for _, row := range rows {
-		a.Equal(int32(connect.CodePermissionDenied), row.Status.GetCode())
-		a.NotEmpty(row.McpDelegation.GetCorrelationId(),
-			"the denial must be correlatable back to the agent session")
-	}
+	a.Empty(mcpAuditRows(ctx, t, ctl, workspace.Msg.Name, "/bytebase.v1.SettingService/UpdateSetting"),
+		"a gate refusal is never stored")
 
 	// The console keeps working: the gate is on the internal MCP chain only.
-	// An explicit value rather than an echo of ceilingBefore, which the fixture
-	// leaves UNSPECIFIED — validateMCPCapability rejects writing that back, so
-	// echoing it would fail for a reason that has nothing to do with the gate.
 	a.NoError(ctl.setMCPCapability(ctx, v1pb.MCPSetting_READ_ONLY),
 		"a normal session must still be able to write workspace settings")
 
@@ -729,36 +683,23 @@ func TestMCPCannotRewriteItsOwnCeiling(t *testing.T) {
 		"the console write must actually land — otherwise the denial above proves nothing about the gate")
 }
 
-// TestMCPResetFlowDenialsAreSilent pins a gap the audit annotation does NOT
-// close.
+// TestMCPResetFlowRefusalsAreStreamed pins the stream line of a gate refusal
+// on the three allow_without_credential reset-flow methods.
 //
-// #21162 gave RequestPasswordReset and ResetPassword `audit = true`, which
-// looks like it should give their MCP denials a row — needAudit reads that
-// annotation and nothing else. It does not, and the reason is one layer down.
+// An unauthenticated caller of these methods could name any workspace, so the
+// audit interceptor takes their parent only from what the handler validated
+// (handlerValidatedWorkspaceMethod, audit.go). The gate refuses before the
+// handler runs, so no handler ever validates one. A request carrying a
+// delegated grant is the exception: the internal MCP chain already bound a
+// verified workspace, and the line is filed under it.
 //
-// These three RPCs are allow_without_credential, so an unauthenticated caller
-// could name any workspace, and auditing against an unvalidated workspace would
-// let anyone write rows into someone else's. createAuditLog therefore carves
-// them out (handlerValidatedWorkspaceMethod, audit.go): their audit parent
-// comes only from what the HANDLER validated via common.SetAuditWorkspaceID,
-// and the ordinary workspace fallback is explicitly skipped for them.
-//
-// The gate refuses before dispatch, so the handler never runs, so nothing ever
-// calls SetAuditWorkspaceID. That used to mean no parent and no row, which made
-// the silent set seven rather than the four an annotation audit suggests.
-//
-// 1b-2 closed it, and this test now pins the close. The workspace was never
-// actually unknown here: the internal MCP chain put a credential-verified one
-// in the context, and the carve-out simply could not use it. It can now, for
-// requests carrying a delegated grant and only those — an unauthenticated
-// public reset still gets its parent from the handler alone, because there the
-// workspace IS caller-named and auditing against it would let anyone write
-// rows into someone else'"'"'s.
-func TestMCPResetFlowDenialsAreAudited(t *testing.T) {
-	t.Parallel()
+// Not parallel: it captures slog.Default.
+func TestMCPResetFlowRefusalsAreStreamed(t *testing.T) {
 	a := require.New(t)
 	ctx := context.Background()
+	lines := captureAuditStream(t)
 	ctl, ctx := startWorkspace(ctx, t)
+	ctl.profile.RuntimeEnableAuditLogStdout.Store(true)
 
 	workspace, err := ctl.workspaceServiceClient.GetWorkspace(ctx, connect.NewRequest(&v1pb.GetWorkspaceRequest{
 		Name: "workspaces/-",
@@ -769,14 +710,13 @@ func TestMCPResetFlowDenialsAreAudited(t *testing.T) {
 	session := openMCPSession(ctx, t, ctl, ctl.authInterceptor.token)
 	defer session.Close()
 
-	// The positive control goes first and through the same helper: UpdateUser is
-	// FORBIDDEN, audited, and NOT carved out, so it must produce a row. Without
-	// it the zeroes below would also be satisfied by a query that finds nothing
-	// for an unrelated reason.
+	// The positive control: UpdateUser is FORBIDDEN and not carved out, so its
+	// refusal streams a line whatever the carve-out does.
 	control := callAPIOnSession(ctx, t, session, "UserService/UpdateUser", map[string]any{
 		"user":       map[string]any{"name": "users/demo@example.com", "password": "2048bytebase"},
 		"updateMask": "password",
 	})
+	a.Equal(http.StatusForbidden, control.Status)
 
 	probes := map[string]mcpCallResult{
 		"RequestPasswordReset": callAPIOnSession(ctx, t, session, "AuthService/RequestPasswordReset", map[string]any{
@@ -794,31 +734,80 @@ func TestMCPResetFlowDenialsAreAudited(t *testing.T) {
 		}),
 	}
 	for name, out := range probes {
-		t.Logf("MCP %s → status=%d error=%q", name, out.Status, out.Error)
-	}
-	for name, out := range probes {
 		a.Equal(http.StatusForbidden, out.Status, "%s must be refused", name)
 		a.Contains(out.Error, "not available to MCP sessions", "%s must be refused by the gate", name)
 	}
 
-	a.Equal(http.StatusForbidden, control.Status)
-	a.Len(deniedMCPRows(ctx, t, ctl, workspaceName, "/bytebase.v1.UserService/UpdateUser"), 1,
-		"positive control: a FORBIDDEN, audited, non-carved-out method must produce a denial row")
-
-	for method, label := range map[string]string{
-		"/bytebase.v1.AuthService/RequestPasswordReset": "RequestPasswordReset",
-		"/bytebase.v1.AuthService/ResetPassword":        "ResetPassword",
-		"/bytebase.v1.AuthService/SendEmailLoginCode":   "SendEmailLoginCode",
+	for _, method := range []string{
+		"/bytebase.v1.UserService/UpdateUser",
+		"/bytebase.v1.AuthService/RequestPasswordReset",
+		"/bytebase.v1.AuthService/ResetPassword",
+		"/bytebase.v1.AuthService/SendEmailLoginCode",
 	} {
-		rows := deniedMCPRows(ctx, t, ctl, workspaceName, method)
-		a.Len(rows, 1,
-			"%s is refused before its handler runs, so it announces no workspace — the delegated "+
-				"credential's verified one stands in, and the denial is recorded like every other", label)
-		a.Equal(int32(connect.CodePermissionDenied), rows[0].Status.GetCode(),
-			"the %s row must record the denial", label)
-		a.True(strings.HasPrefix(rows[0].Name, workspaceName+"/auditLogs/"),
-			"the row is parented to the workspace the MCP credential was bound to, not one the caller named")
+		a.Empty(mcpAuditRows(ctx, t, ctl, workspaceName, method), "the refused %s is never stored", method)
+		var matched []map[string]any
+		for _, line := range lines() {
+			if line["method"] == method && lineFlag(line, "mcp") {
+				matched = append(matched, line)
+			}
+		}
+		a.Len(matched, 1, "the refused %s is streamed once", method)
+		a.Equal(workspaceName, matched[0]["parent"],
+			"the line is filed under the workspace the MCP credential was bound to, not one the caller named")
+		a.Equal(v1pb.AuditLog_WARNING.String(), matched[0]["severity"])
+		a.InDelta(float64(connect.CodePermissionDenied), matched[0]["status_code"], 0)
 	}
+}
+
+// captureAuditStream sends slog.Default to a buffer until the test ends and
+// returns a reader for the audit lines written so far. The servers these tests
+// boot run in this process, so their stream lands there too. slog.Default is
+// process-wide, so a test that calls this must not be parallel, and must call
+// it before starting its server so the server stops before the logger is
+// restored.
+func captureAuditStream(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	prev, prevWriter, prevFlags := slog.Default(), log.Writer(), log.Flags()
+	// slog.SetDefault also points the log package at the new handler, and
+	// restoring the slog default does not undo that.
+	t.Cleanup(func() {
+		slog.SetDefault(prev)
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+	slog.SetDefault(slog.New(slog.NewJSONHandler(lockedBuffer{mu: &mu, buf: &buf}, nil)))
+	return func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		var lines []map[string]any
+		for _, raw := range bytes.Split(buf.Bytes(), []byte("\n")) {
+			var line map[string]any
+			if json.Unmarshal(raw, &line) == nil && line["log_type"] == "audit" {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+}
+
+// lineFlag reads one boolean attribute off a captured audit line, absent
+// meaning false.
+func lineFlag(line map[string]any, key string) bool {
+	v, ok := line[key].(bool)
+	return ok && v
+}
+
+type lockedBuffer struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (l lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
 }
 
 // TestMCPCredentialMintsLeaveDiscovery pins the other half of the
@@ -844,16 +833,16 @@ func TestMCPCredentialMintsLeaveDiscovery(t *testing.T) {
 	session := openMCPSession(ctx, t, ctl, ctl.authInterceptor.token)
 	defer session.Close()
 
-	// Browsing a service must not list a method the session can never call,
-	// and the hiding is per method: a service keeping any served method stays
-	// on the menu with that method on it.
+	// Browsing a service never offers a method the session can never call: the
+	// method is not in the served listing and its schema is never shown. It is
+	// named under "Not available over MCP" with the gate's reason, so the agent
+	// can send the user to the console instead of guessing.
 	//
 	// The positive control comes first and on the same tool: without one,
 	// NotContains over an opaque text blob passes for the wrong reason as soon
 	// as search_api returns anything that is not an endpoint listing — an
 	// error string, an empty result — and a test that cannot fail is worse
-	// here than no test, because this is the assertion standing between an
-	// agent and a menu of work it can never do.
+	// here than no test.
 	servedListing := searchAPIOnSession(ctx, t, session, map[string]any{"service": "DatabaseService"})
 	a.Contains(servedListing, "DatabaseService/ListDatabases",
 		"positive control: a service the ceiling serves must really come back as an endpoint listing")
@@ -861,7 +850,7 @@ func TestMCPCredentialMintsLeaveDiscovery(t *testing.T) {
 	// These services host the credential mints, and since the ceiling gate
 	// refuses EXCLUDED as well as FORBIDDEN, every one of their methods is now
 	// refused — the mints outright, their read siblings as workspace
-	// administration. So they do not come back as a listing at all.
+	// administration. So they come back as unavailable, with no listing.
 	for _, row := range []struct {
 		service string
 		refused []string
@@ -869,52 +858,78 @@ func TestMCPCredentialMintsLeaveDiscovery(t *testing.T) {
 		{"ServiceAccountService", []string{"CreateServiceAccount", "UpdateServiceAccount", "GetServiceAccount"}},
 		{"IdentityProviderService", []string{"CreateIdentityProvider", "UpdateIdentityProvider", "TestIdentityProvider"}},
 		{"WorkloadIdentityService", []string{"CreateWorkloadIdentity", "UpdateWorkloadIdentity"}},
-		{"SettingService", []string{"TestEmailSetting", "GetSetting"}},
 	} {
 		listing := searchAPIOnSession(ctx, t, session, map[string]any{"service": row.service})
-		a.Contains(listing, "No endpoints found for service: "+row.service,
+		a.Contains(listing, row.service+" is not available over MCP",
 			"%s serves no method under any ceiling, so it is not a menu", row.service)
+		a.NotContains(listing, "Found ", "%s offers no endpoint", row.service)
 		for _, method := range row.refused {
-			a.NotContains(listing, row.service+"/"+method,
-				"search_api must not offer %s/%s, which the session can never call", row.service, method)
+			a.Contains(listing, row.service+"/"+method,
+				"search_api names %s/%s as unavailable", row.service, method)
 		}
+	}
+
+	// servedAndUnavailable splits a mixed service's listing at the section that
+	// names what MCP cannot do.
+	servedAndUnavailable := func(service string) (string, string) {
+		listing := searchAPIOnSession(ctx, t, session, map[string]any{"service": service})
+		served, unavailable, ok := strings.Cut(listing, "## Not available over MCP")
+		a.True(ok, "%s names what MCP cannot do", service)
+		return served, unavailable
 	}
 
 	// WorkspaceService is the mixed case and the one that proves the hiding is
 	// per method rather than per service: it keeps GetWorkspace and
-	// ListWorkspaces, so it stays on the menu, and the token rotation is gone
-	// from it.
-	workspaceListing := searchAPIOnSession(ctx, t, session, map[string]any{"service": "WorkspaceService"})
-	a.Contains(workspaceListing, "WorkspaceService/ListWorkspaces",
-		"a service keeps the methods the ceiling serves")
-	a.NotContains(workspaceListing, "WorkspaceService/RotateDirectorySyncToken",
+	// ListWorkspaces, so it stays on the menu, and the token rotation is only
+	// named as unavailable.
+	served, unavailable := servedAndUnavailable("WorkspaceService")
+	a.Contains(served, "WorkspaceService/ListWorkspaces", "a service keeps the methods the ceiling serves")
+	a.NotContains(served, "WorkspaceService/RotateDirectorySyncToken",
 		"search_api must not offer the token rotation, which the session can never call")
+	a.Contains(unavailable, "WorkspaceService/RotateDirectorySyncToken")
 
 	// UserService is the second mixed case, and it moved here when
 	// GetCurrentUser stopped returning the MFA enrollment secrets. Reading who
 	// you are is the one thing an agent does on this service; creating a user,
 	// redirecting an account's email and reading somebody else's profile stay
 	// refused, and stay off the menu.
-	userListing := searchAPIOnSession(ctx, t, session, map[string]any{"service": "UserService"})
-	a.Contains(userListing, "UserService/GetCurrentUser",
+	served, unavailable = servedAndUnavailable("UserService")
+	a.Contains(served, "UserService/GetCurrentUser",
 		"the session reads its own identity, so the service is a menu with that on it")
 	for _, method := range []string{"CreateUser", "UpdateEmail", "GetUser", "ListUsers"} {
-		a.NotContains(userListing, "UserService/"+method,
+		a.NotContains(served, "UserService/"+method,
 			"search_api must not offer UserService/%s, which the session can never call", method)
+		a.Contains(unavailable, "UserService/"+method)
+	}
+
+	// SettingService hosts TestEmailSetting, a mint. It keeps GetSetting, which
+	// the gate serves for the governance settings alone, and UpdateSetting,
+	// which it serves only through administer_workspace.
+	served, unavailable = servedAndUnavailable("SettingService")
+	a.Contains(served, "SettingService/GetSetting", "the session reads the governance settings")
+	a.Contains(served, "SettingService/UpdateSetting", "the session changes the approval rules")
+	a.Contains(served, "through the administer_workspace tool", "the listing names the one way to change a setting")
+	for _, method := range []string{"TestEmailSetting", "ListSettings"} {
+		a.NotContains(served, "SettingService/"+method,
+			"search_api must not offer SettingService/%s, which the session can never call", method)
+		a.Contains(unavailable, "SettingService/"+method)
 	}
 
 	// The service list is the entry point into discovery, and a service whose
-	// every method is refused drops out of it entirely.
+	// every method is refused leaves the menu for the list of what MCP cannot do.
 	services := searchAPIOnSession(ctx, t, session, map[string]any{})
+	available, unavailableServices, ok := strings.Cut(services, "## Not available over MCP")
+	a.True(ok, "the service list names what MCP cannot do")
 	for _, service := range []string{
 		"ServiceAccountService", "IdentityProviderService", "WorkloadIdentityService",
-		"SettingService",
 	} {
-		a.NotContains(services, service, "%s serves nothing, so it must not be listed", service)
+		a.NotContains(available, service, "%s serves nothing, so it is not on the menu", service)
+		a.Contains(unavailableServices, "**"+service+"**", "%s is named as unavailable", service)
 	}
-	a.Contains(services, "DatabaseService", "positive control: services the ceiling serves stay listed")
-	a.Contains(services, "WorkspaceService", "a service keeping any served method stays listed")
-	a.Contains(services, "UserService", "and so does the one that kept only GetCurrentUser")
+	a.Contains(available, "DatabaseService", "positive control: services the ceiling serves stay listed")
+	a.Contains(available, "WorkspaceService", "a service keeping any served method stays listed")
+	a.Contains(available, "UserService", "and so does the one that kept only GetCurrentUser")
+	a.Contains(available, "SettingService", "and the one that kept only GetSetting")
 
 	// Still resolvable by operation ID, and a call still reaches the gate.
 	for _, operation := range []string{
@@ -931,6 +946,7 @@ func TestMCPCredentialMintsLeaveDiscovery(t *testing.T) {
 		"UserService/UpdateEmail",
 	} {
 		detail := searchAPIOnSession(ctx, t, session, map[string]any{"operationId": operation})
+		a.Contains(detail, "Not available over MCP", "%s says why instead of showing a schema", operation)
 		a.NotContains(detail, "Unknown operationId",
 			"%s must stay resolvable so the denial can explain itself", operation)
 	}

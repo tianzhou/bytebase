@@ -29,9 +29,13 @@ const DYNAMIC_PREFIXES = [
   "dynamic.settings.sensitive-data.semantic-types.template.",
   "sql-review.category.",
   "sql-review.engine.",
+  // Finding code titles, rendered via t(findingCodeTitleKey(code)) over the
+  // codes in components/sql-review/standardRuleCatalog.json.
+  "sql-review.finding-code.",
   "sql-review.level.",
   "sql-review.rule.",
   "sql-review.template.",
+  "sql-editor.query-plan-viewer.",
   "subscription.plan.",
   "subscription.purchase.cancel-dialog.reason.",
   "settings.sensitive-data.algorithms.",
@@ -59,19 +63,21 @@ const DYNAMIC_PREFIXES = [
   // Role-grant expiration presets, rendered via t(preset.labelKey) in
   // MembersPage.tsx (EXPIRATION_PRESETS), not as literal t("…") calls.
   "project.members.expiration-presets.",
-  // Scenario option, sample, and guide outcome keys are stored in typed
-  // definitions and translated through those definitions at render time.
-  "settings.profile.enable-sample-databases",
-  "settings.profile.setup-scenario.create-database-change.",
-  "settings.profile.setup-scenario.mark-sensitive-data.",
-  "settings.profile.setup-scenario.query-data.",
-  "settings.profile.setup-scenario.workspace-usage.",
   // Workspace setup guide step definitions store label and description keys;
   // the presentation translates them via t(step.definition.<key>).
   "workspace-setup-guide.descriptions.",
   "workspace-setup-guide.generic.",
   "workspace-setup-guide.scenarios.",
   "workspace-setup-guide.steps.",
+  // Landing starter IDs are ranked in a pure helper and translated by the
+  // shared selector using the selected ID.
+  "agent.landing-starters.",
+  // Handoff labels are selected by the validated intent kind.
+  "agent.handoff.",
+  // Attention result labels use the Issue relation returned by a bounded
+  // read-only lookup to choose the corresponding translation key.
+  "agent.project-attention.issue-",
+  "agent.workspace-attention.issue-",
   // MCP mode cards and the broken-ceiling banner, rendered via
   // t(`settings.mcp.policy.mode.${key}.title`) and a ternary over two key
   // strings in MCPAccessPolicySection.tsx, not as literal t("…") calls.
@@ -80,6 +86,15 @@ const DYNAMIC_PREFIXES = [
   "settings.mcp.policy.unreadable.title",
   "settings.mcp.policy.unserved.description",
   "settings.mcp.policy.unserved.title",
+  // The capability ladder's template-driven families only: row titles and
+  // detail lines keyed by row id, the per-mode summary, and the tier tag and
+  // divider keyed by tier. Listed per family rather than as the
+  // `settings.mcp.ladder.` subtree, which would also exempt every sibling key
+  // the ladder names literally — the floor line among them.
+  "settings.mcp.ladder.row.",
+  "settings.mcp.ladder.stops.",
+  "settings.mcp.ladder.summary.",
+  "settings.mcp.ladder.tier.",
   // Built as `…undisclosed.${reason}.<suffix>` over a reason the consent page
   // derives: title, description and line for both, plus retry for the one that
   // offers it. Listed per reason rather than as one subtree, which would also
@@ -458,21 +473,11 @@ for (const locale of LOCALES) {
 // ---------------------------------------------------------------------------
 // Check 7: linked wording
 // ---------------------------------------------------------------------------
-// The data-export setting's description quotes the "Request export" button
-// label so admins can connect the policy to what users see; the label has
-// been renamed before (#21081, #21200). The unmask capability is a different
-// mechanism from the Masking Exemptions feature, so its strings must not
-// reuse the feature's name (zh once shipped 脱敏豁免 on the unmask button).
+// The unmask capability is a different mechanism from the Masking Exemptions
+// feature, so its strings must not reuse the feature's name (zh once shipped
+// 脱敏豁免 on the unmask button).
 for (const locale of LOCALES) {
   const values = localeValues(locale);
-  const label = values["sql-editor.request-export"] ?? "";
-  const description =
-    values["settings.general.workspace.data-export.description"] ?? "";
-  if (!label || !description.includes(label)) {
-    error(
-      `${locale}: settings.general.workspace.data-export.description must quote sql-editor.request-export (${JSON.stringify(label)})`
-    );
-  }
   const featureName = values["project.masking-exemption.self"] ?? "";
   for (const key of ["sql-editor.request-unmask", "sql-editor.grant-type-unmask"]) {
     const value = values[key] ?? "";

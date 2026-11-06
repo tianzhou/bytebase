@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bytebase/omni/mysql/ast"
+	"github.com/bytebase/omni/oceanbase/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
-	mysqlparser "github.com/bytebase/bytebase/backend/plugin/parser/mysql"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	oceanbaseparser "github.com/bytebase/bytebase/backend/plugin/parser/oceanbase"
 )
 
 var (
@@ -47,7 +47,7 @@ func (*DisallowOfflineDdlAdvisor) Check(_ context.Context, checkCtx advisor.Cont
 		if stmt.AST == nil {
 			continue
 		}
-		node, ok := mysqlparser.GetOmniNode(stmt.AST)
+		node, ok := oceanbaseparser.GetOmniNode(stmt.AST)
 		if !ok {
 			continue
 		}
@@ -78,7 +78,7 @@ func (checker *disallowOfflineDdlChecker) checkStatement(text string, baseLine i
 }
 
 func (checker *disallowOfflineDdlChecker) checkAlterTable(text string, baseLine int, stmt *ast.AlterTableStmt) {
-	databaseName, tableName := omniTableName(stmt.Table)
+	databaseName, tableName := omniTableSchemaAndName(stmt.Table)
 	if databaseName == "" {
 		databaseName = checker.currentDB
 	}
@@ -182,6 +182,6 @@ func (checker *disallowOfflineDdlChecker) advice(line int, operation string) {
 		Code:          code.StatementOfflineDDL.Int32(),
 		Title:         checker.title,
 		Content:       fmt.Sprintf("%s is an offline DDL operation.", operation),
-		StartPosition: common.ConvertANTLRLineToPosition(line),
+		StartPosition: base.ConvertANTLRLineToPosition(line),
 	})
 }

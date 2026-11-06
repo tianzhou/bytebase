@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
@@ -147,7 +148,7 @@ func TestWebhookIntegration(t *testing.T) {
 	//
 	// Body MUST be the literal "ok" — the Slack plugin's postMessage
 	// (backend/plugin/webhook/slack/slack.go:247-249) treats any other body as
-	// a delivery failure and triggers common.Retry (up to 3 attempts, 5s
+	// a delivery failure and triggers webhook.Retry (up to 3 attempts, 5s
 	// exponential backoff). Without an "ok" response, every webhook event
 	// would be delivered 1-3 times depending on test timing, causing
 	// nondeterministic counts in the requireWebhookCount assertions across
@@ -678,6 +679,49 @@ func TestWebhookIntegration(t *testing.T) {
 		// absence assertion is no longer racing the runner.
 		waitForApprovalFindingDone(ctx, t, ctl, issue)
 		requireWebhookCount(t, collector, project.Name, "Approval required", 0)
+	})
+
+	t.Run("IssueApprovalRequested_FiresOnceForAnAccessGrant", func(t *testing.T) {
+		collector.reset()
+		project := ctl.createTestProject(ctx, t, "access-grant-approval")
+		require.NoError(t, ctl.createDatabase(ctx, project, instance, nil, "access_grant_approval_db", ""))
+		require.NoError(t, ctl.allowJustInTimeAccess(ctx, project))
+
+		clearWorkspaceApprovalRules(ctx, t, ctl)
+		disableSelfApproval(ctx, t, ctl, project)
+		installWorkspaceApprovalRule(ctx, t, ctl, project, []string{"roles/projectOwner"})
+		appr := provisionApprover(ctx, t, ctl, project, "access-grant", "roles/projectOwner")
+
+		collector.reset()
+		addWebhookForEvents(ctx, t, ctl, project, webhookServer.URL, []v1pb.Activity_Type{
+			v1pb.Activity_ISSUE_APPROVAL_REQUESTED,
+			v1pb.Activity_ISSUE_APPROVED,
+		})
+
+		grant, err := ctl.accessGrantServiceClient.CreateAccessGrant(ctx, connect.NewRequest(&v1pb.CreateAccessGrantRequest{
+			Parent: project.Name,
+			AccessGrant: &v1pb.AccessGrant{
+				Targets:    []string{dbTargetName(instance, "access_grant_approval_db")},
+				Query:      "SELECT 1",
+				Reason:     "one read",
+				Expiration: &v1pb.AccessGrant_Ttl{Ttl: durationpb.New(time.Hour)},
+			},
+		}))
+		require.NoError(t, err)
+		require.Equal(t, v1pb.AccessGrant_PENDING, grant.Msg.Status)
+		waitForWebhookCount(t, collector, project.Name, "Approval required", 1)
+
+		issue, err := ctl.issueServiceClient.GetIssue(ctx, connect.NewRequest(&v1pb.GetIssueRequest{Name: grant.Msg.Issue}))
+		require.NoError(t, err)
+		approveIssueAs(ctx, t, ctl, issue.Msg, appr)
+		// The approval's webhook is sent after CreateAccessGrant returned, so
+		// waiting for it gives a second "Approval required" time to arrive.
+		waitForWebhookCount(t, collector, project.Name, "Issue approved", 1)
+		requireWebhookCount(t, collector, project.Name, "Approval required", 1)
+
+		active, err := ctl.accessGrantServiceClient.GetAccessGrant(ctx, connect.NewRequest(&v1pb.GetAccessGrantRequest{Name: grant.Msg.Name}))
+		require.NoError(t, err)
+		require.Equal(t, v1pb.AccessGrant_ACTIVE, active.Msg.Status)
 	})
 
 	t.Run("IssueApproved_SingleStep", func(t *testing.T) {

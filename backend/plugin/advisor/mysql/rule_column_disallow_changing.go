@@ -6,10 +6,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -18,8 +18,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_COLUMN_DISALLOW_CHANGE, &ColumnDisallowChangingAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_COLUMN_DISALLOW_CHANGE, &ColumnDisallowChangingAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_COLUMN_DISALLOW_CHANGE, &ColumnDisallowChangingAdvisor{})
 }
 
 // ColumnDisallowChangingAdvisor is the advisor checking for disallow CHANGE COLUMN statement.
@@ -67,7 +65,7 @@ func (r *columnDisallowChangingOmniRule) OnStatement(node ast.Node) {
 				Code:          code.UseChangeColumnStatement.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("\"%s\" contains CHANGE COLUMN statement", r.QueryText()),
-				StartPosition: common.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
+				StartPosition: base.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
 			})
 		}
 	}

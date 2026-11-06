@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"net"
 	"net/url"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,17 +21,18 @@ import (
 	"github.com/golang-sql/sqlexp"
 	gomssqldb "github.com/microsoft/go-mssqldb"
 	"github.com/microsoft/go-mssqldb/azuread"
+	"github.com/microsoft/go-mssqldb/msdsn"
 
 	// Kerberos Active Directory authentication outside Windows.
 	_ "github.com/microsoft/go-mssqldb/integratedauth/krb5"
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/common/log"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/transaction"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	tsqlparser "github.com/bytebase/bytebase/backend/plugin/parser/tsql"
@@ -57,89 +62,147 @@ func newDriver() db.Driver {
 
 // Open opens a MSSQL driver.
 func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionConfig) (db.Driver, error) {
-	query := url.Values{}
-	query.Add("app name", "bytebase")
-	if config.ConnectionContext.DatabaseName != "" {
-		query.Add("database", config.ConnectionContext.DatabaseName)
-	} else if config.DataSource.Database != "" {
-		query.Add("database", config.DataSource.Database)
+	database := config.ConnectionContext.DatabaseName
+	if database == "" {
+		database = config.DataSource.Database
 	}
-
-	// In order to be compatible with db servers that only support old versions of tls.
-	// See: https://github.com/microsoft/go-mssqldb/issues/33
-	query.Add("tlsmin", "1.0")
-
-	// Add extra connection parameters if specified in the DataSource
-	for key, value := range config.DataSource.GetExtraConnectionParameters() {
-		query.Add(key, value)
-	}
-
-	var err error
-	if config.DataSource.GetUseSsl() && config.DataSource.GetSslCa() != "" {
-		// Due to Golang runtime limitation, x509 package will throw the error of 'certificate relies on legacy Common Name field, use SANs instead.
-		// Driver reads the certificate from file instead of regarding it as certificate content.
-		// https://github.com/microsoft/go-mssqldb/blob/main/msdsn/conn_str.go#L159
-		// TODO(zp): Driver supports .der format also.
-		const pattern string = "cert-*.pem"
-		file, err := os.CreateTemp(os.TempDir(), pattern)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to create temporary file with pattern %s", pattern)
-		}
-		fName := file.Name()
-		defer func(err error) {
-			if err != nil {
-				_ = os.Remove(fName)
-			} else {
-				d.certFilePath = fName
-			}
-		}(err)
-		_, err = file.WriteString(config.DataSource.GetSslCa())
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to write certificate to file %s", fName)
-		}
-		if err = file.Close(); err != nil {
-			return nil, errors.Wrapf(err, "failed to close file %s", fName)
-		}
-		query.Add("certificate", fName)
-	}
-	query.Add("TrustServerCertificate", "true")
-
-	driverName := "sqlserver"
-	password := config.Password
-	if config.DataSource.GetAuthenticationType() == storepb.DataSource_AZURE_IAM {
-		driverName = azuread.DriverName
-		if azureCredential := config.DataSource.GetAzureCredential(); azureCredential != nil {
-			query.Add("fedauth", azuread.ActiveDirectoryServicePrincipal)
-			query.Add("user id", fmt.Sprintf("%s@%s", azureCredential.ClientId, azureCredential.TenantId))
-			query.Add("password", azureCredential.ClientSecret)
-			password = ""
-		} else {
-			query.Add("fedauth", azuread.ActiveDirectoryDefault)
-		}
-	}
-	u := &url.URL{
-		Scheme:   "sqlserver",
-		User:     url.UserPassword(config.DataSource.Username, password),
-		Host:     fmt.Sprintf("%s:%s", config.DataSource.Host, config.DataSource.Port),
-		RawQuery: query.Encode(),
-	}
-	var db *sql.DB
-	db, err = sql.Open(driverName, u.String())
+	caFile, err := writeCAFile(config.DataSource)
 	if err != nil {
+		return nil, err
+	}
+	driverName, dsn := connectionDSN(config.DataSource, config.Password, database, caFile)
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		removeCAFile(caFile)
 		return nil, err
 	}
 	d.db = db
 	d.databaseName = config.ConnectionContext.DatabaseName
+	d.certFilePath = caFile
 	return d, nil
+}
+
+// connectionDSN returns the go-mssqldb driver name and DSN. caFile is the data source's CA
+// written to disk, or empty.
+//
+// go-mssqldb matches parameter keys case-insensitively and accepts each key once, so Extra
+// Parameters merge by lowercased key. The URL form of a DSN already derives user id and password
+// from the userinfo and server and port from the host, and the driver rejects a second value for
+// any of them, so the credentials travel in the query and the server and port in the host, each
+// once. A named instance has to go in the path, because the host cannot hold the backslash of
+// Server=host\instance. Extra Parameters override the app name, tlsmin, credentials, server and
+// port, never the database or the Azure credential. With TLS mode TLS, the TLS section sets a
+// floor that Extra Parameters may raise but not lower: encrypt=true unless they ask for
+// encrypt=strict, and TrustServerCertificate=false when Verify server certificate is on or they
+// ask for it. The section's CA replaces a certificate parameter. With TLS mode Disabled, Extra
+// Parameters apply as given over a TrustServerCertificate=true default.
+func connectionDSN(ds *storepb.DataSource, password, database, caFile string) (string, string) {
+	params := map[string]string{
+		msdsn.AppName: "bytebase",
+		// Older SQL Server versions offer only TLS 1.0: https://github.com/microsoft/go-mssqldb/issues/33.
+		msdsn.TLSMin:   "1.0",
+		msdsn.UserID:   ds.Username,
+		msdsn.Password: password,
+	}
+	extra := ds.GetExtraConnectionParameters()
+	// Sorted, so keys that differ only in case resolve the same way every time.
+	for _, key := range slices.Sorted(maps.Keys(extra)) {
+		params[strings.ToLower(key)] = extra[key]
+	}
+	if database != "" {
+		params[msdsn.Database] = database
+	}
+	if ds.GetUseSsl() {
+		if !strings.EqualFold(params[msdsn.Encrypt], "strict") {
+			params[msdsn.Encrypt] = "true"
+		}
+		trust, err := strconv.ParseBool(params[msdsn.TrustServerCertificate])
+		verify := ds.GetVerifyTlsCertificate() || (err == nil && !trust)
+		params[msdsn.TrustServerCertificate] = strconv.FormatBool(!verify)
+		if caFile != "" {
+			params[msdsn.Certificate] = caFile
+		}
+	} else if _, ok := params[msdsn.TrustServerCertificate]; !ok {
+		params[msdsn.TrustServerCertificate] = "true"
+	}
+
+	driverName := "sqlserver"
+	if ds.GetAuthenticationType() == storepb.DataSource_AZURE_IAM {
+		driverName = azuread.DriverName
+		if credential := ds.GetAzureCredential(); credential != nil {
+			params["fedauth"] = azuread.ActiveDirectoryServicePrincipal
+			params[msdsn.UserID] = fmt.Sprintf("%s@%s", credential.ClientId, credential.TenantId)
+			params[msdsn.Password] = credential.ClientSecret
+		} else {
+			params["fedauth"] = azuread.ActiveDirectoryDefault
+		}
+	}
+
+	host, port := ds.Host, ds.Port
+	if server, ok := params[msdsn.Server]; ok {
+		delete(params, msdsn.Server)
+		host = server
+	}
+	if value, ok := params[msdsn.Port]; ok {
+		delete(params, msdsn.Port)
+		port = value
+	}
+	instance := ""
+	if before, after, ok := strings.Cut(host, `\`); ok {
+		host, instance = before, after
+	}
+	// net.JoinHostPort brackets an IPv6 literal, which the URL host needs and the driver strips
+	// back off, so a value that already carries brackets must not get a second pair.
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+
+	query := url.Values{}
+	for key, value := range params {
+		query.Set(key, value)
+	}
+	u := &url.URL{
+		Scheme:   "sqlserver",
+		Host:     net.JoinHostPort(host, port),
+		RawQuery: query.Encode(),
+	}
+	if instance != "" {
+		u.Path = "/" + instance
+	}
+	return driverName, u.String()
+}
+
+// writeCAFile writes the data source's CA to a temporary file, because go-mssqldb reads a CA only
+// from a .pem or .der path. It returns "" when TLS is off or no CA is set.
+func writeCAFile(ds *storepb.DataSource) (string, error) {
+	if !ds.GetUseSsl() || ds.GetSslCa() == "" {
+		return "", nil
+	}
+	file, err := os.CreateTemp("", "cert-*.pem")
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create the CA certificate file")
+	}
+	_, err = file.WriteString(ds.GetSslCa())
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		removeCAFile(file.Name())
+		return "", errors.Wrap(err, "failed to write the CA certificate file")
+	}
+	return file.Name(), nil
+}
+
+func removeCAFile(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		slog.Warn("failed to delete temporary file", slog.String("path", path), log.BBError(err))
+	}
 }
 
 // Close closes the driver.
 func (d *Driver) Close(_ context.Context) error {
-	if d.certFilePath != "" {
-		if err := os.Remove(d.certFilePath); err != nil {
-			slog.Warn("failed to delete temporary file", slog.String("path", d.certFilePath), log.BBError(err))
-		}
-	}
+	removeCAFile(d.certFilePath)
 	if d.db != nil {
 		return d.db.Close()
 	}
@@ -171,12 +234,12 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	transactionMode := config.Mode
 
 	// Apply default when transaction mode is not specified
-	if transactionMode == common.TransactionModeUnspecified {
-		transactionMode = common.GetDefaultTransactionMode()
+	if transactionMode == transaction.ModeUnspecified {
+		transactionMode = transaction.DefaultMode()
 	}
 
 	// Execute based on transaction mode
-	if transactionMode == common.TransactionModeOff {
+	if transactionMode == transaction.ModeOff {
 		return d.executeInAutoCommitMode(ctx, statement, opts)
 	}
 	return d.executeInTransactionMode(ctx, statement, opts)
@@ -378,7 +441,9 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 
 	// Regular query processing (unchanged)
 	batch := tsqlbatch.NewBatcher(statement)
-	var results []*v1pb.QueryResult
+	// Callers pair results[i] with the request's i-th statement, so the further
+	// result sets of procedure calls come after every statement's result.
+	var results, procedureResults []*v1pb.QueryResult
 	for {
 		command, err := batch.Next()
 		if err != nil {
@@ -386,8 +451,9 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 				v := batch.Batch()
 				if v != nil && len(v.Text) > 0 {
 					// Query the last batch.
-					qr, err := d.queryBatch(ctx, conn, v.Text, queryContext)
+					qr, more, err := d.queryBatch(ctx, conn, v.Text, queryContext)
 					results = append(results, qr...)
+					procedureResults = append(procedureResults, more...)
 					if err != nil {
 						return results, err
 					}
@@ -404,8 +470,9 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 		case *tsqlbatch.GoCommand:
 			b := batch.Batch()
 			// Query the batch.
-			qr, err := d.queryBatch(ctx, conn, b.Text, queryContext)
+			qr, more, err := d.queryBatch(ctx, conn, b.Text, queryContext)
 			results = append(results, qr...)
+			procedureResults = append(procedureResults, more...)
 			if err != nil {
 				return results, err
 			}
@@ -414,7 +481,7 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 		}
 		batch.Reset(nil)
 	}
-	return results, nil
+	return append(results, procedureResults...), nil
 }
 
 // showplanStatistic picks the SET statement that turns on the requested explain
@@ -428,17 +495,18 @@ func showplanStatistic(option *v1pb.QueryOption) string {
 	return "SHOWPLAN_ALL"
 }
 
-// queryBatch queries a batch of SQL statements, for Result Set-Generating statements, it returns the results, for Row Count-Generating statements,
-// it returns the affected rows, for other statements, it returns the empty query result.
+// queryBatch queries a batch of SQL statements and returns one result for each: the result set of a Result Set-Generating
+// statement, the affected rows of a Row Count-Generating statement, or an empty result. The second slice holds a procedure
+// call's result sets after its first.
 // https://learn.microsoft.com/en-us/sql/odbc/reference/develop-app/result-generating-and-result-free-statements?view=sql-server-ver16
-func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, queryContext db.QueryContext) ([]*v1pb.QueryResult, error) {
+func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, queryContext db.QueryContext) ([]*v1pb.QueryResult, []*v1pb.QueryResult, error) {
 	singleSQLs, err := tsqlparser.SplitSQL(batch)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	singleSQLs = base.FilterEmptyStatements(singleSQLs)
 	if len(singleSQLs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	// Special handling for EXPLAIN queries in MSSQL using explain
@@ -446,7 +514,7 @@ func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, que
 		explain := showplanStatistic(queryContext.Option)
 		// Enable explain mode once for all statements
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf("SET %s ON", explain)); err != nil { // NOSONAR(go:S2077) explain is a hardcoded constant ("SHOWPLAN_ALL" or "SHOWPLAN_XML"), not user input
-			return nil, errors.Wrap(err, "failed to enable explain mode")
+			return nil, nil, errors.Wrap(err, "failed to enable explain mode")
 		}
 		// Ensure explain is turned off after processing
 		defer func() {
@@ -500,29 +568,31 @@ func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, que
 			}
 		}
 
-		return results, nil
+		return results, nil, nil
 	}
 
 	// Regular query processing for non-EXPLAIN queries
 	startTime := time.Now()
 	var stmtTypes []stmtType
+	var refinedSQLs []string
 	batchBuf := new(strings.Builder)
 	for _, singleSQL := range singleSQLs {
 		stmtType, err := getStmtType(singleSQL.Text)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		stmtTypes = append(stmtTypes, stmtType)
 		// Before sending the batch to server, we add the limit clause to the statement.
 		s := singleSQL.Text
 		if queryContext.Limit > 0 {
-			s = getStatementWithResultLimit(s, queryContext.Limit)
+			s = base.StatementWithResultLimit(storepb.Engine_MSSQL, s, queryContext.Limit, "")
 		}
+		refinedSQLs = append(refinedSQLs, s)
 		if _, err := batchBuf.WriteString(s); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := batchBuf.WriteString("\n"); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -530,22 +600,17 @@ func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, que
 	retmsg := &sqlexp.ReturnMessage{}
 	rows, qe := conn.QueryContext(ctx, refinedBatch, retmsg) // NOSONAR(go:S2077) intentional execution of user-authored SQL in SQL Editor
 	if qe != nil {
-		return nil, qe
+		return nil, nil, qe
 	}
 	defer rows.Close()
-	nextResultSetIdx := getNextResultSetIdx(stmtTypes, 0)
-	nextAffectedRowsIdx := getNextAffectedRowsIdx(stmtTypes, 0)
-	skipRowsAffected := false
-	results := true
-	var ret []*v1pb.QueryResult
-	for results {
-		queryResult := new(v1pb.QueryResult)
-		msg := retmsg.Message(ctx)
-		// While meeting the RowsAffected and MsgNext, fill up the lap for the other statement types.
-		switch m := msg.(type) {
+	var resultSets []*v1pb.QueryResult
+	var rowCounts []int64
+	inResultSet := false
+	for more := true; more; {
+		switch m := retmsg.Message(ctx).(type) {
 		case sqlexp.MsgNotice:
 			if err := isExitError(err); err != nil {
-				return ret, err
+				return nil, nil, err
 			}
 		case sqlexp.MsgError:
 			err := m.Error
@@ -553,61 +618,130 @@ func (*Driver) queryBatch(ctx context.Context, conn *sql.Conn, batch string, que
 			if errors.As(err, &e) {
 				err = unpackGoMSSQLDBError(e)
 			}
-			queryResult.Error = err.Error()
-			ret = append(ret, queryResult)
-			return ret, err
+			return nil, nil, err
 		case sqlexp.MsgRowsAffected:
-			// Assuming the rows affected appears after the MsgNext for SELECT statement, and ignore the MsgRowsAffected
-			// for SELECT statement for now.
-			if skipRowsAffected {
-				skipRowsAffected = false
-				nextAffectedRowsIdx = getNextAffectedRowsIdx(stmtTypes, nextAffectedRowsIdx+1)
-				continue
+			// The count that closes a result set is the result set's own row count.
+			if !inResultSet {
+				rowCounts = append(rowCounts, m.Count)
 			}
-			queryResult = util.BuildAffectedRowsResult(m.Count, nil)
-			emptyResultSets := make([]*v1pb.QueryResult, nextAffectedRowsIdx-len(ret))
-			for i := 0; i < len(emptyResultSets); i++ {
-				emptyResultSets[i] = &v1pb.QueryResult{}
-			}
-			ret = append(ret, emptyResultSets...)
-			ret = append(ret, queryResult)
-			nextAffectedRowsIdx = getNextAffectedRowsIdx(stmtTypes, nextAffectedRowsIdx+1)
 		case sqlexp.MsgNextResultSet:
-			results = rows.NextResultSet()
+			inResultSet = false
+			more = rows.NextResultSet()
 			if err = rows.Err(); err != nil {
-				return ret, err
+				return nil, nil, err
 			}
 		case sqlexp.MsgNext:
-			r, err := util.RowsToQueryResult(rows, makeValueByTypeName, convertValue, queryContext.MaximumSQLResultSize)
+			result, err := readResultSet(rows, queryContext)
 			if err != nil {
-				queryResult.Error = err.Error()
-				ret = append(ret, queryResult)
-				return ret, err
+				return nil, nil, err
 			}
-			if err := rows.Err(); err != nil {
-				return ret, err
-			}
-			queryResult = r
-			// Fill up the lap for the other statement types.
-			emptyResultSets := make([]*v1pb.QueryResult, nextResultSetIdx-len(ret))
-			for i := 0; i < len(emptyResultSets); i++ {
-				emptyResultSets[i] = &v1pb.QueryResult{}
-			}
-			ret = append(ret, emptyResultSets...)
-			ret = append(ret, queryResult)
-			nextResultSetIdx = getNextResultSetIdx(stmtTypes, nextResultSetIdx+1)
-			skipRowsAffected = true
+			resultSets = append(resultSets, result)
+			inResultSet = true
 		default:
 		}
 	}
 
+	results, procedureResults, err := matchResults(refinedSQLs, stmtTypes, resultSets, rowCounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if queryContext.MaskingEnabled {
+		for i, t := range stmtTypes {
+			if t&(stmtTypeProcedure|stmtTypeOutput) != 0 {
+				withholdRows(results[i])
+			}
+		}
+		for _, result := range procedureResults {
+			withholdRows(result)
+		}
+	}
 	latency := time.Since(startTime)
-	for i, res := range ret {
+	for _, res := range slices.Concat(results, procedureResults) {
 		res.Latency = durationpb.New(latency)
-		res.Statement = singleSQLs[i].Text
+	}
+	return results, procedureResults, nil
+}
+
+// readResultSet reads the current result set. The limit rewrite covers only SELECT,
+// so the row limit is applied here as well, for the rows of a procedure call or an
+// OUTPUT clause.
+func readResultSet(rows *sql.Rows, queryContext db.QueryContext) (*v1pb.QueryResult, error) {
+	result, err := util.RowsToLimitedQueryResult(rows, makeValueByTypeName, convertValue, queryContext.MaximumSQLResultSize, queryContext.Limit)
+	if err != nil {
+		return nil, err
+	}
+	if result.Error != "" {
+		// The read stopped at the size limit, and the next message only arrives
+		// once the rest of the result set has been read. Past the end of a result
+		// set, Next would read the following one.
+		for rows.Next() {
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// withholdRows empties a result set of a procedure call or an OUTPUT clause,
+// whose rows masking cannot trace to columns.
+func withholdRows(result *v1pb.QueryResult) {
+	if len(result.ColumnNames) == 0 {
+		return
+	}
+	result.Rows = nil
+	result.RowsCount = 0
+	result.Error = "Rows returned by a procedure call or an OUTPUT clause are hidden because data masking can't be applied to them."
+}
+
+// matchResults gives each statement of a batch its result. SQL Server returns
+// results in statement order but does not say which statement returned each, so
+// a batch whose procedure call returns result sets must have no other statement
+// that returns any. The procedure call's result sets after its first are
+// returned separately.
+func matchResults(statements []string, types []stmtType, resultSets []*v1pb.QueryResult, rowCounts []int64) ([]*v1pb.QueryResult, []*v1pb.QueryResult, error) {
+	var withResultSet, withRowCount, procedures int
+	for _, t := range types {
+		switch {
+		case t&stmtTypeResultSetGenerating != 0:
+			withResultSet++
+		case t&stmtTypeRowCountGenerating != 0:
+			withRowCount++
+		case t&stmtTypeProcedure != 0:
+			procedures++
+		default:
+		}
+	}
+	procedureReturnedSets := len(resultSets) != withResultSet
+	if procedureReturnedSets && (withResultSet > 0 || procedures != 1) {
+		return nil, nil, errors.New("cannot match the batch's result sets to its statements; a procedure call that returns rows must be the only statement in its batch that does, so separate the others with GO")
+	}
+	// SET NOCOUNT and procedure calls change how many row counts arrive, so the
+	// counts are shown only when each belongs to one statement.
+	if len(rowCounts) != withRowCount {
+		rowCounts = nil
 	}
 
-	return ret, nil
+	results := make([]*v1pb.QueryResult, len(types))
+	var procedureResults []*v1pb.QueryResult
+	for i, t := range types {
+		result := &v1pb.QueryResult{}
+		switch {
+		case t&stmtTypeResultSetGenerating != 0:
+			result, resultSets = resultSets[0], resultSets[1:]
+		case t&stmtTypeRowCountGenerating != 0 && len(rowCounts) > 0:
+			result, rowCounts = util.BuildAffectedRowsResult(rowCounts[0], nil), rowCounts[1:]
+		case t&stmtTypeProcedure != 0 && procedureReturnedSets:
+			result, procedureResults = resultSets[0], resultSets[1:]
+			for _, r := range procedureResults {
+				r.Statement = statements[i]
+			}
+		default:
+		}
+		result.Statement = statements[i]
+		results[i] = result
+	}
+	return results, procedureResults, nil
 }
 
 func isExitError(err error) error {
@@ -625,22 +759,4 @@ func isExitError(err error) error {
 		return errors.Errorf("meet exit error, state: %d", errState)
 	}
 	return nil
-}
-
-func getNextAffectedRowsIdx(s []stmtType, beginIdx int) int {
-	for i := beginIdx; i < len(s); i++ {
-		if s[i]&stmtTypeRowCountGenerating != 0 {
-			return i
-		}
-	}
-	return len(s)
-}
-
-func getNextResultSetIdx(s []stmtType, beginIdx int) int {
-	for i := beginIdx; i < len(s); i++ {
-		if s[i]&stmtTypeResultSetGenerating != 0 {
-			return i
-		}
-	}
-	return len(s)
 }

@@ -4,7 +4,9 @@ import { Pencil, X } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { classificationLevelBackgroundClasses } from "@/components/classification-level";
 import { FeatureAttention } from "@/components/FeatureAttention";
+import { SemanticTypePicker } from "@/components/SemanticTypeSelect";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -131,14 +133,6 @@ interface ClassificationTreeNode {
   level?: number;
   title: string;
 }
-
-const bgColorList = [
-  "bg-green-200",
-  "bg-yellow-200",
-  "bg-orange-300",
-  "bg-amber-500",
-  "bg-red-500",
-];
 
 function toTestId(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, "-");
@@ -347,7 +341,9 @@ function ClassificationLevelBadge({
     (level) => level.level === classificationEntry?.level
   );
   const levelColor =
-    bgColorList[(classificationEntry?.level ?? 0) - 1] ?? "bg-control-bg-hover";
+    classificationLevelBackgroundClasses[
+      (classificationEntry?.level ?? 0) - 1
+    ] ?? "bg-control-bg-hover";
 
   return (
     <span className="flex min-w-0 items-center gap-x-1">
@@ -621,107 +617,6 @@ function ClassificationPickerPopover({
   );
 }
 
-function SemanticTypePickerPopover({
-  onSelect,
-  semanticTypeList,
-  testId,
-}: {
-  onSelect: (semanticTypeId: string) => void;
-  semanticTypeList: SemanticTypeSetting_SemanticType[];
-  testId: string;
-}) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [searchText, setSearchText] = useState("");
-
-  useEffect(() => {
-    if (open) {
-      setSearchText("");
-    }
-  }, [open]);
-
-  const filteredSemanticTypeList = useMemo(() => {
-    const normalizedSearch = searchText.trim().toLowerCase();
-    if (!normalizedSearch) {
-      return semanticTypeList;
-    }
-
-    return semanticTypeList.filter((semanticType) => {
-      return (
-        semanticType.id.toLowerCase().includes(normalizedSearch) ||
-        semanticType.title.toLowerCase().includes(normalizedSearch) ||
-        (semanticType.description?.toLowerCase().includes(normalizedSearch) ??
-          false)
-      );
-    });
-  }, [searchText, semanticTypeList]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        aria-label={t("common.edit")}
-        data-testid={testId}
-        className="inline-flex size-5 items-center justify-center rounded-xs text-control transition-colors hover:bg-control-bg hover:text-main focus:outline-hidden focus-visible:ring-2 focus-visible:ring-accent [&_svg]:pointer-events-none"
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.stopPropagation();
-          }
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <Pencil className="size-3" />
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-96 p-0">
-        <div className="flex flex-col gap-y-2 p-3">
-          <SearchInput
-            placeholder={t("common.filter-by-name")}
-            value={searchText}
-            onChange={(event) => setSearchText(event.target.value)}
-          />
-          <div className="max-h-80 overflow-y-auto rounded-sm border border-block-border">
-            {filteredSemanticTypeList.length === 0 ? (
-              <div className="px-4 py-6 text-sm text-control-light">
-                {t("common.no-data")}
-              </div>
-            ) : (
-              <div className="divide-y divide-block-border">
-                {filteredSemanticTypeList.map((semanticType) => (
-                  <Button
-                    key={semanticType.id}
-                    type="button"
-                    appearance="secondary"
-                    size="sm"
-                    data-testid={`semantic-type-option-${toTestId(semanticType.id)}`}
-                    className="h-auto w-full flex-col items-start rounded-none px-4 py-3 text-left font-normal whitespace-normal"
-                    onClick={() => {
-                      onSelect(semanticType.id);
-                      setOpen(false);
-                    }}
-                  >
-                    <span className="text-sm font-medium text-main">
-                      {semanticType.title}
-                    </span>
-                    <span className="text-xs text-control">
-                      {semanticType.id}
-                    </span>
-                    {semanticType.description && (
-                      <span className="text-xs text-control-light">
-                        {semanticType.description}
-                      </span>
-                    )}
-                  </Button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 export function EditableClassificationCell({
   classification,
   classificationConfig,
@@ -839,8 +734,7 @@ function EditableSemanticTypeCell({
           </MiniActionButton>
         )}
         {!readonly && hasSensitiveDataFeature && !instanceMissingLicense && (
-          <SemanticTypePickerPopover
-            semanticTypeList={semanticTypeList}
+          <SemanticTypePicker
             testId={`${testIdPrefix}-edit`}
             onSelect={(nextSemanticTypeId) => {
               void onApply(nextSemanticTypeId);
@@ -1127,7 +1021,7 @@ function TableDetailSheetContent({
                 />
               </div>
               <div className="rounded-sm border border-block-border">
-                <table className="min-w-full divide-y divide-block-border text-sm">
+                <Table className="min-w-full divide-y divide-block-border">
                   <thead className="bg-control-bg">
                     <tr className="text-left text-sm text-control-light">
                       <th className="px-4 py-2 font-medium">
@@ -1252,7 +1146,7 @@ function TableDetailSheetContent({
                       </tr>
                     )}
                   </tbody>
-                </table>
+                </Table>
               </div>
             </DetailSection>
           )}
@@ -1267,7 +1161,7 @@ function TableDetailSheetContent({
                   <div className="border-b border-block-border px-4 py-3 text-base font-medium text-main">
                     {index.name}
                   </div>
-                  <table className="min-w-full divide-y divide-block-border text-sm">
+                  <Table className="min-w-full divide-y divide-block-border">
                     <thead className="bg-control-bg">
                       <tr className="text-left text-sm text-control-light">
                         <th className="px-4 py-2 font-medium">
@@ -1308,7 +1202,7 @@ function TableDetailSheetContent({
                         )}
                       </tr>
                     </tbody>
-                  </table>
+                  </Table>
                 </div>
               ))}
             </DetailSection>

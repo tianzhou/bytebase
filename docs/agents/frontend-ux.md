@@ -57,6 +57,8 @@ The product spacing vocabulary is 4, 6, 8, 12, 16, 24, and 32px.
 | --- | ---: |
 | Icon and adjacent label | 4-6px, according to control size |
 | Sibling controls and buttons | 8px |
+| Field title and its direct description | 0px |
+| Section title and its direct description | 8px |
 | Form label/title and its control | 6px |
 | Controls within one field | 8px |
 | Related content within a section | 16px |
@@ -138,8 +140,10 @@ Use semantic utilities backed by CSS custom properties:
 
 ### Borders, Corners, Focus, And Layers
 
-- Use `rounded-xs` for compact controls, `rounded-sm` for ordinary framed
-  surfaces, and `rounded-full` only for circular controls, avatars, and pills.
+- Use `rounded-xs` for compact controls and textual labels, including status
+  badges, tags, and selected tokens. Use `rounded-sm` for ordinary framed
+  surfaces, and `rounded-full` only for circular controls, avatars, and
+  lifecycle status stamps that must remain distinct from adjacent actions.
 - Use `border-control-border` for controls and `border-block-border` for region
   boundaries.
 - Interactive elements MUST have a visible keyboard focus state. Prefer the
@@ -183,16 +187,68 @@ behavior:
 ```
 
 - A field has 6px between its label/title region and control.
+- A field title and its concise description have no added gap; the description
+  follows the title directly. With a description, the 6px field gap is between
+  the description and the control. Without one, it is between the title and
+  the control.
 - Controls belonging to one field have 8px between them.
 - A field group has 24px between fields.
 - A section has 24px vertical padding and 16px internal rhythm.
+- A section title and its description have 8px between them. When a section
+  header and content stack, they have 16px between them. The default section
+  layout puts them side by side on large screens, so that vertical separation
+  applies only while stacked; `single-column` always uses it.
+- `FormSection`, `FormFieldGroup`, and `FormField` own these measurements.
+  Consumers MUST NOT add `gap-*`, `space-*`, or margin spacers to change their
+  title/description/control rhythm. Use `FormField spacing="section"` for a
+  field whose substantial control region needs 16px separation, and
+  `FormFieldGroup density="compact"` for the documented 16px dense-form
+  rhythm.
 - On large screens, a section header uses 25% of the section width and content
   uses the remainder. On smaller screens, they stack with 16px separation.
+- A page that reads as one column uses `FormSection layout="single-column"`: the
+  same section title, the header above the content at every width, and the
+  content's children 16px apart. `layout="stacked"` is the dense variant for
+  sections inside a dense form. `FormSection description` renders a short
+  introduction under the title in the header.
 - `FormLabel` MUST reference its control with `htmlFor`.
 - Validation MUST be adjacent to the affected field. Do not rely only on a
   toast or a disabled button to explain invalid input.
 - Required fields, disabled state, pending state, and server errors MUST remain
   understandable without color alone.
+
+### Choice Controls
+
+- Choose the control from the decision, not merely the number of options.
+  First ask whether users need to see the alternatives together to understand
+  or compare the choice. If they do, use a visible `RadioGroup`; if they do
+  not, use `Select` to keep the form compact. A small option count alone does
+  not make either control correct.
+- Use the shared `Switch` for one stateful binary setting, regardless of
+  whether the surrounding form saves it immediately or later. Its label names
+  the enabled behavior or state, such as "Use SSH tunnel", "Production
+  environment", or "Sync all databases". The off state MUST have a clear,
+  meaningful result.
+- Use `Checkbox` for selection or acknowledgement: selecting one or more
+  items, including an optional item in a submission, accepting terms, or
+  confirming a destructive action. A grouped set of independent requirements,
+  such as password-character requirements, MAY also use checkboxes. Do not use
+  a single checkbox for a standalone enabled or disabled setting.
+- Use `RadioGroup` for a small set of peer values where users need to compare
+  the alternatives, their descriptions, consequences, or availability. Use
+  choice-card styling when that supporting context matters, such as onboarding
+  goals, cancellation reasons, access scope, and security modes.
+- Do not replace a consequential first-step choice with a dropdown solely
+  because it has a small number of options. For example, identity-provider
+  types need visible descriptions and feature availability so users can choose
+  the integration model before they enter a configuration flow.
+- Use the shared `Select` dropdown for many, familiar, or low-context mutually
+  exclusive options where compactness is more useful than comparison, such as
+  themes, export formats, environments, and webhook destinations. It MAY also
+  be used for two peer values when space is constrained and comparison is
+  unnecessary.
+- Do not use `SegmentedControl` for ordinary form values. Reserve it for
+  compact view or mode controls outside forms.
 
 ### Dense Horizontal Forms
 
@@ -205,21 +261,33 @@ third column for section titles.
 - Stack labels based on available form width, independently of the navigation
   sidebar breakpoint. Compound controls MAY wrap within the control column
   before the field itself stacks.
-- Keep descriptions and validation beside the control they explain. Associate
-  labels and radio groups with accessible names in both layouts.
+- Decide responsive breakpoints once at the form root. A dependent
+  configuration group inside a field's control area MUST inherit the parent
+  field's resolved layout instead of measuring its own container or
+  introducing another label column. Render it as a vertical group within its
+  fieldset boundary, with compact label typography.
+- Keep concise operational descriptions directly below the field title.
+  Longer secondary guidance that would make a dense form harder to
+  scan MAY use a focusable info tooltip beside the field title; validation and
+  essential status remain visible beside the control. Associate labels and
+  choice controls with accessible names in both layouts.
 - Put choices that determine subsequent fields first. Use one `Select` dropdown
   combining authentication methods and password sources. Do not add a separate
-  password-source selector. Keep synchronization choices visible in a
-  `SegmentedControl`.
+  password-source selector. Use a `Switch` for binary choices such as syncing
+  all databases; reveal the selected-database controls only when it is off.
 - Reveal the selected authentication method's fields below the selector.
   External sources reveal their configuration there. Preserve separate drafts
   while switching sources, and submit only the active source. Reveal dependent
   TLS, SSH, IAM, and external-source configuration below its controlling
-  choice, using nested flow rather than a framed surface inside another frame.
+  choice, using nested flow and at most one fieldset boundary rather than a
+  framed surface inside another frame.
 - Keep security modes visible; reveal their dependent fields when selected.
-  Switches and segmented controls align to the start of their control column.
-  Keep ordinary connection rows on the 16px rhythm. Use explicit choices for
-  modes such as syncing all or selected databases.
+  Switches, select triggers, and radio groups align to the start of their
+  control column. Keep ordinary connection rows on the 16px rhythm using
+  `FormFieldGroup density="compact"`, including across engine-specific field
+  groups. Empty conditional groups MUST NOT reserve space. Larger gaps need a
+  meaningful section boundary. Use explicit choices for modes such as syncing
+  all or selected databases.
 - Empty optional collections MAY start as an add action. Existing entries and
   validation errors MUST remain discoverable.
 - A connection-creation footer MAY place Test Connection beside Create, with
@@ -401,6 +469,9 @@ A resource table is composed in this order:
 
 - Header rows are 40px high.
 - Default cells use 16px horizontal and 12px vertical padding.
+- Instance and database body cells use `TableCellContent` for a vertically
+  centered, 24px minimum content area: 48px with cell padding, plus row borders.
+  Expanded or multi-line content can increase the row height.
 - Interactive menu/list rows have a 32px compact or 36px default minimum
   height, 14/20px primary text, and an 8px internal gap.
 - Numeric values align right. Selection and icon-only columns remain narrow.

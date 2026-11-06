@@ -7,10 +7,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -19,8 +19,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_INDEX_NO_DUPLICATE_COLUMN, &IndexNoDuplicateColumnAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_INDEX_NO_DUPLICATE_COLUMN, &IndexNoDuplicateColumnAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_INDEX_NO_DUPLICATE_COLUMN, &IndexNoDuplicateColumnAdvisor{})
 }
 
 // IndexNoDuplicateColumnAdvisor is the advisor checking for no duplicate columns in index.
@@ -119,7 +117,7 @@ func (r *indexNoDuplicateColumnOmniRule) checkCreateIndex(n *ast.CreateIndexStmt
 			Code:          code.DuplicateColumnInIndex.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("%s`%s` has duplicate column `%s`.`%s`", indexType, indexName, tableName, column),
-			StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(n.Loc))),
+			StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(n.Loc))),
 		})
 	}
 }
@@ -146,7 +144,7 @@ func (r *indexNoDuplicateColumnOmniRule) handleConstraint(tableName string, cons
 		return
 	}
 
-	indexName := constraint.Name
+	indexName := omniConstraintName(constraint)
 	// Workaround: omni parser doesn't capture PRIMARY KEY constraint names.
 	// Extract from statement text as a fallback.
 	if indexName == "" && constraint.Type == ast.ConstrPrimaryKey {
@@ -158,7 +156,7 @@ func (r *indexNoDuplicateColumnOmniRule) handleConstraint(tableName string, cons
 			Code:          code.DuplicateColumnInIndex.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("%s`%s` has duplicate column `%s`.`%s`", indexType, indexName, tableName, column),
-			StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(line)),
+			StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(line)),
 		})
 	}
 }

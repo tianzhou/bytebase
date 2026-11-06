@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -18,8 +20,13 @@ import (
 // Gemini chat types with tool-calling support.
 
 type chatGeminiRequest struct {
-	Contents []chatGeminiContent `json:"contents"`
-	Tools    []chatGeminiTool    `json:"tools,omitempty"`
+	SystemInstruction *chatGeminiSystemInstruction `json:"systemInstruction,omitempty"`
+	Contents          []chatGeminiContent          `json:"contents"`
+	Tools             []chatGeminiTool             `json:"tools,omitempty"`
+}
+
+type chatGeminiSystemInstruction struct {
+	Parts []chatGeminiPart `json:"parts"`
 }
 
 type chatGeminiContent struct {
@@ -55,7 +62,12 @@ type chatGeminiFunctionDecl struct {
 }
 
 type chatGeminiUsage struct {
-	TotalTokenCount int32 `json:"totalTokenCount"`
+	TotalTokenCount         *int32 `json:"totalTokenCount"`
+	PromptTokenCount        *int32 `json:"promptTokenCount"`
+	CachedContentTokenCount *int32 `json:"cachedContentTokenCount"`
+	CandidatesTokenCount    *int32 `json:"candidatesTokenCount"`
+	ToolUsePromptTokenCount *int32 `json:"toolUsePromptTokenCount"`
+	ThoughtsTokenCount      *int32 `json:"thoughtsTokenCount"`
 }
 
 type chatGeminiResponse struct {
@@ -63,7 +75,11 @@ type chatGeminiResponse struct {
 		Content struct {
 			Parts []chatGeminiResponsePart `json:"parts"`
 		} `json:"content"`
+		FinishReason string `json:"finishReason"`
 	} `json:"candidates"`
+	PromptFeedback struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback"`
 	UsageMetadata *chatGeminiUsage `json:"usageMetadata,omitempty"`
 }
 
@@ -77,22 +93,73 @@ func newGeminiToolCallID(name string) string {
 	return fmt.Sprintf("call_%s_%s", name, uuid.NewString())
 }
 
+// geminiFunctionResponse shapes a tool result for Gemini, which accepts a JSON
+// object only and rejects an array or a scalar with a 400.
+func geminiFunctionResponse(content string) map[string]any {
+	var parsed any
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return map[string]any{"result": content}
+	}
+	if object, ok := parsed.(map[string]any); ok {
+		return object
+	}
+	return map[string]any{"result": parsed}
+}
+
+type geminiErrorReply struct {
+	Error struct {
+		Details []struct {
+			Type       string `json:"@type"`
+			RetryDelay string `json:"retryDelay"`
+		} `json:"details"`
+	} `json:"error"`
+}
+
+// readGeminiFailure reads the wait Gemini asks for, which it can put in a
+// google.rpc.RetryInfo detail of the error body. The delay is a protobuf
+// Duration in JSON: decimal seconds with an "s" suffix, such as "34.074824224s".
+func readGeminiFailure(httpErr *HTTPError) {
+	var reply geminiErrorReply
+	if err := json.Unmarshal([]byte(httpErr.Body), &reply); err != nil {
+		return
+	}
+	for _, detail := range reply.Error.Details {
+		if detail.Type != "type.googleapis.com/google.rpc.RetryInfo" {
+			continue
+		}
+		seconds, ok := strings.CutSuffix(detail.RetryDelay, "s")
+		if !ok {
+			continue
+		}
+		if delay, ok := parseDecimal(seconds, time.Second); ok {
+			httpErr.RetryAfter = max(httpErr.RetryAfter, delay)
+		}
+	}
+}
+
+// appendGeminiContent adds parts as a turn of role. Gemini expects the roles
+// to alternate, so parts with the role of the last turn join that turn, as the
+// results of parallel function calls do in Google's examples.
+func appendGeminiContent(contents []chatGeminiContent, role string, parts ...chatGeminiPart) []chatGeminiContent {
+	if last := len(contents) - 1; last >= 0 && contents[last].Role == role {
+		contents[last].Parts = append(contents[last].Parts, parts...)
+		return contents
+	}
+	return append(contents, chatGeminiContent{Role: role, Parts: parts})
+}
+
 func chatGemini(ctx context.Context, aiSetting *storepb.AISetting, request *v1pb.AIChatRequest) (*v1pb.AIChatResponse, error) {
 	payload := chatGeminiRequest{}
 
+	var systemParts []chatGeminiPart
 	for _, m := range request.Messages {
 		switch m.Role {
 		case v1pb.AIChatMessageRole_AI_CHAT_MESSAGE_ROLE_SYSTEM:
-			// Gemini handles system messages as the first user message.
-			payload.Contents = append(payload.Contents, chatGeminiContent{
-				Role:  "user",
-				Parts: []chatGeminiPart{{Text: m.GetContent()}},
-			})
+			if m.GetContent() != "" {
+				systemParts = append(systemParts, chatGeminiPart{Text: m.GetContent()})
+			}
 		case v1pb.AIChatMessageRole_AI_CHAT_MESSAGE_ROLE_USER:
-			payload.Contents = append(payload.Contents, chatGeminiContent{
-				Role:  "user",
-				Parts: []chatGeminiPart{{Text: m.GetContent()}},
-			})
+			payload.Contents = appendGeminiContent(payload.Contents, "user", chatGeminiPart{Text: m.GetContent()})
 		case v1pb.AIChatMessageRole_AI_CHAT_MESSAGE_ROLE_ASSISTANT:
 			var parts []chatGeminiPart
 			if m.Content != nil && *m.Content != "" {
@@ -114,30 +181,27 @@ func chatGemini(ctx context.Context, aiSetting *storepb.AISetting, request *v1pb
 				}
 				parts = append(parts, part)
 			}
-			payload.Contents = append(payload.Contents, chatGeminiContent{
-				Role:  "model",
-				Parts: parts,
-			})
+			payload.Contents = appendGeminiContent(payload.Contents, "model", parts...)
 		case v1pb.AIChatMessageRole_AI_CHAT_MESSAGE_ROLE_TOOL:
 			// Gemini uses functionResponse parts in a "user" role message.
 			// We need the tool name; get it from the tool call ID by searching prior messages.
 			toolName := getToolNameFromMessages(request.Messages, m.GetToolCallId())
-			var resultData any
-			if err := json.Unmarshal([]byte(m.GetContent()), &resultData); err != nil {
-				resultData = map[string]string{"result": m.GetContent()}
-			}
-			payload.Contents = append(payload.Contents, chatGeminiContent{
-				Role: "user",
-				Parts: []chatGeminiPart{
-					{
-						FunctionResponse: &chatGeminiFunctionResult{
-							Name:     toolName,
-							Response: resultData,
-						},
-					},
+			resultData := geminiFunctionResponse(m.GetContent())
+			payload.Contents = appendGeminiContent(payload.Contents, "user", chatGeminiPart{
+				FunctionResponse: &chatGeminiFunctionResult{
+					Name:     toolName,
+					Response: resultData,
 				},
 			})
 		default:
+		}
+	}
+	if len(systemParts) > 0 {
+		if len(payload.Contents) == 0 {
+			// Gemini rejects a request with empty contents.
+			payload.Contents = []chatGeminiContent{{Role: "user", Parts: systemParts}}
+		} else {
+			payload.SystemInstruction = &chatGeminiSystemInstruction{Parts: systemParts}
 		}
 	}
 
@@ -173,7 +237,7 @@ func chatGemini(ctx context.Context, aiSetting *storepb.AISetting, request *v1pb
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", aiSetting.ApiKey)
 
-	body, err := doHTTPRequest(ctx, httpReq, "Gemini")
+	body, err := doHTTPRequest(ctx, httpReq, "Gemini", readGeminiFailure)
 	if err != nil {
 		return nil, err
 	}
@@ -184,10 +248,14 @@ func chatGemini(ctx context.Context, aiSetting *storepb.AISetting, request *v1pb
 	}
 
 	result := &v1pb.AIChatResponse{}
-	if resp.UsageMetadata != nil {
-		result.Usage = newAIChatUsage(resp.UsageMetadata.TotalTokenCount)
+	if usage := resp.UsageMetadata; usage != nil {
+		// Gemini's total includes tool-use prompts and thoughts separately from candidates.
+		inputTokens := addOptionalTokenCounts(usage.PromptTokenCount, usage.ToolUsePromptTokenCount)
+		outputTokens := addOptionalTokenCounts(usage.CandidatesTokenCount, usage.ThoughtsTokenCount)
+		result.Usage = newAIChatUsage(usage.TotalTokenCount, inputTokens, outputTokens, usage.CachedContentTokenCount)
 	}
 	if len(resp.Candidates) > 0 {
+		result.StopReason = geminiStopReason(resp.Candidates[0].FinishReason)
 		var textContent string
 		for _, part := range resp.Candidates[0].Content.Parts {
 			if part.Text != "" {
@@ -216,6 +284,8 @@ func chatGemini(ctx context.Context, aiSetting *storepb.AISetting, request *v1pb
 		if textContent != "" {
 			result.Content = &textContent
 		}
+	} else {
+		result.StopReason = geminiPromptBlockStopReason(resp.PromptFeedback.BlockReason)
 	}
 	return result, nil
 }

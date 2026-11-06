@@ -31,6 +31,8 @@ export const STORAGE_KEY_SQL_EDITOR_RESULT_LIMIT = "bb.sql-editor.result-limit";
 export const STORAGE_KEY_SQL_EDITOR_REDIS_NODE = "bb.sql-editor.redis-node";
 export const STORAGE_KEY_SQL_EDITOR_AI_PANEL_SIZE =
   "bb.sql-editor.ai-panel-size";
+export const STORAGE_KEY_SQL_EDITOR_RESULT_PANEL_SIZE =
+  "bb.sql-editor.result-panel-size";
 export const STORAGE_KEY_SQL_EDITOR_SIDEBAR_TAB =
   "bb.sql-editor.sidebar.last-visited-tab";
 export const storageKeySqlEditorSidebarTab = (project: string) =>
@@ -44,6 +46,7 @@ export const STORAGE_KEY_SQL_EDITOR_DETAIL_LINE_WRAP =
 export const STORAGE_KEY_SQL_EDITOR_NOSQL_TABLE_VIEW =
   "bb.sql-editor.es-table-view";
 export const STORAGE_KEY_MY_ISSUES_TAB = "bb.components.MY_ISSUES.id";
+export const STORAGE_KEY_SQL_REVIEW_VERSION = "bb.sql-review.version";
 
 // --- User-scoped (cleaned on logout) ---
 // Workspace-scoped: holds route paths / project names that are workspace-local.
@@ -69,6 +72,14 @@ export const storageKeyWorkspaceSetupGuideWorkspaceUsage = (
   scope: string,
   email: string
 ) => withScope("bb.workspace-setup-guide.workspace-usage", scope, email);
+export const storageKeyWorkspaceSetupGuideTeamSize = (
+  scope: string,
+  email: string
+) => withScope("bb.workspace-setup-guide.team-size", scope, email);
+export const storageKeyWorkspaceSetupFinished = (workspace: string) =>
+  withScope("bb.workspace-setup.finished", workspace);
+export const storageKeyWorkspaceSetupDraft = (scope: string, email: string) =>
+  withScope("bb.workspace-setup.draft", scope, email);
 // Workspace-scoped: value keys embed project resource names.
 export const storageKeyIamRemind = (scope: string, email: string) =>
   withScope("bb.iam-remind", scope, email);

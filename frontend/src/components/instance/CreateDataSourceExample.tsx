@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { LearnMoreLink } from "@/components/LearnMoreLink";
 import { Alert } from "@/components/ui/alert";
-import { writeTextToClipboard } from "@/lib/clipboard";
+import { CopyButton } from "@/components/ui/copy-button";
 import {
   DATASOURCE_ADMIN_USER_NAME,
   DATASOURCE_READONLY_USER_NAME,
@@ -28,19 +29,22 @@ function getGrantStatement(
 ): string {
   if (dataSourceType === DataSourceType.ADMIN) {
     const createUserStatement = `CREATE USER ${DATASOURCE_ADMIN_USER_NAME}@'%' IDENTIFIED BY 'YOUR_DB_PWD';`;
+    // No definer privilege is valid on every MySQL version and cloud provider, so the
+    // example leaves it out and EngineSpecificWarning links to the per-version list.
+    const mysqlGrantStatement = `GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE VIEW, \nDELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, PROCESS, REFERENCES, \nSELECT, SHOW DATABASES, SHOW VIEW, TRIGGER, UPDATE, USAGE, \nRELOAD, LOCK TABLES, REPLICATION CLIENT, REPLICATION SLAVE \nON *.* to ${DATASOURCE_ADMIN_USER_NAME}@'%';`;
     switch (engine) {
       case Engine.MYSQL:
         if (
           authenticationType ===
           DataSource_AuthenticationType.GOOGLE_CLOUD_SQL_IAM
         ) {
-          return `GRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE VIEW, \nDELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, PROCESS, REFERENCES, \nSELECT, SHOW DATABASES, SHOW VIEW, TRIGGER, UPDATE, USAGE, \nRELOAD, LOCK TABLES, REPLICATION CLIENT, REPLICATION SLAVE \n/*!80000 , SET_USER_ID */\nON *.* to ${DATASOURCE_ADMIN_USER_NAME}@'%';`;
+          return mysqlGrantStatement;
         } else if (
           authenticationType === DataSource_AuthenticationType.AWS_RDS_IAM
         ) {
-          return `CREATE USER ${DATASOURCE_ADMIN_USER_NAME}@'%' IDENTIFIED WITH AWSAuthenticationPlugin AS 'RDS';\n\nALTER USER '${DATASOURCE_ADMIN_USER_NAME}'@'%' REQUIRE SSL;\n\nGRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE VIEW, \nDELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, PROCESS, REFERENCES, \nSELECT, SHOW DATABASES, SHOW VIEW, TRIGGER, UPDATE, USAGE, \nRELOAD, LOCK TABLES, REPLICATION CLIENT, REPLICATION SLAVE \n/*!80000 , SET_USER_ID */\nON *.* to ${DATASOURCE_ADMIN_USER_NAME}@'%';`;
+          return `CREATE USER ${DATASOURCE_ADMIN_USER_NAME}@'%' IDENTIFIED WITH AWSAuthenticationPlugin AS 'RDS';\n\nALTER USER '${DATASOURCE_ADMIN_USER_NAME}'@'%' REQUIRE SSL;\n\n${mysqlGrantStatement}`;
         }
-        return `${createUserStatement}\n\nGRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE VIEW, \nDELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, PROCESS, REFERENCES, \nSELECT, SHOW DATABASES, SHOW VIEW, TRIGGER, UPDATE, USAGE, \nRELOAD, LOCK TABLES, REPLICATION CLIENT, REPLICATION SLAVE \n/*!80000 , SET_USER_ID */\nON *.* to ${DATASOURCE_ADMIN_USER_NAME}@'%';`;
+        return `${createUserStatement}\n\n${mysqlGrantStatement}`;
       case Engine.TIDB:
         return `${createUserStatement}\n\nGRANT ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE VIEW, \nDELETE, DROP, EVENT, EXECUTE, INDEX, INSERT, PROCESS, REFERENCES, \nSELECT, SHOW DATABASES, SHOW VIEW, TRIGGER, UPDATE, USAGE, \nLOCK TABLES, REPLICATION CLIENT, REPLICATION SLAVE \nON *.* to ${DATASOURCE_ADMIN_USER_NAME}@'%';`;
       case Engine.MARIADB:
@@ -173,7 +177,7 @@ function getGrantStatement(
       case Engine.MSSQL:
         return `-- If you use Cloud RDS, you need to checkout their documentation for setting up a semi-super privileged user.\nCREATE LOGIN ${DATASOURCE_ADMIN_USER_NAME} WITH PASSWORD = 'YOUR_DB_PWD';\nALTER SERVER ROLE sysadmin ADD MEMBER ${DATASOURCE_ADMIN_USER_NAME};`;
       case Engine.ORACLE:
-        return `-- If you use Cloud RDS, you need to checkout their documentation for setting up a semi-super privileged user.\nCREATE USER ${DATASOURCE_ADMIN_USER_NAME} IDENTIFIED BY 'YOUR_DB_PWD';\nGRANT ALL PRIVILEGES TO ${DATASOURCE_ADMIN_USER_NAME};`;
+        return `-- Run in the database Bytebase connects to.\n-- In a container database (CDB), that is the pluggable database, not the root.\nCREATE USER ${DATASOURCE_ADMIN_USER_NAME} IDENTIFIED BY "YOUR_DB_PWD";\nGRANT ALL PRIVILEGES TO ${DATASOURCE_ADMIN_USER_NAME};`;
     }
   } else {
     const mysqlReadonlyStatement = `CREATE USER ${DATASOURCE_READONLY_USER_NAME}@'%' IDENTIFIED BY 'YOUR_DB_PWD';\n\nGRANT SELECT, SHOW DATABASES, SHOW VIEW, USAGE ON *.* to ${DATASOURCE_READONLY_USER_NAME}@'%';`;
@@ -440,6 +444,40 @@ function EngineSpecificDescription({
   return null;
 }
 
+function EngineSpecificWarning({ engine }: { engine: Engine }) {
+  const { t } = useTranslation();
+
+  let message: string;
+  let docsPage: string;
+  switch (engine) {
+    case Engine.MYSQL:
+      message = t("instance.sentence.create-user-example.mysql.warn");
+      docsPage = "mysql";
+      break;
+    case Engine.ORACLE:
+      message = t("instance.sentence.create-user-example.oracle.warn");
+      docsPage = "oracle";
+      break;
+    default:
+      return null;
+  }
+
+  return (
+    <Alert
+      variant="warning"
+      className="mt-2"
+      description={
+        <>
+          {message}{" "}
+          <LearnMoreLink
+            href={`https://docs.bytebase.com/get-started/connect/${docsPage}?source=console#create-a-user-for-bytebase`}
+          />
+        </>
+      }
+    />
+  );
+}
+
 export function CreateDataSourceExample({
   engine,
   dataSourceType,
@@ -468,10 +506,6 @@ export function CreateDataSourceExample({
     [engine, dataSourceType, authenticationType]
   );
 
-  const handleCopy = useCallback(() => {
-    void writeTextToClipboard(grantStatement);
-  }, [grantStatement]);
-
   const toggleExample = useCallback(() => {
     setShowExample((prev) => !prev);
   }, []);
@@ -486,7 +520,7 @@ export function CreateDataSourceExample({
 
   return (
     <div className={`w-full flex flex-col justify-start ${className ?? ""}`}>
-      <p className="w-full text-sm text-gray-500">
+      <p className="w-full text-sm text-control-light">
         {descriptionText}
         {!createInstanceFlag && grantStatement && (
           <span
@@ -505,26 +539,17 @@ export function CreateDataSourceExample({
             userName={userName}
           />
           <div className="mt-2 flex flex-row">
-            <pre className="flex-1 min-w-0 w-full inline-flex items-center px-3 py-2 border border-r border-control-border bg-gray-50 text-sm whitespace-pre-line rounded-l-xs font-mono overflow-auto">
+            <pre className="flex-1 min-w-0 w-full inline-flex items-center px-3 py-2 border border-r border-control-border bg-control-bg/50 text-sm whitespace-pre-line rounded-l-xs font-mono overflow-auto">
               {grantStatement}
             </pre>
-            <button
-              type="button"
-              className="flex items-center -ml-px px-2 py-2 border border-gray-300 text-sm font-medium text-control-light bg-gray-50 hover:bg-gray-100 focus:ring-control focus:outline-hidden focus-visible:ring-2 focus:ring-offset-1 rounded-r-xs"
-              onClick={handleCopy}
-              title="Copy"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
+            <CopyButton
+              content={grantStatement}
+              className="-ml-px h-auto rounded-r-xs border border-control-border bg-control-bg/50 px-2 py-2 text-sm text-control-light hover:bg-control-bg focus:ring-control"
+            />
           </div>
+          {dataSourceType === DataSourceType.ADMIN && (
+            <EngineSpecificWarning engine={engine} />
+          )}
         </div>
       )}
     </div>

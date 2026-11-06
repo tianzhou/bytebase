@@ -59,8 +59,8 @@ package tests
 //
 // Row 7 — a tightened ceiling bites the NEXT request of a live MCP session,
 // with no re-auth. That the gate reads the stored setting fresh, past the
-// setting cache, is pinned by TestMCPMaskingToggleBitesTheNextRequest in this
-// package, which flips the same setting out of band. NEW:
+// setting cache, is pinned by TestMCPCapabilityBitesTheNextRequest in this
+// package, which flips the ceiling out of band. NEW:
 // TestMCPMigrationTightenedCeilingBitesLiveSession.
 
 import (
@@ -106,7 +106,14 @@ func postMCP(t *testing.T, ctl *controller, bearer string) (int, string) {
 // holding this bearer would.
 func openMCPSession(ctx context.Context, t *testing.T, ctl *controller, bearer string) *mcp.ClientSession {
 	t.Helper()
-	client := mcp.NewClient(&mcp.Implementation{Name: "bb-e2e", Version: "0"}, nil)
+	return openMCPSessionWithOptions(ctx, t, ctl, bearer, nil)
+}
+
+// openMCPSessionWithOptions is openMCPSession for a client that declares more,
+// such as an elicitation handler.
+func openMCPSessionWithOptions(ctx context.Context, t *testing.T, ctl *controller, bearer string, opts *mcp.ClientOptions) *mcp.ClientSession {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "bb-e2e", Version: "0"}, opts)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:   ctl.rootURL + "/mcp",
 		HTTPClient: &http.Client{Transport: &bearerTransport{token: bearer}},

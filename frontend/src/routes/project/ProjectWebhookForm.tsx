@@ -26,9 +26,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FormField } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { StickyActionFooter } from "@/components/ui/sticky-action-footer";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
 import { WebhookTypeIcon } from "@/components/WebhookTypeIcon";
 import { pushNotification } from "@/stores";
@@ -196,7 +204,7 @@ export function ProjectWebhookForm({
         const idx = types.indexOf(type);
         if (idx >= 0) types.splice(idx, 1);
       }
-      types.sort();
+      types.sort((a, b) => a - b);
       return clone(WebhookSchema, { ...prev, notificationTypes: types });
     });
   }, []);
@@ -367,82 +375,86 @@ export function ProjectWebhookForm({
         <div className="flex flex-col gap-y-4">
           {/* Destination type selector (create only) */}
           {create && (
-            <div>
-              <label className="font-medium text-main">
+            <FormField title={t("project.webhook.destination")}>
+              <label className="sr-only" htmlFor="webhook-destination">
                 {t("project.webhook.destination")}{" "}
                 <span className="text-error">*</span>
               </label>
-              <RadioGroup
-                className="mt-1 grid grid-cols-1 gap-4 sm:grid-cols-7"
+              <Select
                 value={String(state.type)}
-                onValueChange={(value) => updateField("type", Number(value))}
+                onValueChange={(value) => {
+                  if (value) updateField("type", Number(value));
+                }}
               >
-                {webhookTypeItemList.map((item) => (
-                  <div
-                    key={item.type}
-                    className={`flex justify-center px-2 py-4 rounded-sm border cursor-pointer hover:bg-control-bg-hover ${
-                      state.type === item.type
-                        ? "border-accent"
-                        : "border-control-border"
-                    }`}
-                    onClick={() => updateField("type", item.type)}
-                  >
-                    <div className="flex flex-col items-center">
-                      <WebhookTypeIcon type={item.type} className="size-10" />
-                      <p className="mt-1 text-center text-sm font-medium">
+                <SelectTrigger id="webhook-destination" className="w-full">
+                  <SelectValue>
+                    {
+                      webhookTypeItemList.find(
+                        (item) => item.type === state.type
+                      )?.name
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {webhookTypeItemList.map((item) => (
+                    <SelectItem key={item.type} value={String(item.type)}>
+                      <span className="flex items-center gap-x-2">
+                        <WebhookTypeIcon type={item.type} className="size-4" />
                         {item.name}
-                      </p>
-                      <div className="mt-3">
-                        <RadioGroupItem
-                          value={String(item.type)}
-                          aria-label={item.name}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </RadioGroup>
-            </div>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FormField>
           )}
 
           {/* Name */}
-          <div>
-            <label className="font-medium text-main">
-              {t("common.name")} <span className="text-error">*</span>
-            </label>
+          <FormField
+            title={
+              <>
+                {t("common.name")} <span className="text-error">*</span>
+              </>
+            }
+          >
             <Input
-              className="mt-1 w-full"
+              className="w-full"
               placeholder={`${selectedWebhook?.name ?? "My"} Webhook`}
               value={state.title}
               onChange={(e) => updateField("title", e.target.value)}
               disabled={!allowEdit}
             />
-          </div>
+          </FormField>
 
           {/* URL */}
-          <div>
-            <label className="font-medium text-main">
-              {t("project.webhook.webhook-url")}{" "}
-              <span className="text-error">*</span>
-            </label>
-            <div className="mt-1 text-sm text-control-light">
-              {t("project.webhook.creation.desc", {
-                destination: selectedWebhook?.name,
-              })}{" "}
-              <a
-                href={selectedWebhook?.docUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="normal-link"
-              >
-                {t("project.webhook.creation.view-doc", {
+          <FormField
+            title={
+              <>
+                {t("project.webhook.webhook-url")}{" "}
+                <span className="text-error">*</span>
+              </>
+            }
+            description={
+              <>
+                {t("project.webhook.creation.desc", {
                   destination: selectedWebhook?.name,
-                })}
-              </a>
-              .
-            </div>
+                })}{" "}
+                <a
+                  href={selectedWebhook?.docUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="normal-link"
+                >
+                  {t("project.webhook.creation.view-doc", {
+                    destination: selectedWebhook?.name,
+                  })}
+                </a>
+                .
+              </>
+            }
+          >
             <Input
-              className="mt-1 w-full"
+              className="w-full"
               placeholder={selectedWebhook?.urlPlaceholder}
               value={state.url}
               onChange={(e) => updateField("url", e.target.value)}
@@ -453,7 +465,7 @@ export function ProjectWebhookForm({
                 {t("project.webhook.url-hidden")}
               </div>
             )}
-          </div>
+          </FormField>
 
           {/* Triggering activities */}
           <div>
@@ -528,7 +540,7 @@ export function ProjectWebhookForm({
               </span>
               <div className="flex items-center mt-2">
                 <label className="flex items-center gap-x-2 cursor-pointer">
-                  <Checkbox
+                  <Switch
                     checked={state.directMessage}
                     disabled={!activitySupportDirectMessage}
                     onCheckedChange={(checked) =>

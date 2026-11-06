@@ -1,5 +1,5 @@
 import type { TFunction } from "i18next";
-import { HelpCircle, Plus, Trash2, X } from "lucide-react";
+import { Bot, HelpCircle, Plus, Trash2, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   createContext,
@@ -14,6 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { EnvironmentLabel } from "@/components/EnvironmentLabel";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { getLayerRoot, LAYER_SURFACE_CLASS } from "@/components/ui/layer";
@@ -25,8 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import {
+  type AgentExpressionDraftMode,
+  registerAgentExpressionTarget,
+} from "@/modules/agent/logic/expressionDraft";
+import { openAgentWithPrompt } from "@/modules/agent/logic/instanceConnectionHelp";
 import type {
   ConditionExpr,
   ConditionGroupExpr,
@@ -35,8 +42,10 @@ import type {
   LogicalOperator,
   Operator,
   RawStringExpr,
+  SimpleExpr,
 } from "@/modules/cel";
 import {
+  buildCELExpr,
   ExprType,
   getOperatorListByFactor as getRawOperatorListByFactor,
   isBooleanFactor,
@@ -50,11 +59,18 @@ import {
   isTimestampFactor,
   LogicalOperatorList,
   operatorDisplayLabel,
+  resolveCELExpr,
+  wrapAsGroup,
 } from "@/modules/cel";
+import { buildSelectorCapabilities } from "@/modules/cel/logic/agentPrompt";
 import { environmentNamePrefix } from "@/stores/modules/v1/common";
 import { getDefaultPagination } from "@/utils";
 import { CEL_ATTRIBUTE_RESOURCE_ENVIRONMENT_ID } from "@/utils/cel-attributes";
 import type { OptionConfig } from "@/utils/expr";
+import {
+  batchConvertCELStringToParsedExpr,
+  batchConvertParsedExprToCELString,
+} from "@/utils/v1/cel";
 
 export type { OptionConfig } from "@/utils/expr";
 
@@ -62,17 +78,29 @@ export type { OptionConfig } from "@/utils/expr";
 // Helpers
 // ============================================================
 
-function factorText(factor: Factor, t: TFunction): string {
-  const key = `cel.factor.${factor.replace(/\./g, "_")}`;
-  const translated = t(key);
-  return translated === key ? factor : translated;
-}
-
 function getOperatorListByFactor(
   factor: Factor,
   overrideMap?: Map<Factor, Operator[]>
 ): Operator[] {
   return overrideMap?.get(factor) ?? getRawOperatorListByFactor(factor);
+}
+
+function canRenderAsSelector(
+  expr: SimpleExpr,
+  factors: Factor[],
+  overrideMap?: Map<Factor, Operator[]>
+): boolean {
+  if (isConditionGroupExpr(expr)) {
+    return expr.args.every((arg) =>
+      canRenderAsSelector(arg, factors, overrideMap)
+    );
+  }
+  if (!isConditionExpr(expr)) return false;
+  const factor = expr.args[0];
+  return (
+    factors.includes(factor) &&
+    getOperatorListByFactor(factor, overrideMap).includes(expr.operator)
+  );
 }
 
 function getDefaultValue(
@@ -89,6 +117,8 @@ function getDefaultValue(
 
 const VALUE_MULTI_FIELD_CLASS =
   "min-h-9 px-3 py-1 text-sm leading-5 rounded-xs border border-control-border bg-background";
+const VALUE_TAG_CLASS =
+  "inline-flex min-w-0 max-w-full items-center gap-1 rounded-xs bg-control-bg px-1.5 py-0.5 text-xs";
 
 // Clone root, apply a mutation to the clone, return the clone.
 function updateExpr(
@@ -112,6 +142,7 @@ interface ExprEditorContextValue {
   factorOperatorOverrideMap: Map<Factor, Operator[]> | undefined;
   root: ConditionGroupExpr;
   onUpdate: (expr: ConditionGroupExpr) => void;
+  askAgent: () => void;
 }
 
 const ExprEditorContext = createContext<ExprEditorContextValue>({
@@ -122,6 +153,7 @@ const ExprEditorContext = createContext<ExprEditorContextValue>({
   factorOperatorOverrideMap: undefined,
   root: { type: ExprType.ConditionGroup, operator: "_&&_", args: [] },
   onUpdate: () => {},
+  askAgent: () => {},
 });
 
 function useExprEditorCtx() {
@@ -284,19 +316,28 @@ function SearchableSelect({
     return value || "";
   }, [options, value, optionConfig]);
 
+  const searchControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => searchControllerRef.current?.abort(), []);
   const doSearch = useCallback(
     async (q: string) => {
       if (!optionConfig.search) return;
+      searchControllerRef.current?.abort();
+      const controller = new AbortController();
+      searchControllerRef.current = controller;
       setLoading(true);
       try {
         const resp = await optionConfig.search({
+          signal: controller.signal,
           search: q,
           pageToken: "",
           pageSize: getDefaultPagination(),
         });
-        setOptions(resp.options as SearchableSelectOption[]);
+        if (!controller.signal.aborted)
+          setOptions(resp.options as SearchableSelectOption[]);
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     },
     [optionConfig]
@@ -304,7 +345,8 @@ function SearchableSelect({
 
   const initializedRef = useRef(false);
   useEffect(() => {
-    if (initializedRef.current) return;
+    if (initializedRef.current && !searchControllerRef.current?.signal.aborted)
+      return;
     initializedRef.current = true;
     if (!value) return;
     if (optionConfig.fetch) {
@@ -360,10 +402,12 @@ function SearchableSelect({
 
   return (
     <div className="min-w-28">
-      <button
+      <Button
         ref={triggerRef}
         type="button"
-        className="inline-flex h-9 w-full items-center rounded-xs border border-control-border bg-background px-3 text-left text-sm leading-5 text-control disabled:opacity-50"
+        appearance="outline"
+        size="md"
+        className="w-full justify-start bg-background text-left text-control"
         disabled={disabled}
         onClick={handleOpen}
       >
@@ -374,7 +418,7 @@ function SearchableSelect({
             </span>
           )}
         </span>
-      </button>
+      </Button>
       {open && (
         <PortaledDropdown
           anchorRef={triggerRef}
@@ -468,19 +512,28 @@ function MultiSearchableSelect({
     [allOptions, optionConfig]
   );
 
+  const searchControllerRef = useRef<AbortController | null>(null);
+  useEffect(() => () => searchControllerRef.current?.abort(), []);
   const doSearch = useCallback(
     async (q: string) => {
       if (!optionConfig.search) return;
+      searchControllerRef.current?.abort();
+      const controller = new AbortController();
+      searchControllerRef.current = controller;
       setLoading(true);
       try {
         const resp = await optionConfig.search({
+          signal: controller.signal,
           search: q,
           pageToken: "",
           pageSize: getDefaultPagination(),
         });
-        setSearchOptions(resp.options as SearchableSelectOption[]);
+        if (!controller.signal.aborted)
+          setSearchOptions(resp.options as SearchableSelectOption[]);
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     },
     [optionConfig]
@@ -488,7 +541,8 @@ function MultiSearchableSelect({
 
   const multiInitRef = useRef(false);
   useEffect(() => {
-    if (multiInitRef.current) return;
+    if (multiInitRef.current && !searchControllerRef.current?.signal.aborted)
+      return;
     multiInitRef.current = true;
     if (value.length === 0) return;
     if (optionConfig.fetch) {
@@ -546,14 +600,13 @@ function MultiSearchableSelect({
           <span className="text-control-placeholder">{placeholder ?? ""}</span>
         )}
         {value.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 bg-control-bg text-xs px-1.5 py-0.5 rounded-xs"
-          >
-            {getLabelForValue(v)}
+          <span key={v} className={VALUE_TAG_CLASS}>
+            <span className="min-w-0 truncate">{getLabelForValue(v)}</span>
             {!disabled && (
-              <button
+              <Button
                 type="button"
+                appearance="secondary"
+                size="xs"
                 className="text-control-placeholder hover:text-control-light"
                 onMouseDown={(e) => {
                   e.stopPropagation();
@@ -561,7 +614,7 @@ function MultiSearchableSelect({
                 }}
               >
                 <X className="size-3" />
-              </button>
+              </Button>
             )}
           </span>
         ))}
@@ -570,8 +623,7 @@ function MultiSearchableSelect({
         <PortaledDropdown
           anchorRef={triggerRef}
           dropdownRef={dropdownRef}
-          matchAnchorWidth
-          className="bg-background border border-control-border rounded-sm shadow-md"
+          className="w-80 max-w-[calc(100vw-2rem)] bg-background border border-control-border rounded-sm shadow-md"
         >
           <div className="p-1 border-b border-control-border">
             <SearchInput
@@ -664,24 +716,24 @@ function TagInput({
       )}
     >
       {value.map((tag) => (
-        <span
-          key={tag}
-          className="inline-flex items-center gap-1 bg-control-bg text-xs px-1.5 py-0.5 rounded-xs"
-        >
-          {tag}
+        <span key={tag} className={VALUE_TAG_CLASS}>
+          <span className="min-w-0 truncate">{tag}</span>
           {!disabled && (
-            <button
+            <Button
               type="button"
+              appearance="secondary"
+              size="xs"
               className="text-control-placeholder hover:text-control-light"
               onClick={() => removeTag(tag)}
             >
               <X className="size-3" />
-            </button>
+            </Button>
           )}
         </span>
       ))}
       {!disabled && (
-        <input
+        <Input
+          size="xs"
           className="flex-1 min-w-16 h-5 border-0 bg-transparent p-0 text-sm leading-5 shadow-none outline-none placeholder:text-control-placeholder focus:border-0 focus:ring-0"
           placeholder={value.length === 0 ? (placeholder ?? "") : ""}
           value={inputValue}
@@ -742,12 +794,14 @@ function MultiCheckSelect({
 
   return (
     <div className="min-w-32">
-      <button
+      <Button
         ref={triggerRef}
         type="button"
+        appearance="secondary"
+        size="xs"
         className={cn(
           VALUE_MULTI_FIELD_CLASS,
-          "inline-flex w-full flex-wrap items-center gap-1 text-left hover:bg-control-bg disabled:pointer-events-none disabled:opacity-50"
+          "h-auto w-full flex-wrap justify-start text-left whitespace-normal hover:bg-control-bg disabled:pointer-events-none"
         )}
         disabled={disabled}
         onClick={() => setOpen(!open)}
@@ -756,13 +810,12 @@ function MultiCheckSelect({
           <span className="text-control-placeholder">{placeholder}</span>
         )}
         {value.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 bg-control-bg text-xs px-1.5 py-0.5 rounded-xs"
-          >
-            {renderValue
-              ? renderValue(v, getLabelForValue(v))
-              : getLabelForValue(v)}
+          <span key={v} className={VALUE_TAG_CLASS}>
+            <span className="min-w-0 truncate">
+              {renderValue
+                ? renderValue(v, getLabelForValue(v))
+                : getLabelForValue(v)}
+            </span>
             {!disabled && (
               <span
                 role="button"
@@ -778,7 +831,7 @@ function MultiCheckSelect({
             )}
           </span>
         ))}
-      </button>
+      </Button>
       {open && (
         <PortaledDropdown
           anchorRef={triggerRef}
@@ -832,7 +885,6 @@ function FactorSelect({
   groupPath: Path;
   operandIndex: number;
 }) {
-  const { t } = useTranslation();
   const {
     readonly,
     factorList,
@@ -878,17 +930,15 @@ function FactorSelect({
         });
       }}
     >
-      <SelectTrigger className="shrink-0">
-        <SelectValue>
-          {(value: string | null) =>
-            value ? factorText(value as Factor, t) : null
-          }
+      <SelectTrigger className="min-w-0 max-w-full flex-1 basis-32">
+        <SelectValue className="truncate">
+          {(value: string | null) => value}
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
         {factorList.map((f) => (
           <SelectItem key={f} value={f}>
-            {factorText(f, t)}
+            {f}
           </SelectItem>
         ))}
       </SelectContent>
@@ -1075,7 +1125,7 @@ function ValueInput({
       return (
         <Input
           type="number"
-          className="max-w-20"
+          className="w-full"
           value={getNumberValue()}
           disabled={readonly}
           onChange={(e) => setNumberValue(Number(e.target.value))}
@@ -1096,7 +1146,7 @@ function ValueInput({
             if (val != null) setBooleanValue(val === "true");
           }}
         >
-          <SelectTrigger className="min-w-24">
+          <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1108,7 +1158,7 @@ function ValueInput({
     }
     return (
       <Input
-        className="min-w-28"
+        className="w-full"
         value={getStringValue()}
         disabled={readonly}
         onChange={(e) => setStringValue(e.target.value)}
@@ -1144,10 +1194,16 @@ function ValueInput({
           else setStringValue(val);
         }}
       >
-        <SelectTrigger className="min-w-28">
+        <SelectTrigger className="w-full">
           <SelectValue placeholder={t("cel.condition.select-value")}>
             {(value: string | null) => {
-              if (!value) return null;
+              if (!value) {
+                return (
+                  <span className="text-control-placeholder">
+                    {t("cel.condition.select-value")}
+                  </span>
+                );
+              }
               const found = optionConfig.options.find((o) => o.value === value);
               return renderOptionValue(value, found?.label);
             }}
@@ -1211,11 +1267,31 @@ function ConditionRow({
   groupPath: Path;
   operandIndex: number;
 }) {
+  const { t } = useTranslation();
   const { readonly } = useExprEditorCtx();
   const doUpdate = useImmutableUpdate(groupPath);
+  const deleteButton = !readonly && (
+    <Button
+      type="button"
+      appearance="secondary"
+      size="sm"
+      aria-label={t("common.delete")}
+      className="shrink-0 text-control-placeholder hover:text-control hover:bg-control-bg"
+      onClick={() =>
+        doUpdate((group) => {
+          group.args.splice(operandIndex, 1);
+        })
+      }
+    >
+      <Trash2 className="size-4" />
+    </Button>
+  );
+  const valueInput = (
+    <ValueInput expr={expr} groupPath={groupPath} operandIndex={operandIndex} />
+  );
 
   return (
-    <div className="w-full flex items-center gap-x-1">
+    <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
       <FactorSelect
         expr={expr}
         groupPath={groupPath}
@@ -1226,26 +1302,10 @@ function ConditionRow({
         groupPath={groupPath}
         operandIndex={operandIndex}
       />
-      <div className="flex-1 min-w-0">
-        <ValueInput
-          expr={expr}
-          groupPath={groupPath}
-          operandIndex={operandIndex}
-        />
+      <div className="flex min-w-0 flex-1 basis-48 items-center gap-2">
+        <div className="min-w-0 flex-1">{valueInput}</div>
+        {deleteButton}
       </div>
-      {!readonly && (
-        <button
-          type="button"
-          className="shrink-0 size-7 flex items-center justify-center rounded-xs text-control-placeholder hover:text-control hover:bg-control-bg"
-          onClick={() =>
-            doUpdate((group) => {
-              group.args.splice(operandIndex, 1);
-            })
-          }
-        >
-          <Trash2 className="size-3.5" />
-        </button>
-      )}
     </div>
   );
 }
@@ -1267,9 +1327,10 @@ function RawStringEditor({
   const doUpdate = useImmutableUpdate(groupPath);
 
   return (
-    <div className="w-full flex items-start gap-x-1">
-      <textarea
-        className="flex-1 min-h-16 max-h-24 px-2 py-1 text-sm rounded-xs border border-control-border bg-background resize-y disabled:opacity-50"
+    <div className="flex w-full min-w-0 items-start gap-x-1">
+      <Textarea
+        size="xs"
+        className="min-w-0 flex-1 min-h-16 max-h-24 px-2 py-1 text-sm rounded-xs border border-control-border bg-background resize-y disabled:opacity-50"
         placeholder="Enter raw CEL expression"
         value={expr.content}
         disabled={readonly}
@@ -1283,9 +1344,11 @@ function RawStringEditor({
         }}
       />
       {!readonly && (
-        <button
+        <Button
           type="button"
-          className="shrink-0 size-7 flex items-center justify-center rounded-xs text-control-placeholder hover:text-control hover:bg-control-bg"
+          appearance="secondary"
+          size="sm"
+          className="shrink-0 text-control-placeholder hover:text-control hover:bg-control-bg"
           onClick={() =>
             doUpdate((group) => {
               group.args.splice(operandIndex, 1);
@@ -1293,7 +1356,7 @@ function RawStringEditor({
           }
         >
           <Trash2 className="size-3.5" />
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -1320,6 +1383,7 @@ function ConditionGroup({
     factorList,
     enableRawExpression,
     factorOperatorOverrideMap: overrideMap,
+    askAgent,
   } = useExprEditorCtx();
 
   // For root, groupPath is []; for nested groups, it includes the operandIndex
@@ -1372,13 +1436,14 @@ function ConditionGroup({
 
   return (
     <div
-      className={`w-full flex flex-col gap-y-2 py-0.5 ${
-        root ? "" : "border rounded-xs bg-control-bg"
-      }`}
+      className={cn(
+        "flex w-full min-w-0 flex-col gap-y-2 py-0.5",
+        !root && "border rounded-xs bg-control-bg"
+      )}
     >
       {!root && (
         <div className="pl-2.5 pr-1 text-control-light flex items-center">
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             {args.length > 0 ? (
               <>
                 {operator === "_||_" && (
@@ -1398,9 +1463,11 @@ function ConditionGroup({
           </div>
           {!readonly && (
             <div className="flex items-center justify-end">
-              <button
+              <Button
                 type="button"
-                className="size-[22px] flex items-center justify-center rounded-xs hover:bg-control-bg"
+                appearance="secondary"
+                size="xs"
+                className="hover:bg-control-bg"
                 onClick={() =>
                   parentDoUpdate((group) => {
                     group.args.splice(operandIndex!, 1);
@@ -1408,7 +1475,7 @@ function ConditionGroup({
                 }
               >
                 <Trash2 className="size-3.5" />
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -1423,42 +1490,47 @@ function ConditionGroup({
       {args.map((operand, i) => (
         <div
           key={i}
-          className={`flex items-start gap-x-1 w-full ${root ? "" : "px-1"}`}
+          className={cn(
+            "flex w-full min-w-0 flex-col items-start gap-2",
+            !root && "px-1"
+          )}
         >
-          <div className="w-14 shrink-0">
-            {i === 0 ? (
-              <div className="pl-1.5 h-8 flex items-center text-control text-sm">
-                Where
-              </div>
-            ) : i === 1 ? (
-              <Select
-                value={operator}
-                disabled={readonly}
-                onValueChange={(val) => {
-                  doUpdate((group) => {
-                    group.operator = val as LogicalOperator;
-                  });
-                }}
-              >
-                <SelectTrigger size="sm" className="shrink-0">
-                  <SelectValue>
-                    {(value: string | null) =>
-                      value ? logicalLabel(value) : null
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_&&_">{logicalLabel("_&&_")}</SelectItem>
-                  <SelectItem value="_||_">{logicalLabel("_||_")}</SelectItem>
-                </SelectContent>
-              </Select>
-            ) : (
-              <div className="pl-2 h-8 flex items-center text-control text-sm lowercase">
-                {logicalLabel(operator)}
-              </div>
-            )}
-          </div>
-          <div className="flex-1 flex flex-col gap-y-1 min-w-0">
+          {(!root || i > 0) && (
+            <div className="w-14 shrink-0">
+              {i === 0 ? (
+                <div className="pl-1.5 h-8 flex items-center text-control text-sm">
+                  Where
+                </div>
+              ) : i === 1 ? (
+                <Select
+                  value={operator}
+                  disabled={readonly}
+                  onValueChange={(val) => {
+                    doUpdate((group) => {
+                      group.operator = val as LogicalOperator;
+                    });
+                  }}
+                >
+                  <SelectTrigger size="sm" className="shrink-0">
+                    <SelectValue>
+                      {(value: string | null) =>
+                        value ? logicalLabel(value) : null
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="_&&_">{logicalLabel("_&&_")}</SelectItem>
+                    <SelectItem value="_||_">{logicalLabel("_||_")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="pl-2 h-8 flex items-center text-control text-sm lowercase">
+                  {logicalLabel(operator)}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex w-full min-w-0 flex-1 flex-col gap-y-1">
             {isConditionGroupExpr(operand) && (
               <ConditionGroup
                 key={i}
@@ -1485,43 +1557,51 @@ function ConditionGroup({
         </div>
       ))}
 
-      {!root && (
-        <div className="pl-1.5 pb-1 flex gap-x-1">
-          <button
+      {!root && !readonly && (
+        <div className="flex flex-wrap gap-2 pl-1.5 pb-1">
+          <Button
             type="button"
-            className="inline-flex items-center gap-1 text-sm text-control-light px-1.5 py-0.5 rounded-xs hover:bg-control-bg disabled:opacity-50"
+            appearance="secondary"
+            size="md"
+            className="h-auto gap-1 px-1.5 py-0.5 text-sm text-control-light hover:bg-control-bg"
             disabled={readonly}
             onClick={addCondition}
           >
             <Plus className="size-4" />
             {t("cel.condition.add")}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="inline-flex items-center gap-1 text-sm text-control-light px-1.5 py-0.5 rounded-xs hover:bg-control-bg disabled:opacity-50"
+            appearance="secondary"
+            size="md"
+            className="h-auto gap-1 px-1.5 py-0.5 text-sm text-control-light hover:bg-control-bg"
             disabled={readonly}
             onClick={addRawString}
           >
             <Plus className="size-4" />
             {t("cel.condition.add-raw-expression")}
-          </button>
+          </Button>
         </div>
       )}
 
-      {root && (
-        <div className="flex gap-x-1">
-          <button
+      {root && !readonly && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
             type="button"
-            className="inline-flex items-center gap-1 text-sm px-1.5 py-0.5 rounded-xs hover:bg-control-bg disabled:opacity-50"
+            appearance="secondary"
+            size="md"
+            className="h-auto gap-1 px-1.5 py-0.5 text-sm hover:bg-control-bg"
             disabled={readonly}
             onClick={addCondition}
           >
             <Plus className="size-4" />
             {t("cel.condition.add")}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className="inline-flex items-center gap-1 text-sm px-1.5 py-0.5 rounded-xs hover:bg-control-bg disabled:opacity-50"
+            appearance="secondary"
+            size="md"
+            className="h-auto gap-1 px-1.5 py-0.5 text-sm hover:bg-control-bg"
             disabled={readonly}
             onClick={addConditionGroup}
           >
@@ -1530,18 +1610,21 @@ function ConditionGroup({
             <Tooltip content={t("cel.condition.group.tooltip")}>
               <HelpCircle className="ml-1 size-3 text-control-placeholder" />
             </Tooltip>
-          </button>
+          </Button>
           {enableRawExpression && (
-            <button
+            <Button
               type="button"
-              className="inline-flex items-center gap-1 text-sm px-1.5 py-0.5 rounded-xs hover:bg-control-bg disabled:opacity-50"
+              appearance="secondary"
+              size="md"
+              className="h-auto gap-1 px-1.5 py-0.5 text-sm hover:bg-control-bg"
               disabled={readonly}
               onClick={addRawString}
             >
               <Plus className="size-4" />
               {t("cel.condition.add-raw-expression")}
-            </button>
+            </Button>
           )}
+          <AgentExpressionHelpButton onClick={askAgent} />
         </div>
       )}
     </div>
@@ -1555,6 +1638,7 @@ function ConditionGroup({
 export interface ExprEditorProps {
   expr: ConditionGroupExpr;
   readonly?: boolean;
+  bordered?: boolean;
   enableRawExpression?: boolean;
   factorList: Factor[];
   optionConfigMap?: Map<Factor, OptionConfig>;
@@ -1562,15 +1646,162 @@ export interface ExprEditorProps {
   onUpdate: (expr: ConditionGroupExpr) => void;
 }
 
+function buildAgentExpressionPrompt(
+  factorList: Factor[],
+  rawMode: boolean,
+  t: TFunction,
+  overrideMap: Map<Factor, Operator[]> | undefined,
+  allowRaw: boolean
+) {
+  const availableFactors =
+    factorList.length > 0
+      ? factorList.join(", ")
+      : t("cel.agent-help.no-attributes");
+  const mode = rawMode
+    ? t("cel.agent-help.mode-raw")
+    : t("cel.agent-help.mode-selector");
+  return [
+    t("cel.agent-help.starter", { mode, attributes: availableFactors }),
+    t("cel.agent-help.selector-instructions", {
+      capabilities: buildSelectorCapabilities(factorList, overrideMap),
+      allowRaw,
+    }),
+  ].join("\n\n");
+}
+
+function AgentExpressionHelpButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
+  const label = t("cel.agent-help.ask-tooltip", {
+    defaultValue: "Ask Agent to help build this expression",
+  });
+
+  return (
+    <Tooltip content={label}>
+      <Button
+        type="button"
+        appearance="secondary"
+        size="sm"
+        className="px-1.5 text-accent hover:bg-accent/10"
+        aria-label={label}
+        onClick={onClick}
+      >
+        <Bot className="size-4" aria-hidden="true" />
+      </Button>
+    </Tooltip>
+  );
+}
+
 export function ExprEditor({
   expr,
   readonly = false,
+  bordered = true,
   enableRawExpression = true,
   factorList,
   optionConfigMap = new Map(),
   factorOperatorOverrideMap: overrideMap,
   onUpdate,
 }: ExprEditorProps) {
+  const { t } = useTranslation();
+  const onUpdateRef = useRef(onUpdate);
+  onUpdateRef.current = onUpdate;
+  const selectorConfigRef = useRef({ factorList, overrideMap });
+  selectorConfigRef.current = { factorList, overrideMap };
+  const unregisterExpressionTargetsRef = useRef(new Map<string, () => void>());
+  const editSessionRef = useRef({ readonly });
+
+  // Changing editability revokes registered handoffs and in-flight validations.
+  useLayoutEffect(() => {
+    editSessionRef.current = { readonly };
+    return () => {
+      editSessionRef.current = { readonly: true };
+      for (const unregister of unregisterExpressionTargetsRef.current.values()) {
+        unregister();
+      }
+      unregisterExpressionTargetsRef.current.clear();
+    };
+  }, [readonly]);
+
+  const applyAgentExpression = useCallback(
+    async (expression: string, mode: AgentExpressionDraftMode) => {
+      const editSession = editSessionRef.current;
+      const isEditable = () =>
+        !editSession.readonly && editSessionRef.current === editSession;
+      const isSupportedSelector = (selector: ConditionGroupExpr) => {
+        const config = selectorConfigRef.current;
+        return canRenderAsSelector(
+          selector,
+          config.factorList,
+          config.overrideMap
+        );
+      };
+      if (!isEditable()) return false;
+      try {
+        const [parsed] = await batchConvertCELStringToParsedExpr([expression]);
+        if (!parsed?.exprKind?.case || !isEditable()) return false;
+        if (mode === "raw") {
+          onUpdateRef.current({
+            type: ExprType.ConditionGroup,
+            operator: "_&&_",
+            args: [{ type: ExprType.RawString, content: expression }],
+          });
+        } else {
+          const selector = wrapAsGroup(resolveCELExpr(parsed));
+          if (!isSupportedSelector(selector)) return false;
+          const rebuilt = await buildCELExpr(selector);
+          if (!rebuilt?.exprKind?.case || !isEditable()) return false;
+          const [originalCEL, rebuiltCEL] =
+            await batchConvertParsedExprToCELString([parsed, rebuilt]);
+          if (
+            !originalCEL ||
+            originalCEL !== rebuiltCEL ||
+            !isEditable() ||
+            !isSupportedSelector(selector)
+          ) {
+            return false;
+          }
+          onUpdateRef.current(selector);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
+  const askAgent = useCallback(() => {
+    const editSession = editSessionRef.current;
+    if (editSession.readonly) return;
+    const rawMode = expr.args.length === 1 && isRawStringExpr(expr.args[0]);
+    openAgentWithPrompt(
+      buildAgentExpressionPrompt(
+        factorList,
+        rawMode,
+        t,
+        overrideMap,
+        enableRawExpression
+      ),
+      undefined,
+      (chatId) => {
+        if (editSessionRef.current !== editSession) return;
+        unregisterExpressionTargetsRef.current.get(chatId)?.();
+        unregisterExpressionTargetsRef.current.set(
+          chatId,
+          registerAgentExpressionTarget(chatId, applyAgentExpression, {
+            allowRaw: enableRawExpression,
+          })
+        );
+      }
+    );
+  }, [
+    applyAgentExpression,
+    enableRawExpression,
+    expr,
+    factorList,
+    overrideMap,
+    t,
+  ]);
+
   const ctxValue: ExprEditorContextValue = useMemo(
     () => ({
       readonly,
@@ -1580,6 +1811,7 @@ export function ExprEditor({
       factorOperatorOverrideMap: overrideMap,
       root: expr,
       onUpdate,
+      askAgent,
     }),
     [
       readonly,
@@ -1589,12 +1821,18 @@ export function ExprEditor({
       overrideMap,
       expr,
       onUpdate,
+      askAgent,
     ]
   );
 
   return (
     <ExprEditorContext.Provider value={ctxValue}>
-      <div className="bb-risk-expr-editor text-sm w-full">
+      <div
+        className={cn(
+          "bb-risk-expr-editor w-full min-w-0 text-sm",
+          bordered && "rounded-sm border border-control-border p-3"
+        )}
+      >
         <ConditionGroup expr={expr} root groupPath={[]} />
       </div>
     </ExprEditorContext.Provider>

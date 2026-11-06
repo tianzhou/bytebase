@@ -131,6 +131,13 @@ type QueryContext struct {
 	Option        *v1pb.QueryOption
 	// SkipMasking skips data masking when the query is authorized by an access grant with unmask=true.
 	SkipMasking bool
+	// MaskingEnabled means the results will be masked. Masking finds the columns to mask
+	// from the statement, so a driver must withhold rows the statement does not trace
+	// to columns, such as those a procedure call returns.
+	MaskingEnabled bool
+	// DataSourceType records which data source runs the query; the Oracle private-link guard
+	// exempts the admin one, whose ALL_DB_LINKS the sync recorded.
+	DataSourceType storepb.DataSourceType
 	// The maximum number of bytes for sql results in response body.
 	MaximumSQLResultSize int64
 	Timeout              *durationpb.Duration

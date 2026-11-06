@@ -12,6 +12,7 @@ import { FeatureBadge } from "@/components/FeatureBadge";
 import { Button } from "@/components/ui/button";
 import { ExpirationPicker } from "@/components/ui/expiration-picker";
 import { FeatureModal } from "@/components/ui/feature-modal";
+import { FormControlGroup, FormField } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { StickyActionFooter } from "@/components/ui/sticky-action-footer";
@@ -48,8 +49,13 @@ export function ProjectMaskingExemptionCreatePage({
 }) {
   const { t } = useTranslation();
   const projectsByName = useAppStore((s) => s.projectsByName);
+  const workspaceResourceName = useAppStore((s) => s.workspaceResourceName());
 
   const projectName = `${projectNamePrefix}${projectId}`;
+  const accountParents = useMemo(
+    () => [...new Set([workspaceResourceName, projectName].filter(Boolean))],
+    [workspaceResourceName, projectName]
+  );
   // subscribe to re-render on project cache change
   void projectsByName;
   const project = useProjectByName(projectName);
@@ -268,41 +274,49 @@ export function ProjectMaskingExemptionCreatePage({
           </div>
 
           {/* Reason */}
-          <div className="w-full">
-            <p className="mb-2 text-main">{t("common.reason")}</p>
+          <FormField className="w-full" title={t("common.reason")}>
             <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t("common.description")}
             />
-          </div>
+          </FormField>
 
           {/* Expiration */}
-          <div className="w-full">
-            <p className="mb-2 text-main">{t("common.expiration")}</p>
-            <ExpirationPicker
-              value={expirationTimestamp}
-              onChange={setExpirationTimestamp}
-              minDate={minDatetime}
-            />
-            {!expirationTimestamp && (
-              <span className="textinfolabel">
-                {t("settings.sensitive-data.never-expires")}
-              </span>
-            )}
-          </div>
+          <FormField className="w-full" title={t("common.expiration")}>
+            <FormControlGroup>
+              <ExpirationPicker
+                value={expirationTimestamp}
+                onChange={setExpirationTimestamp}
+                minDate={minDatetime}
+              />
+              {!expirationTimestamp && (
+                <span className="textinfolabel">
+                  {t("settings.sensitive-data.never-expires")}
+                </span>
+              )}
+            </FormControlGroup>
+          </FormField>
 
           {/* Members */}
-          <div className="w-full flex flex-col gap-y-2">
-            <div className="flex text-main items-center gap-x-1">
-              {t("settings.members.select-account", { count: 2 })}
-              <span className="text-error">*</span>
-              <Tooltip content={t("settings.members.select-account-hint")}>
-                <CircleHelp className="size-4 textinfolabel" />
-              </Tooltip>
-            </div>
-            <AccountMultiSelect value={memberList} onChange={setMemberList} />
-          </div>
+          <FormField
+            className="w-full"
+            title={
+              <span className="flex items-center gap-x-1">
+                {t("settings.members.select-account", { count: 2 })}
+                <span className="text-error">*</span>
+                <Tooltip content={t("settings.members.select-account-hint")}>
+                  <CircleHelp className="size-4 textinfolabel" />
+                </Tooltip>
+              </span>
+            }
+          >
+            <AccountMultiSelect
+              value={memberList}
+              onChange={setMemberList}
+              accountParents={accountParents}
+            />
+          </FormField>
         </div>
       </div>
 

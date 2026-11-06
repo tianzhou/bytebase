@@ -8,10 +8,10 @@ import (
 	"github.com/bytebase/omni/mysql/ast"
 	"github.com/pkg/errors"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -20,8 +20,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_NAMING_TABLE, &NamingTableConventionAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_NAMING_TABLE, &NamingTableConventionAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_NAMING_TABLE, &NamingTableConventionAdvisor{})
 }
 
 // NamingTableConventionAdvisor is the advisor checking for table naming convention.
@@ -102,7 +100,7 @@ func (r *namingTableOmniRule) handleTableName(tableName string, lineNumber int32
 			Code:          code.NamingTableConventionMismatch.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("`%s` mismatches table naming convention, naming format should be %q", tableName, r.format),
-			StartPosition: common.ConvertANTLRLineToPosition(absoluteLine),
+			StartPosition: base.ConvertANTLRLineToPosition(absoluteLine),
 		})
 	}
 	if r.maxLength > 0 && len(tableName) > r.maxLength {
@@ -111,7 +109,7 @@ func (r *namingTableOmniRule) handleTableName(tableName string, lineNumber int32
 			Code:          code.NamingTableConventionMismatch.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("`%s` mismatches table naming convention, its length should be within %d characters", tableName, r.maxLength),
-			StartPosition: common.ConvertANTLRLineToPosition(absoluteLine),
+			StartPosition: base.ConvertANTLRLineToPosition(absoluteLine),
 		})
 	}
 }

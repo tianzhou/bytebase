@@ -12,7 +12,10 @@ const session = {
   isSaaSMode: false,
   disallowSignup: false,
   enableOnboarding: false,
-  currentUser: undefined as { mfaEnabled: boolean } | undefined,
+  currentUser: undefined as { mfaEnabled: boolean; name?: string } | undefined,
+  workspaceAdmin: false,
+  workspaceSetupFinished: undefined as boolean | undefined,
+  workspaceSetupDraft: false,
   // Mirrors the store default: PIPELINE until the workspace profile loads.
   databaseChangeMode: DatabaseChangeMode.PIPELINE,
 };
@@ -38,6 +41,8 @@ vi.mock("@/stores/app", () => ({
       hasFeature: () => session.hasTwoFa,
       isSaaSMode: () => session.isSaaSMode,
       enableOnboarding: () => session.enableOnboarding,
+      getWorkspaceRolesByName: () =>
+        new Set(session.workspaceAdmin ? ["roles/workspaceAdmin"] : []),
       fetchServerInfo: workspaceSetup.fetchServerInfo,
       fetchWorkspaceIamPolicy: workspaceSetup.fetchWorkspaceIamPolicy,
       authenticationInfo: {
@@ -57,6 +62,14 @@ vi.mock("@/modules/ai/store", () => ({
   useConversationStore: { getState: () => ({ reset: vi.fn() }) },
 }));
 
+vi.mock("@/modules/workspace-setup-guide/setup", () => ({
+  readWorkspaceSetupFinished: () => session.workspaceSetupFinished,
+}));
+
+vi.mock("@/modules/workspace-setup-guide/selection", () => ({
+  hasWorkspaceSetupDraft: () => session.workspaceSetupDraft,
+}));
+
 import { buildSigninRedirectQuery, rootGuard } from "./guard";
 import {
   ACCOUNT_ROUTE,
@@ -64,6 +77,7 @@ import {
   AUTH_2FA_SETUP_MODULE,
   AUTH_OAUTH_CALLBACK_MODULE,
   AUTH_PASSWORD_RESET_MODULE,
+  AUTH_SETUP_MODULE,
   AUTH_SIGNIN_MODULE,
   AUTH_SIGNUP_MODULE,
   PROJECT_V1_ROUTE_DASHBOARD,
@@ -85,6 +99,9 @@ beforeEach(() => {
   session.disallowSignup = false;
   session.enableOnboarding = false;
   session.currentUser = undefined;
+  session.workspaceAdmin = false;
+  session.workspaceSetupFinished = undefined;
+  session.workspaceSetupDraft = false;
   session.databaseChangeMode = DatabaseChangeMode.PIPELINE;
   vi.clearAllMocks();
   workspaceSetup.fetchServerInfo.mockResolvedValue({});
@@ -94,6 +111,7 @@ beforeEach(() => {
       [AUTH_SIGNIN_MODULE, "/auth"],
       [AUTH_2FA_SETUP_MODULE, "/auth/2fa-setup"],
       [AUTH_PASSWORD_RESET_MODULE, "/auth/password-reset"],
+      [AUTH_SETUP_MODULE, "/auth/setup"],
       [WORKSPACE_ROUTE_404, "/404"],
       [SQL_EDITOR_HOME_MODULE, "/sql-editor"],
       [WORKSPACE_ROUTE_LANDING, "/landing"],
@@ -213,6 +231,39 @@ describe("rootGuard", () => {
     session.enableOnboarding = true;
 
     expect(await runWorkspaceSetupLoader()).toBeNull();
+  });
+
+  test("ignores the SaaS setup marker for self-host onboarding", async () => {
+    session.isLoggedIn = true;
+    session.enableOnboarding = true;
+    session.workspaceSetupFinished = true;
+
+    expect(await runWorkspaceSetupLoader()).toBeNull();
+  });
+
+  test("lets a workspace admin back into the setup draft this browser holds once others have joined", async () => {
+    session.isLoggedIn = true;
+    session.currentUser = { mfaEnabled: false, name: "users/ed@example.com" };
+    session.workspaceAdmin = true;
+    session.workspaceSetupDraft = true;
+
+    expect(await runWorkspaceSetupLoader()).toBeNull();
+  });
+
+  test("keeps a workspace admin with no setup draft out once others have joined", async () => {
+    session.isLoggedIn = true;
+    session.currentUser = { mfaEnabled: false, name: "users/ed@example.com" };
+    session.workspaceAdmin = true;
+
+    expect(location(await runWorkspaceSetupLoader())).toBe("/landing");
+  });
+
+  test("keeps an account that is not a workspace admin out of a setup draft", async () => {
+    session.isLoggedIn = true;
+    session.currentUser = { mfaEnabled: false, name: "users/ed@example.com" };
+    session.workspaceSetupDraft = true;
+
+    expect(location(await runWorkspaceSetupLoader())).toBe("/landing");
   });
 
   test("redirects an ineligible user away from workspace setup", async () => {
@@ -378,6 +429,47 @@ describe("rootGuard", () => {
   test("allows an authenticated user on an allowed route", () => {
     session.isLoggedIn = true;
     expect(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1")).toBeNull();
+  });
+
+  test("redirects unfinished SaaS setup back to the setup route", () => {
+    session.isLoggedIn = true;
+    session.isSaaSMode = true;
+    session.workspaceSetupFinished = false;
+
+    expect(location(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1"))).toBe(
+      "/auth/setup"
+    );
+  });
+
+  test("does not gate legacy or finished SaaS workspaces", () => {
+    session.isLoggedIn = true;
+    session.isSaaSMode = true;
+
+    expect(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1")).toBeNull();
+    session.workspaceSetupFinished = true;
+    expect(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1")).toBeNull();
+  });
+
+  test("does not apply the local setup gate to self-host", () => {
+    session.isLoggedIn = true;
+    session.workspaceSetupFinished = false;
+
+    expect(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1")).toBeNull();
+  });
+
+  test("password reset takes priority over unfinished SaaS setup", () => {
+    session.isLoggedIn = true;
+    session.isSaaSMode = true;
+    session.requireResetPassword = true;
+    session.workspaceSetupFinished = false;
+
+    expect(location(run(PROJECT_V1_ROUTE_DASHBOARD, "/projects/p1"))).toBe(
+      "/auth/password-reset"
+    );
+  });
+
+  test("revalidates the root guard on client-side navigation", () => {
+    expect(routes[0].shouldRevalidate?.({} as never)).toBe(true);
   });
 
   // Personal account routes live outside the /setting tree, so they need

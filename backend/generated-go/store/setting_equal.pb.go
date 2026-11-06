@@ -9,6 +9,38 @@ import (
 	proto "google.golang.org/protobuf/proto"
 )
 
+func (x *ExportSetting) Equal(y *ExportSetting) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if !x.Sharepoint.Equal(y.Sharepoint) {
+		return false
+	}
+	return true
+}
+
+func (x *SharePointSetting) Equal(y *SharePointSetting) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.TenantId != y.TenantId {
+		return false
+	}
+	if x.ClientId != y.ClientId {
+		return false
+	}
+	if x.ClientSecret != y.ClientSecret {
+		return false
+	}
+	return true
+}
+
 func (x *SystemSetting) Equal(y *SystemSetting) bool {
 	if x == y {
 		return true
@@ -187,9 +219,6 @@ func (x *MCPSetting) Equal(y *MCPSetting) bool {
 		return x == nil && y == nil
 	}
 	if x.Capability != y.Capability {
-		return false
-	}
-	if x.IgnoreMaskingExemptions != y.IgnoreMaskingExemptions {
 		return false
 	}
 	return true
@@ -680,6 +709,9 @@ func (x *AISetting) Equal(y *AISetting) bool {
 		return false
 	}
 	if x.Version != y.Version {
+		return false
+	}
+	if x.SqlReviewEnabled != y.SqlReviewEnabled {
 		return false
 	}
 	return true

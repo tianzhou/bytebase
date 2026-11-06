@@ -51,7 +51,7 @@ var errSendBudgetExhausted = errors.New("too many sign-in codes requested, pleas
 
 // RequestPasswordReset sends a password reset email. Always returns success to avoid leaking email existence.
 func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Request[v1pb.RequestPasswordResetRequest]) (*connect.Response[emptypb.Empty], error) {
-	email := normalizeEmail(req.Msg.Email)
+	email := common.NormalizeEmail(req.Msg.Email)
 	if email == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("email is required"))
 	}
@@ -82,7 +82,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, req *connect.Req
 // ResetPassword verifies the 6-digit code and updates the user's password.
 // Also revokes all refresh tokens to force re-login.
 func (s *AuthService) ResetPassword(ctx context.Context, req *connect.Request[v1pb.ResetPasswordRequest]) (*connect.Response[emptypb.Empty], error) {
-	email := normalizeEmail(req.Msg.Email)
+	email := common.NormalizeEmail(req.Msg.Email)
 	if email == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("email is required"))
 	}
@@ -112,7 +112,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *connect.Request[v1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to resolve workspace"))
 	}
-	common.SetAuditWorkspaceID(ctx, workspaceID)
+	setAuditWorkspaceID(ctx, workspaceID)
 	restriction, err := getAccountRestriction(ctx, s.store, s.licenseService, s.profile.SaaS, workspaceID)
 	if err != nil {
 		return nil, err
@@ -148,7 +148,7 @@ func (s *AuthService) ResetPassword(ctx context.Context, req *connect.Request[v1
 // (no email enumeration). Rate limit: 60-sec resend cooldown enforced atomically
 // via the store — effective cap ≈ 60 sends/hour/email.
 func (s *AuthService) SendEmailLoginCode(ctx context.Context, req *connect.Request[v1pb.SendEmailLoginCodeRequest]) (*connect.Response[emptypb.Empty], error) {
-	email := normalizeEmail(req.Msg.Email)
+	email := common.NormalizeEmail(req.Msg.Email)
 	if email == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("email is required"))
 	}
@@ -215,7 +215,7 @@ func (s *AuthService) authenticateEmailCodeLogin(ctx context.Context, request *v
 	if request.Password != "" || request.GetIdpName() != "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("email_code is mutually exclusive with password and idp_name"))
 	}
-	email := normalizeEmail(request.Email)
+	email := common.NormalizeEmail(request.Email)
 	if email == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.Errorf("email is required"))
 	}
@@ -329,7 +329,7 @@ func (s *AuthService) parseAndSetAuditWorkspace(ctx context.Context, email strin
 		})
 		if accountErr == nil && account != nil && account.Type == storepb.PrincipalType_END_USER && !account.MemberDeleted &&
 			workspaceErr == nil && workspace != nil {
-			common.SetAuditWorkspaceID(ctx, workspace.ResourceID)
+			setAuditWorkspaceID(ctx, workspace.ResourceID)
 		}
 	}
 	return workspaceID, nil

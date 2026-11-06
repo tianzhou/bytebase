@@ -131,7 +131,7 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 			return nil, err
 		}
 		s.stopper = append(s.stopper, stopper)
-		pgURL = fmt.Sprintf("host=%s port=%d user=bb database=bb", common.GetPostgresSocketDir(), profile.DatastorePort)
+		pgURL = fmt.Sprintf("host=%s port=%d user=bb database=bb", postgres.GetPostgresSocketDir(), profile.DatastorePort)
 	} else {
 		pgURL = profile.PgURL
 	}
@@ -241,12 +241,16 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 	s.taskScheduler.Register(storepb.Task_DATABASE_CREATE, taskrun.NewDatabaseCreateExecutor(stores, s.dbFactory, s.schemaSyncer))
 	s.taskScheduler.Register(storepb.Task_DATABASE_MIGRATE, taskrun.NewDatabaseMigrateExecutor(stores, s.dbFactory, s.bus, s.schemaSyncer, profile))
 
-	combinedExecutor := plancheck.NewCombinedExecutor(stores, sheetManager, s.dbFactory)
+	var ruleReviewCovers func(storepb.Engine) bool
+	if profile.SQLReviewV2 {
+		ruleReviewCovers = reviewrun.ReviewsEngine
+	}
+	combinedExecutor := plancheck.NewCombinedExecutor(stores, sheetManager, s.dbFactory, ruleReviewCovers)
 	s.planCheckScheduler = plancheck.NewScheduler(stores, s.bus, combinedExecutor, s.licenseService, productMetrics)
 
 	s.reviewRunScheduler = reviewrun.NewScheduler(stores, s.bus, profile, s.licenseService, productMetrics)
-	s.reviewRunScheduler.Register(store.ReviewRunTypeRule, reviewrun.NewRuleExecutor(stores, sheetManager, s.dbFactory))
-	s.reviewRunScheduler.Register(store.ReviewRunTypeGuideline, reviewrun.NewGuidelineExecutor())
+	s.reviewRunScheduler.Register(store.ReviewRunTypeRule, reviewrun.NewRuleExecutor(stores))
+	s.reviewRunScheduler.Register(store.ReviewRunTypeAI, reviewrun.NewAIReviewExecutor(stores))
 	s.notifyListener = notifylistener.NewListener(stores.GetDB(), s.bus)
 
 	// Data cleaner

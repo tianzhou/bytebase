@@ -9,6 +9,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	metadatapb "github.com/bytebase/omni/metadata"
@@ -20,7 +21,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
@@ -69,6 +69,10 @@ func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionC
 			Password:  config.Password,
 			TLSConfig: tlscfg,
 			DB:        db,
+			// Pipelines run on the main pool. A driver is opened per request
+			// and runs a single pipeline, so go-redis's dedicated pipeline pool
+			// would only add a connection and its handshake to every request.
+			PipelinePoolSize: -1,
 		}
 		if config.DataSource.GetSshHost() != "" {
 			sshClient, err := util.GetSSHClient(config.DataSource)
@@ -103,6 +107,7 @@ func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionC
 			SentinelAddrs:    sentinelAddrs,
 			DB:               db,
 			TLSConfig:        tlscfg,
+			PipelinePoolSize: -1,
 		}
 		if config.DataSource.GetSshHost() != "" {
 			sshClient, err := util.GetSSHClient(config.DataSource)
@@ -129,10 +134,17 @@ func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionC
 			addrs = append(addrs, fmt.Sprintf("%s:%s", addr.Host, addr.Port))
 		}
 		options := &redis.ClusterOptions{
-			Addrs:     addrs,
-			Username:  config.DataSource.Username,
-			Password:  config.Password,
-			TLSConfig: tlscfg,
+			Addrs:            addrs,
+			Username:         config.DataSource.Username,
+			Password:         config.Password,
+			TLSConfig:        tlscfg,
+			PipelinePoolSize: -1,
+			// go-redis 9.22.0 raised its own default to a minute. A node that
+			// refuses connections does not trigger a reload, so a failover is
+			// only noticed by this periodic one, and a driver that outlives it
+			// keeps routing to the master it has lost.
+			// https://github.com/redis/go-redis/issues/3979
+			ClusterStateReloadInterval: 10 * time.Second,
 		}
 		if config.DataSource.GetSshHost() != "" {
 			sshClient, err := util.GetSSHClient(config.DataSource)
@@ -184,20 +196,12 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 		return 0, errors.New("redis: cannot create database")
 	}
 
-	lines := strings.Split(statement, "\n")
+	inputs, _, err := splitCommands(statement)
+	if err != nil {
+		return 0, err
+	}
 	if _, err := d.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
-		for _, line := range lines {
-			fields, err := shlex.Split(line)
-			if err != nil {
-				return errors.Wrapf(err, "failed to split command %s", line)
-			}
-			if len(fields) == 0 {
-				continue
-			}
-			var input []any
-			for _, v := range fields {
-				input = append(input, v)
-			}
+		for _, input := range inputs {
 			_ = p.Do(ctx, input...)
 		}
 		return nil
@@ -206,6 +210,31 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	}
 
 	return 0, nil
+}
+
+// splitCommands reads one command per line, skipping lines that hold none, and
+// returns each command's arguments beside the line it came from. A result is
+// reported per command rather than per line, so the two are built together to
+// keep them aligned.
+func splitCommands(statement string) ([][]any, []string, error) {
+	var inputs [][]any
+	var commands []string
+	for _, line := range strings.Split(statement, "\n") {
+		fields, err := shlex.Split(line)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "failed to split command %s", line)
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		var input []any
+		for _, v := range fields {
+			input = append(input, v)
+		}
+		inputs = append(inputs, input)
+		commands = append(commands, line)
+	}
+	return inputs, commands, nil
 }
 
 // Dump and restore
@@ -222,21 +251,9 @@ func (d *Driver) QueryConn(ctx context.Context, _ *sql.Conn, statement string, q
 	}
 
 	startTime := time.Now()
-	lines := strings.Split(statement, "\n")
-	var inputs [][]any
-	for _, line := range lines {
-		fields, err := shlex.Split(line)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to split command %s", line)
-		}
-		if len(fields) == 0 {
-			continue
-		}
-		var input []any
-		for _, v := range fields {
-			input = append(input, v)
-		}
-		inputs = append(inputs, input)
+	inputs, commands, err := splitCommands(statement)
+	if err != nil {
+		return nil, err
 	}
 
 	results := make([]*v1pb.QueryResult, len(inputs))
@@ -244,7 +261,7 @@ func (d *Driver) QueryConn(ctx context.Context, _ *sql.Conn, statement string, q
 		results[i] = &v1pb.QueryResult{
 			ColumnNames:     []string{"#", "Value"},
 			ColumnTypeNames: []string{"INT", "TEXT"},
-			Statement:       lines[i],
+			Statement:       commands[i],
 		}
 	}
 
@@ -275,20 +292,10 @@ func (d *Driver) QueryConn(ctx context.Context, _ *sql.Conn, statement string, q
 			return nil, errors.Errorf("expect *redis.ClusterClient, but get %T", d.rdb)
 		}
 
+		// ForEachShard runs the callbacks concurrently and returns once they
+		// have all finished, so the mutex is what orders the appends.
+		var mu sync.Mutex
 		var cmdss [][]*redis.Cmd
-		cmdsChan := make(chan []*redis.Cmd)
-		stopChan := make(chan struct{})
-		go func() {
-			for {
-				select {
-				case cmds := <-cmdsChan:
-					cmdss = append(cmdss, cmds)
-				case <-stopChan:
-					return
-				}
-			}
-		}()
-
 		err := cluster.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 			var cmds []*redis.Cmd
 			_, _ = client.Pipelined(ctx, func(p redis.Pipeliner) error {
@@ -298,10 +305,11 @@ func (d *Driver) QueryConn(ctx context.Context, _ *sql.Conn, statement string, q
 				}
 				return nil
 			})
-			cmdsChan <- cmds
+			mu.Lock()
+			defer mu.Unlock()
+			cmdss = append(cmdss, cmds)
 			return nil
 		})
-		close(stopChan)
 		if err != nil && err != redis.Nil {
 			return nil, errors.Wrapf(err, "failed to query for each shard")
 		}
@@ -347,7 +355,7 @@ func setQueryResultRows(result *v1pb.QueryResult, cmd *redis.Cmd, limit int64) {
 			result.Rows = append(result.Rows, getResultRow(i+1, v))
 			n := len(result.Rows)
 			if (n&(n-1) == 0) && int64(proto.Size(result)) > limit {
-				result.Error = common.FormatMaximumSQLResultSizeMessage(limit)
+				result.Error = util.FormatMaximumSQLResultSizeMessage(limit)
 				return
 			}
 		}

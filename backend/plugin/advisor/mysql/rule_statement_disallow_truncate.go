@@ -6,18 +6,16 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var _ advisor.Advisor = (*StatementDisallowTruncateAdvisor)(nil)
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_STATEMENT_DISALLOW_TRUNCATE, &StatementDisallowTruncateAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_STATEMENT_DISALLOW_TRUNCATE, &StatementDisallowTruncateAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_STATEMENT_DISALLOW_TRUNCATE, &StatementDisallowTruncateAdvisor{})
 }
 
 type StatementDisallowTruncateAdvisor struct{}
@@ -74,7 +72,7 @@ func (r *statementDisallowTruncateOmniRule) emitTable(tbl *ast.TableRef, loc ast
 		Code:          code.StatementDisallowTruncate.Int32(),
 		Title:         r.Title,
 		Content:       fmt.Sprintf(`TRUNCATE TABLE %q is not allowed: TRUNCATE auto-commits (breaking surrounding transactional work), bypasses triggers, and resets AUTO_INCREMENT. Prior-backup treats this as DDL and does not produce row-level snapshots.`, qualifyMySQLName(tbl)),
-		StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(loc))),
+		StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(loc))),
 	})
 }
 
@@ -84,7 +82,7 @@ func (r *statementDisallowTruncateOmniRule) emitPartition(tbl *ast.TableRef, par
 		Code:          code.StatementDisallowTruncate.Int32(),
 		Title:         r.Title,
 		Content:       fmt.Sprintf(`ALTER TABLE %q TRUNCATE PARTITION %q is not allowed: partition truncate shares the auto-commit and prior-backup gaps of TRUNCATE TABLE on MySQL.`, qualifyMySQLName(tbl), partition),
-		StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(loc))),
+		StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(loc))),
 	})
 }
 

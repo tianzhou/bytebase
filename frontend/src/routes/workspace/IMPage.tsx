@@ -1,13 +1,7 @@
 import { clone, create } from "@bufbuild/protobuf";
 import { FieldMaskSchema } from "@bufbuild/protobuf/wkt";
 import { Plus, Trash2 } from "lucide-react";
-import {
-  type ChangeEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 // Static image imports — Vite cannot resolve dynamic src in <img>
 import dingtalkIcon from "@/assets/im/dingtalk.png";
@@ -17,9 +11,9 @@ import teamsIcon from "@/assets/im/teams.svg";
 import wecomIcon from "@/assets/im/wecom.png";
 import { LearnMoreLink } from "@/components/LearnMoreLink";
 import { PermissionGuard } from "@/components/PermissionGuard";
+import { SecretInput } from "@/components/SecretInput";
 import { Button } from "@/components/ui/button";
 import { FormField, FormFieldGroup } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -256,6 +250,9 @@ export function IMPage() {
     []
   );
   const [localValues, setLocalValues] = useState<Record<string, string>[]>([]);
+  const [secretResetKeys, setSecretResetKeys] = useState<
+    Record<string, number>
+  >({});
   const [pendingSaveType, setPendingSaveType] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
 
@@ -332,6 +329,10 @@ export function IMPage() {
     if (!original.isConfigured) {
       setLocalSettings((prev) => prev.filter((_, i) => i !== index));
     } else {
+      setSecretResetKeys((prev) => ({
+        ...prev,
+        [original.type]: (prev[original.type] ?? 0) + 1,
+      }));
       setLocalValues((prev) => {
         const next = [...prev];
         next[index] = { ...original.values };
@@ -455,16 +456,17 @@ export function IMPage() {
             </Select>
           )}
 
-          <FormFieldGroup className="mt-4 gap-y-4">
+          <FormFieldGroup density="compact" className="mt-4">
             {item.fields.map((field) => (
               <FormField key={field.key} title={<>{field.label}</>}>
-                <Input
+                <SecretInput
+                  aria-label={field.label}
                   disabled={!allowEdit}
+                  isCreating={!item.isConfigured}
+                  resetKey={secretResetKeys[item.type] ?? 0}
                   placeholder={t("common.sensitive-placeholder")}
                   value={localValues[i]?.[field.key] ?? ""}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    updateField(i, field.key, e.target.value)
-                  }
+                  onValueChange={(value) => updateField(i, field.key, value)}
                 />
               </FormField>
             ))}
@@ -529,10 +531,7 @@ function Description() {
       description={
         <>
           {t("settings.im-integration.description")}{" "}
-          <LearnMoreLink
-            href="https://docs.bytebase.com/change-database/webhook?source=console"
-            className="text-accent"
-          />
+          <LearnMoreLink href="https://docs.bytebase.com/change-database/webhook?source=console" />
         </>
       }
     />

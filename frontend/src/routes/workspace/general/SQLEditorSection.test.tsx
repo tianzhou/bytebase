@@ -1,4 +1,4 @@
-import { act, createRef, type ReactElement } from "react";
+import { act, createRef, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -22,10 +22,10 @@ const mocks = vi.hoisted(() => {
       queryTimeout: undefined as undefined | { seconds: bigint },
     },
     policy: {
-      disableExport: false,
       disableCopyData: false,
       allowAdminDataSource: false,
       maximumResultRows: 0n,
+      disableDownload: false,
     },
     updateWorkspaceProfile: vi.fn(
       async (_params: {
@@ -116,6 +116,35 @@ vi.mock("@/components/PermissionGuard", () => ({
   ),
 }));
 
+vi.mock("@/components/ui/select", () => ({
+  Select: ({
+    children,
+    disabled,
+    onValueChange,
+    value,
+  }: {
+    children: ReactNode;
+    disabled?: boolean;
+    onValueChange?: (value: string) => void;
+    value?: string;
+  }) => (
+    <select
+      data-testid="theme-select"
+      disabled={disabled}
+      onChange={(event) => onValueChange?.(event.target.value)}
+      value={value}
+    >
+      {children}
+    </select>
+  ),
+  SelectContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+  SelectItem: ({ children, value }: { children: ReactNode; value: string }) => (
+    <option value={value}>{children}</option>
+  ),
+  SelectTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
+  SelectValue: () => null,
+}));
+
 // The theme preview/editor import SQLEditorThemeScope etc.; render them as-is.
 
 const storeState = {
@@ -157,7 +186,6 @@ beforeEach(() => {
   mocks.profile.sqlEditorCustomTheme = undefined;
   mocks.profile.sqlResultSize = 0n;
   mocks.profile.queryTimeout = undefined;
-  mocks.policy.disableExport = false;
   mocks.policy.disableCopyData = false;
   mocks.policy.allowAdminDataSource = false;
   mocks.policy.maximumResultRows = 0n;
@@ -171,10 +199,15 @@ afterEach(() => {
   container.remove();
 });
 
-function querySegment(label: string): HTMLElement | undefined {
-  // Segment labels render their text; find the clickable label by text.
-  const labels = Array.from(container.querySelectorAll("label"));
-  return labels.find((l) => l.textContent?.trim() === label);
+function selectTheme(value: string) {
+  const select = container.querySelector<HTMLSelectElement>(
+    '[data-testid="theme-select"]'
+  );
+  expect(select).toBeTruthy();
+  act(() => {
+    select!.value = value;
+    select!.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 }
 
 describe("SQLEditorSection theme", () => {
@@ -186,13 +219,7 @@ describe("SQLEditorSection theme", () => {
 
     expect(ref.current?.isDirty()).toBe(false);
 
-    // Pick the "dark" preset (preset.name === "Dark").
-    const darkSegment = querySegment("Default Dark");
-    expect(darkSegment).toBeTruthy();
-    const radio = darkSegment?.querySelector("input");
-    act(() => {
-      radio?.click();
-    });
+    selectTheme("dark");
 
     expect(ref.current?.isDirty()).toBe(true);
 
@@ -220,11 +247,7 @@ describe("SQLEditorSection theme", () => {
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
 
-    const darkSegment = querySegment("Default Dark");
-    expect(darkSegment).toBeTruthy();
-    act(() => {
-      darkSegment?.querySelector("input")?.click();
-    });
+    selectTheme("dark");
 
     await act(async () => {
       await ref.current?.update();
@@ -239,14 +262,7 @@ describe("SQLEditorSection theme", () => {
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
 
-    const customSegment = querySegment(
-      "settings.general.workspace.sql-editor-theme.custom"
-    );
-    expect(customSegment).toBeTruthy();
-    const radio = customSegment?.querySelector("input");
-    act(() => {
-      radio?.click();
-    });
+    selectTheme("__custom__");
 
     expect(ref.current?.isDirty()).toBe(true);
 
@@ -301,10 +317,7 @@ describe("SQLEditorSection theme", () => {
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
 
-    const darkSegment = querySegment("Default Dark");
-    act(() => {
-      darkSegment?.querySelector("input")?.click();
-    });
+    selectTheme("dark");
     expect(ref.current?.isDirty()).toBe(true);
 
     act(() => {
@@ -320,8 +333,9 @@ describe("SQLEditorSection theme", () => {
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
 
-    const lightSegment = querySegment("Default Light");
-    expect(lightSegment?.querySelector('[data-state="checked"]')).toBeTruthy();
+    expect(
+      container.querySelector<HTMLSelectElement>('[data-testid="theme-select"]')
+    ).toHaveValue("light");
     // The default selection must not register as a pending change.
     expect(ref.current?.isDirty()).toBe(false);
   });
@@ -335,71 +349,126 @@ describe("SQLEditorSection theme", () => {
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
 
-    const group = container.querySelector('[role="radiogroup"]');
-    // SegmentedControl renders radios; when disabled they carry data-disabled.
-    const anyDisabled = container.querySelector("input[data-disabled]");
-    expect(group || anyDisabled).toBeTruthy();
-    expect(anyDisabled).toBeTruthy();
+    expect(
+      container.querySelector<HTMLSelectElement>('[data-testid="theme-select"]')
+    ).toBeDisabled();
   });
 });
 
-// The data-export policy control was reworked from a bare "Enable data
-// export" checkbox (no description) to "Allow data export without approval"
-// + a description naming the access-grant path — customers read the old
-// title as a hard kill switch and never found approval-gated export.
-// These tests lock the retitled key pair and the `checked={!disableExport}`
-// inversion the new title depends on.
-describe("SQLEditorSection data-export policy toggle", () => {
-  function renderSection() {
+describe("SQLEditorSection query data policy toggles", () => {
+  beforeEach(() => {
+    mocks.policy.disableDownload = false;
+  });
+
+  // The theme preview renders switches of its own; keep the settings ones.
+  function settingSwitches(): HTMLElement[] {
+    return Array.from(
+      container.querySelectorAll<HTMLElement>('[role="switch"]')
+    ).filter((control) =>
+      (control.parentElement?.textContent ?? "").startsWith(
+        "settings.general.workspace."
+      )
+    );
+  }
+
+  function settingSwitch(label: string): HTMLElement {
+    const control = settingSwitches().find(
+      (candidate) => candidate.parentElement?.textContent === label
+    );
+    expect(control).toBeTruthy();
+    return control as HTMLElement;
+  }
+
+  const ALLOW_DOWNLOAD = "settings.general.workspace.allow-download.self";
+
+  test("offers a download switch beside the copy and admin data source switches", () => {
+    render(<SQLEditorSection title="SQL Editor" onDirtyChange={() => {}} />);
+
+    expect(
+      settingSwitches().map((control) => control.parentElement?.textContent)
+    ).toEqual([
+      ALLOW_DOWNLOAD,
+      "settings.general.workspace.data-copy",
+      "settings.general.workspace.allow-admin-data-source.self",
+    ]);
+  });
+
+  test("saving a toggle change upserts the remaining policy fields", async () => {
     const ref = createRef<SectionHandle>();
     render(
       <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
     );
-    return ref;
-  }
-
-  function exportCheckbox(): HTMLElement {
-    // The checkbox renders inside the FormField title span, as a sibling of
-    // the label text (SQLEditorSection.tsx) — scope by that span.
-    const span = Array.from(container.querySelectorAll("span")).find((s) =>
-      s.textContent?.includes("settings.general.workspace.data-export.self")
-    );
-    expect(span).toBeTruthy();
-    const box = span?.querySelector<HTMLElement>('[role="checkbox"]');
-    expect(box).toBeTruthy();
-    return box as HTMLElement;
-  }
-
-  test("renders the retitled label with its description", () => {
-    renderSection();
-    expect(container.textContent).toContain(
-      "settings.general.workspace.data-export.self"
-    );
-    expect(container.textContent).toContain(
-      "settings.general.workspace.data-export.description"
-    );
-  });
-
-  test("export allowed without approval (disableExport=false) renders checked", () => {
-    mocks.policy.disableExport = false;
-    renderSection();
-    expect(exportCheckbox().getAttribute("aria-checked")).toBe("true");
-  });
-
-  test("approval-gated export (disableExport=true) renders unchecked", () => {
-    mocks.policy.disableExport = true;
-    renderSection();
-    expect(exportCheckbox().getAttribute("aria-checked")).toBe("false");
-  });
-
-  test("toggling the checkbox marks the section dirty for the Update bar", () => {
-    mocks.policy.disableExport = false;
-    const ref = renderSection();
-    expect(ref.current?.isDirty()).toBe(false);
     act(() => {
-      exportCheckbox().click();
+      settingSwitch("settings.general.workspace.data-copy").click();
     });
     expect(ref.current?.isDirty()).toBe(true);
-    expect(exportCheckbox().getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      await ref.current?.update();
+    });
+
+    expect(mocks.upsertPolicy).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertPolicy.mock.calls[0][0]).toMatchObject({
+      policy: {
+        policy: {
+          case: "queryDataPolicy",
+          value: {
+            disableCopyData: true,
+            disableDownload: false,
+            allowAdminDataSource: false,
+          },
+        },
+      },
+    });
+  });
+
+  test("allows download by default", () => {
+    render(<SQLEditorSection title="SQL Editor" onDirtyChange={() => {}} />);
+
+    expect(settingSwitch(ALLOW_DOWNLOAD)).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+  });
+
+  test("turning off download saves disable_download", async () => {
+    const ref = createRef<SectionHandle>();
+    render(
+      <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
+    );
+    act(() => {
+      settingSwitch(ALLOW_DOWNLOAD).click();
+    });
+    expect(settingSwitch(ALLOW_DOWNLOAD)).toHaveAttribute(
+      "aria-checked",
+      "false"
+    );
+    expect(ref.current?.isDirty()).toBe(true);
+
+    await act(async () => {
+      await ref.current?.update();
+    });
+
+    expect(mocks.upsertPolicy.mock.calls[0][0]).toMatchObject({
+      policy: {
+        policy: {
+          value: { disableDownload: true },
+        },
+      },
+    });
+  });
+
+  test("reads the stored setting", () => {
+    mocks.policy.disableDownload = true;
+    const ref = createRef<SectionHandle>();
+    render(
+      <SQLEditorSection ref={ref} title="SQL Editor" onDirtyChange={() => {}} />
+    );
+
+    expect(settingSwitch(ALLOW_DOWNLOAD)).toHaveAttribute(
+      "aria-checked",
+      "false"
+    );
+    expect(ref.current?.isDirty()).toBe(false);
   });
 });

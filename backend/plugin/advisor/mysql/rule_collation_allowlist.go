@@ -7,10 +7,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -19,8 +19,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_SYSTEM_COLLATION_ALLOWLIST, &CollationAllowlistAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_SYSTEM_COLLATION_ALLOWLIST, &CollationAllowlistAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_SYSTEM_COLLATION_ALLOWLIST, &CollationAllowlistAdvisor{})
 }
 
 // CollationAllowlistAdvisor is the advisor checking for collation allowlist.
@@ -82,7 +80,7 @@ func (r *collationAllowlistOmniRule) checkCollation(collation string, line int) 
 			Code:          code.DisabledCollation.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("\"%s\" used disabled collation '%s'", r.QueryText(), collation),
-			StartPosition: common.ConvertANTLRLineToPosition(line),
+			StartPosition: base.ConvertANTLRLineToPosition(line),
 		})
 	}
 }

@@ -12,6 +12,7 @@ import {
 } from "@/app/router";
 import { SQLEditorButton } from "@/components/SQLEditorButton";
 import { UserAvatar } from "@/components/UserAvatar";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -93,11 +94,11 @@ export function ProfileMenuTrigger({
 
   const wrapperClass = useMemo(() => {
     if (!customLogo) {
-      return "flex items-center justify-center rounded-full bg-gray-100";
+      return "flex items-center justify-center rounded-full bg-control-bg";
     }
     return size === "small"
-      ? "flex items-center justify-center rounded-full bg-gray-100 md:px-1 md:py-0.5"
-      : "flex items-center justify-center rounded-full bg-gray-100 md:px-2 md:py-1.5";
+      ? "flex items-center justify-center rounded-full bg-control-bg md:px-1 md:py-0.5"
+      : "flex items-center justify-center rounded-full bg-control-bg md:px-2 md:py-1.5";
   }, [customLogo, size]);
 
   const logoClass = size === "small" ? "mr-2" : "mr-4";
@@ -139,7 +140,12 @@ export function ProfileMenuTrigger({
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger
           render={
-            <button type="button" className="cursor-pointer rounded-full" />
+            <Button
+              appearance="secondary"
+              size="xs"
+              type="button"
+              className="h-auto rounded-full p-0"
+            />
           }
         >
           <UserAvatar

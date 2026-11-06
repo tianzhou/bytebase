@@ -1,5 +1,4 @@
 import { create } from "@bufbuild/protobuf";
-import dayjs from "dayjs";
 import { ChevronRight, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -12,8 +11,10 @@ import {
   type SearchParams,
   type ValueOption,
 } from "@/components/AdvancedSearch";
+import { classificationLevelBackgroundClasses } from "@/components/classification-level";
 import { FeatureAttention } from "@/components/FeatureAttention";
 import { FeatureBadge } from "@/components/FeatureBadge";
+import { HumanizeTs } from "@/components/HumanizeTs";
 import { RouterLink } from "@/components/RouterLink";
 import { UserHoverCard } from "@/components/UserHoverCard";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useCurrentUser } from "@/hooks/useAppState";
 import { useProjectByName } from "@/hooks/useProjectByName";
+import { useTimeReading } from "@/hooks/useTimeReading";
 import {
   buildMemberSummary,
   generateGrantTitle,
@@ -44,6 +46,7 @@ import type {
   ExemptionMember,
 } from "@/lib/sensitive-data/types";
 import { cn } from "@/lib/utils";
+import { AgentPageHelpButton } from "@/modules/agent/components/AgentPageHelpButton";
 import { operatorDisplayLabel } from "@/modules/cel/types/operator";
 import { extractUserEmail, pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
@@ -63,11 +66,16 @@ import {
 import { Setting_SettingName } from "@/types/proto-es/v1/setting_service_pb";
 import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
 import { getDefaultPagination, hasProjectPermissionV2 } from "@/utils";
+import { daysLeftReading } from "@/utils/datetime";
 import {
   batchConvertFromCELString,
   type ConditionExpression,
 } from "@/utils/issue/cel";
 import { extractDatabaseResourceName } from "@/utils/v1/database";
+import {
+  generateMemberScopeSummary,
+  resourceCoversDatabase,
+} from "./utils/maskingExemption";
 
 // ============================================================
 // Helpers
@@ -206,7 +214,7 @@ export function ProjectMaskingExemptionPage({
       const matchesDb = (g: ExemptionGrant) =>
         !g.databaseResources ||
         g.databaseResources.length === 0 ||
-        g.databaseResources.some((r) => r.databaseFullName === dbScope);
+        g.databaseResources.some((r) => resourceCoversDatabase(r, dbScope));
       result = result
         .map((m) => withFilteredGrants(m, m.grants.filter(matchesDb)))
         .filter((m) => m.grants.length > 0);
@@ -313,7 +321,7 @@ export function ProjectMaskingExemptionPage({
             </span>
             <span>{u.title}</span>
             {currentUser && u.name === currentUser.name && (
-              <span className="text-xs bg-success/10 text-success rounded-full px-1.5">
+              <span className="inline-flex items-center rounded-xs border border-transparent bg-success/10 px-1.5 py-0.5 text-xs text-success">
                 {t("common.you")}
               </span>
             )}
@@ -394,22 +402,27 @@ export function ProjectMaskingExemptionPage({
         <div className="mb-2">
           <FeatureAttention feature={PlanFeature.FEATURE_DATA_MASKING} />
         </div>
-        <div className="flex flex-row items-center gap-x-2 mb-2">
-          <AdvancedSearch
-            params={searchParams}
-            onParamsChange={setSearchParams}
-            scopeOptions={scopeOptions}
-            placeholder={t("issue.advanced-search.filter")}
-          />
-          <Button onClick={handleGrantClick} disabled={!hasCreatePermission}>
-            <FeatureBadge
-              feature={PlanFeature.FEATURE_DATA_MASKING}
-              clickable={false}
-              className="text-white"
-              fallback={<ShieldCheck className="size-4" />}
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="w-full min-w-0 md:flex-1 md:basis-64">
+            <AdvancedSearch
+              params={searchParams}
+              onParamsChange={setSearchParams}
+              scopeOptions={scopeOptions}
+              placeholder={t("issue.advanced-search.filter")}
             />
-            {t("project.masking-exemption.grant-exemption")}
-          </Button>
+          </div>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <AgentPageHelpButton />
+            <Button onClick={handleGrantClick} disabled={!hasCreatePermission}>
+              <FeatureBadge
+                feature={PlanFeature.FEATURE_DATA_MASKING}
+                clickable={false}
+                className="text-accent-text"
+                fallback={<ShieldCheck className="size-4" />}
+              />
+              {t("project.masking-exemption.grant-exemption")}
+            </Button>
+          </div>
         </div>
 
         {/* Preset tabs */}
@@ -515,7 +528,7 @@ export function ProjectMaskingExemptionPage({
 
 function getAccessUsers(
   exemption: MaskingExemptionPolicy_Exemption,
-  condition: ConditionExpression
+  condition: ConditionExpression | undefined
 ): AccessUser[] {
   const expression = exemption.condition?.expression ?? "";
   const description = exemption.condition?.description ?? "";
@@ -530,10 +543,7 @@ function getAccessUsers(
     expirationTimestamp,
     rawExpression: expression,
     description,
-    databaseResources:
-      condition.databaseResources && condition.databaseResources.length > 0
-        ? condition.databaseResources
-        : undefined,
+    databaseResources: condition?.databaseResources,
     conditionExpression,
   }));
 }
@@ -879,25 +889,7 @@ function ExemptionMemberItem({
   );
 
   const scopeSummary = useMemo(() => {
-    const n = member.grants.length;
-    const exemptionWord = t("project.masking-exemption.n-exemptions", {
-      n,
-      count: n,
-    });
-
-    const realDbs = member.databaseNames.filter((name) => name !== "");
-    const hasAllDbs = member.databaseNames.includes("");
-
-    const parts: string[] = [];
-    if (realDbs.length > 0) {
-      parts.push(realDbs.join(", "));
-    }
-    if (hasAllDbs) {
-      parts.push(t("database.all"));
-    }
-
-    const scope = parts.join(", ");
-    return scope ? `${exemptionWord} · ${scope}` : exemptionWord;
+    return generateMemberScopeSummary(t, member.grants, member.databaseNames);
   }, [member, t]);
 
   const handleClick = () => {
@@ -945,17 +937,17 @@ function ExemptionMemberItem({
         <div className="flex items-center gap-x-1.5">
           <span className="font-medium text-sm truncate">{displayName}</span>
           {member.type === "group" && (
-            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs border border-control-border bg-background">
+            <span className="inline-flex items-center rounded-xs border border-control-border bg-background px-1.5 py-0.5 text-xs">
               {t("common.groups")}
             </span>
           )}
           {isServiceAccount && (
-            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs border border-accent/30 bg-accent/5 text-accent whitespace-nowrap shrink-0">
+            <span className="inline-flex items-center rounded-xs border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-xs text-accent whitespace-nowrap shrink-0">
               {t("settings.members.service-account")}
             </span>
           )}
           {isWorkloadIdentity && (
-            <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs border border-accent/30 bg-accent/5 text-accent whitespace-nowrap shrink-0">
+            <span className="inline-flex items-center rounded-xs border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-xs text-accent whitespace-nowrap shrink-0">
               {t("settings.members.workload-identity")}
             </span>
           )}
@@ -1001,8 +993,8 @@ function ExemptionDetailPanel({
   const grantMatchesFilter = (grant: ExemptionGrant): boolean => {
     if (!databaseFilter) return false;
     return (
-      grant.databaseResources?.some(
-        (r) => r.databaseFullName === databaseFilter
+      grant.databaseResources?.some((r) =>
+        resourceCoversDatabase(r, databaseFilter)
       ) ?? false
     );
   };
@@ -1081,24 +1073,14 @@ function ExemptionGrantSection({
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const [showRawCondition, setShowRawCondition] = useState(false);
 
   const title = useMemo(() => generateGrantTitle(grant), [grant]);
 
-  const isExpired =
-    !!grant.expirationTimestamp && grant.expirationTimestamp <= Date.now();
-
-  const expiryLabel = (() => {
-    if (!grant.expirationTimestamp) return "";
-    const msRemaining = grant.expirationTimestamp - Date.now();
-    const hoursRemaining = msRemaining / (1000 * 60 * 60);
-    if (hoursRemaining < 24)
-      return t("project.masking-exemption.expires-today");
-    const days = Math.ceil(hoursRemaining / 24);
-    return t("project.masking-exemption.expires-in-days", {
-      days,
-      count: days,
-    });
-  })();
+  const daysLeft = useTimeReading(
+    daysLeftReading,
+    grant.expirationTimestamp || undefined
+  );
 
   return (
     <div>
@@ -1116,28 +1098,41 @@ function ExemptionGrantSection({
             )}
           />
           <span className="font-medium text-sm">{title}</span>
-          {grant.expirationTimestamp && isExpired ? (
+          {/* No reading means no expiry: zero is this API's "never". */}
+          {!daysLeft ? (
+            <span className="text-xs font-medium text-warning">
+              {t("settings.sensitive-data.never-expires")}
+            </span>
+          ) : daysLeft.kind === "passed" ? (
             <>
-              <span className="text-xs text-control-light line-through">
-                {dayjs(grant.expirationTimestamp).format("YYYY-MM-DD HH:mm")}
-              </span>
+              <HumanizeTs
+                className="text-xs text-control-light line-through"
+                mode="operational"
+                tsMs={grant.expirationTimestamp}
+              />
               <span className="text-xs text-control-light">
                 ({t("sql-editor.expired")})
               </span>
             </>
-          ) : grant.expirationTimestamp ? (
+          ) : (
             <>
-              <span className="text-xs font-medium text-blue-600">
-                {expiryLabel}
+              <span className="text-xs font-medium text-info">
+                {daysLeft.kind === "days"
+                  ? t("project.masking-exemption.expires-in-days", {
+                      days: daysLeft.days,
+                      count: daysLeft.days,
+                    })
+                  : t("project.masking-exemption.expires-today")}
               </span>
               <span className="text-xs text-control-light">
-                ({dayjs(grant.expirationTimestamp).format("YYYY-MM-DD HH:mm")})
+                (
+                <HumanizeTs
+                  mode="operational"
+                  tsMs={grant.expirationTimestamp}
+                />
+                )
               </span>
             </>
-          ) : (
-            <span className="text-xs font-medium text-amber-600">
-              {t("settings.sensitive-data.never-expires")}
-            </span>
           )}
         </div>
         <Button
@@ -1175,6 +1170,28 @@ function ExemptionGrantSection({
             <ExemptionLevelCard
               classificationLevel={grant.classificationLevel}
             />
+          )}
+
+          {grant.conditionExpression && (
+            <div className="mt-3 text-sm">
+              <Button
+                aria-expanded={showRawCondition}
+                appearance="link"
+                className="h-auto px-0"
+                onClick={() => setShowRawCondition((show) => !show)}
+                size="sm"
+                type="button"
+              >
+                {showRawCondition
+                  ? t("project.masking-exemption.hide-raw-cel-condition")
+                  : t("project.masking-exemption.show-raw-cel-condition")}
+              </Button>
+              {showRawCondition && (
+                <pre className="mt-1 whitespace-pre-wrap break-all rounded-xs border border-block-border bg-control-bg px-3 py-2 font-mono text-xs">
+                  {grant.conditionExpression}
+                </pre>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -1298,7 +1315,7 @@ function ExemptionLevelCard({
         <span className="textinfolabel font-medium uppercase text-xs">
           {t("common.scope")}
         </span>
-        <span className="px-2 py-0.5 rounded-xs text-xs bg-green-100 text-green-700 border border-green-200">
+        <span className="rounded-xs border border-success/20 bg-success/10 px-1.5 py-0.5 text-xs text-success">
           {t("database.all")}
         </span>
       </div>
@@ -1319,14 +1336,6 @@ function ExemptionLevelCard({
 // ============================================================
 // LevelBadge
 // ============================================================
-
-const bgColorList = [
-  "bg-green-200",
-  "bg-yellow-200",
-  "bg-orange-300",
-  "bg-amber-500",
-  "bg-red-500",
-];
 
 function LevelBadge({
   level,
@@ -1359,9 +1368,14 @@ function LevelBadge({
     if (noLimit || level === undefined) {
       return "bg-control-bg-hover text-control-light";
     }
-    const idx = Math.min(level - 1, bgColorList.length - 1);
-    const bg = bgColorList[Math.max(0, idx)] ?? "bg-control-bg-hover";
-    return level >= 4 ? `${bg} text-white` : bg;
+    const idx = Math.min(
+      level - 1,
+      classificationLevelBackgroundClasses.length - 1
+    );
+    const bg =
+      classificationLevelBackgroundClasses[Math.max(0, idx)] ??
+      "bg-control-bg-hover";
+    return level >= 4 ? `${bg} text-accent-text` : bg;
   }, [noLimit, level]);
 
   return (

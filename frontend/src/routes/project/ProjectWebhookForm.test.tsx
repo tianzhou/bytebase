@@ -122,4 +122,15 @@ describe("ProjectWebhookForm", () => {
 
     expect(container.textContent).not.toContain("project.webhook.url-hidden");
   });
+
+  test("uses shared field spacing for the destination control", () => {
+    const container = renderForm(true);
+
+    expect(
+      container.querySelector('[data-slot="form-field"]')
+    ).not.toBeNull();
+    expect(container.querySelector("#webhook-destination")).not.toHaveClass(
+      "mt-1"
+    );
+  });
 });

@@ -1,7 +1,11 @@
 import { Code, ConnectError, type Interceptor } from "@connectrpc/connect";
 import i18n from "@/lib/i18n";
 import { pushNotification } from "@/stores";
-import { ignoredCodesContextKey, silentContextKey } from "../context-key";
+import {
+  ignoredCodesContextKey,
+  silentContextKey,
+  skipErrorNotificationContextKey,
+} from "../context-key";
 
 export type SilentRequestOptions = {
   /**
@@ -23,8 +27,12 @@ export const errorNotificationInterceptor: Interceptor =
       return resp;
     } catch (error) {
       const maybePushNotification = (title: string, description?: string) => {
-        const silent = req.contextValues.get(silentContextKey);
-        if (silent) return;
+        if (
+          req.contextValues.get(silentContextKey) ||
+          req.contextValues.get(skipErrorNotificationContextKey)
+        ) {
+          return;
+        }
         pushNotification({
           module: "bytebase",
           style: "CRITICAL",
@@ -42,8 +50,14 @@ export const errorNotificationInterceptor: Interceptor =
         ) {
           // ignored
         } else if (error.code === Code.PermissionDenied) {
-          // The auth interceptor navigates permission failures to /403, where
-          // the route-level guard displays the missing permission details.
+          if (req.method.name === "Login") {
+            maybePushNotification(
+              i18n.t("auth.sign-in.failed"),
+              error.rawMessage
+            );
+          }
+          // Other permission failures navigate to /403, where the route-level
+          // guard displays the missing permission details.
         } else {
           const details = [error.message];
           maybePushNotification(

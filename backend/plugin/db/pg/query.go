@@ -3,20 +3,15 @@ package pg
 import (
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/pkg/errors"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/bytebase/omni/pg/ast"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/bytebase/bytebase/backend/common/log"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
-	pgparser "github.com/bytebase/bytebase/backend/plugin/parser/pg"
 )
 
 func makeValueByTypeName(typeName string, _ *sql.ColumnType) any {
@@ -44,7 +39,15 @@ func makeValueByTypeName(typeName string, _ *sql.ColumnType) any {
 
 var timeTzOID = fmt.Sprintf("%d", pgtype.TimetzOID)
 
-func convertValue(typeName string, columnType *sql.ColumnType, value any) *v1pb.RowValue {
+// convertValueIn binds the row value converter to the location timestamptz values
+// render in, which the caller reads from the session once per statement.
+func convertValueIn(location *time.Location) func(string, *sql.ColumnType, any) *v1pb.RowValue {
+	return func(typeName string, columnType *sql.ColumnType, value any) *v1pb.RowValue {
+		return convertValue(typeName, columnType, value, location)
+	}
+}
+
+func convertValue(typeName string, columnType *sql.ColumnType, value any, location *time.Location) *v1pb.RowValue {
 	switch raw := value.(type) {
 	case *sql.NullString:
 		if raw.Valid {
@@ -124,7 +127,15 @@ func convertValue(typeName string, columnType *sql.ColumnType, value any) *v1pb.
 			if scale == -1 {
 				scale = 6
 			}
-			return buildTimestamptzRowValue(typeName, raw.Time, int32(scale))
+			// Only timestamptz carries a zone to render. A zone-less timestamp must keep
+			// its wall clock, and buildTimestamptzRowValue formats those fields verbatim
+			// for a date outside the protobuf timestamp range, so converting it there
+			// would move the value rather than relabel it.
+			t := raw.Time
+			if typeName != "TIMESTAMP" {
+				t = t.In(location)
+			}
+			return buildTimestamptzRowValue(typeName, t, int32(scale))
 		}
 	default:
 	}
@@ -210,133 +221,4 @@ func padZeroes(rawStr string, acc int) string {
 		rawStr = rawStr[:endIndex] + strings.Repeat("0", acc-len(decimalPart)) + rawStr[endIndex:]
 	}
 	return rawStr
-}
-
-// explainStatement wraps statement in EXPLAIN. JSON and XML return the plan tree
-// in a single row, so a caller that renders the plan never has to parse the text
-// output. PostgreSQL produces every format this API offers, so there is nothing
-// to reject.
-func explainStatement(statement string, format v1pb.QueryOption_ExplainFormat) string {
-	switch format {
-	case v1pb.QueryOption_JSON:
-		return fmt.Sprintf("EXPLAIN (FORMAT JSON) %s", statement)
-	case v1pb.QueryOption_XML:
-		return fmt.Sprintf("EXPLAIN (FORMAT XML) %s", statement)
-	default:
-		return fmt.Sprintf("EXPLAIN %s", statement)
-	}
-}
-
-// getStatementWithResultLimit returns the statement with LIMIT clause if not exists.
-func getStatementWithResultLimit(statement string, limit int) string {
-	stmt, err := getStatementWithResultLimitInline(statement, limit)
-	if err != nil {
-		slog.Error("fail to add limit clause", slog.String("statement", statement), log.BBError(err))
-		// Fallback to CTE approach for problematic queries
-		return fmt.Sprintf("WITH result AS (\n%s\n) SELECT * FROM result LIMIT %d;", util.TrimStatement(statement), limit)
-	}
-	return stmt
-}
-
-func getStatementWithResultLimitInline(statement string, limitCount int) (string, error) {
-	if strings.TrimSpace(statement) == "" {
-		return "", errors.New("empty statement")
-	}
-
-	stmts, err := pgparser.ParsePg(statement)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to parse statement")
-	}
-
-	if len(stmts) != 1 {
-		return "", errors.Errorf("expected exactly one statement, got %d", len(stmts))
-	}
-
-	sel, ok := stmts[0].AST.(*ast.SelectStmt)
-	if !ok {
-		// Non-SELECT statement, return as-is.
-		return statement, nil
-	}
-
-	return rewriteSelectLimit(statement, sel, limitCount)
-}
-
-// rewriteSelectLimit adds or adjusts the LIMIT clause of a SELECT statement
-// using byte-offset positions from the omni AST to surgically edit the original SQL text.
-func rewriteSelectLimit(sql string, sel *ast.SelectStmt, limitCount int) (string, error) {
-	if sel.LimitCount != nil {
-		// Already has LIMIT — replace the value if ours is lower.
-		existingLimit := extractIntFromNode(sel.LimitCount)
-		if existingLimit > 0 && existingLimit <= limitCount {
-			return sql, nil // existing limit is already lower or equal, keep it
-		}
-		loc := nodeLocOf(sel.LimitCount)
-		if loc.Start >= 0 && loc.End > loc.Start && loc.End <= len(sql) {
-			return sql[:loc.Start] + fmt.Sprintf("%d", limitCount) + sql[loc.End:], nil
-		}
-		// LimitCount is a non-constant expression (e.g. LIMIT $1, LIMIT (1+2)).
-		// Cannot safely rewrite in-place; let the caller fall back to CTE wrapper.
-		return "", errors.Errorf("cannot rewrite non-constant LIMIT expression")
-	}
-
-	// No LIMIT clause — find the right insertion point.
-	// PostgreSQL grammar order: ... ORDER BY ... LIMIT ... FOR UPDATE ...
-	// LIMIT goes BEFORE FOR UPDATE but AFTER everything else.
-	insertPos, beforeLocking := findLimitInsertPosition(sel)
-	if beforeLocking {
-		// Inserting at the start of FOR UPDATE/SHARE. The original whitespace
-		// before FOR becomes the separator before LIMIT; we add a trailing
-		// space to separate the limit value from FOR.
-		return sql[:insertPos] + fmt.Sprintf("LIMIT %d ", limitCount) + sql[insertPos:], nil
-	}
-	return sql[:insertPos] + fmt.Sprintf(" LIMIT %d", limitCount) + sql[insertPos:], nil
-}
-
-// findLimitInsertPosition returns the byte offset where " LIMIT N" should be inserted,
-// and whether the insertion is before a locking clause (FOR UPDATE/SHARE).
-func findLimitInsertPosition(sel *ast.SelectStmt) (int, bool) {
-	// LIMIT must appear before FOR UPDATE/SHARE.
-	if sel.LockingClause != nil {
-		span := ast.ListSpan(sel.LockingClause)
-		if span.Start > 0 {
-			return span.Start, true
-		}
-	}
-
-	// Otherwise insert at SelectStmt.Loc.End (after everything, including outer parens).
-	// For CTE queries, omni may report SelectStmt.Loc.End before the outer ORDER BY,
-	// so account for the sort clause explicitly.
-	end := sel.Loc.End
-	if span := ast.ListSpan(sel.SortClause); span.End > end {
-		end = span.End
-	}
-	if end <= 0 {
-		return 0, false
-	}
-	return end, false
-}
-
-// extractIntFromNode extracts an integer value from a LIMIT/OFFSET node.
-func extractIntFromNode(node ast.Node) int {
-	switch n := node.(type) {
-	case *ast.Integer:
-		return int(n.Ival)
-	case *ast.A_Const:
-		if iv, ok := n.Val.(*ast.Integer); ok {
-			return int(iv.Ival)
-		}
-		return 0
-	default:
-		return 0
-	}
-}
-
-// nodeLocOf returns the Loc of a node, handling common wrapper types.
-func nodeLocOf(node ast.Node) ast.Loc {
-	switch n := node.(type) {
-	case *ast.A_Const:
-		return n.Loc
-	default:
-		return ast.Loc{Start: -1, End: -1}
-	}
 }

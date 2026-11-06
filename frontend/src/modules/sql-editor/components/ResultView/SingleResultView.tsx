@@ -1,4 +1,3 @@
-import { create } from "@bufbuild/protobuf";
 import { isEmpty } from "lodash-es";
 import {
   ArrowDownIcon,
@@ -6,6 +5,9 @@ import {
   BracesIcon,
   CopyIcon,
   InfoIcon,
+  type LucideIcon,
+  NetworkIcon,
+  Rows3Icon,
   Table2Icon,
   XIcon,
 } from "lucide-react";
@@ -27,17 +29,22 @@ import {
 } from "@/components/DataExportButton";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { SegmentedControl } from "@/components/ui/segmented-control";
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from "@/components/ui/segmented-control";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useAppDatabaseMetadata } from "@/hooks/useAppDatabaseMetadata";
 import { useExecuteSQL } from "@/hooks/useExecuteSQL";
 import { writeTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import type { ExportDestinationState } from "@/modules/sql-editor/components/useExportDestination";
 import { useSQLEditorQueryDataPolicy } from "@/modules/sql-editor/hooks/useSQLEditorState";
 import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
 import { useSQLEditorTabState } from "@/modules/sql-editor/store/tab";
-import { useAppStore } from "@/stores/app";
 import type {
+  ResultLayout,
   SQLEditorDatabaseQueryContext,
   SQLEditorQueryParams,
 } from "@/types";
@@ -45,15 +52,14 @@ import { Engine, ExportFormat } from "@/types/proto-es/v1/common_pb";
 import type { Database } from "@/types/proto-es/v1/database_service_pb";
 import {
   QueryOption_ExplainFormat,
-  QueryOptionSchema,
   type QueryResult,
 } from "@/types/proto-es/v1/sql_service_pb";
+import { hasProjectPermissionV2 } from "@/utils/iam/permission";
 import {
-  createExplainToken,
+  explainQueryOption,
   isVisualizerEngine,
   VISUALIZER_EXPLAIN_FORMATS,
-  type VisualizerEngine,
-} from "@/utils/explainToken";
+} from "@/utils/queryPlanEngines";
 import {
   flattenElasticsearchSearchResult,
   flattenNoSQLQueryResult,
@@ -61,7 +67,12 @@ import {
   isNoSQLQueryResult,
 } from "@/utils/sqlResult";
 import { STORAGE_KEY_SQL_EDITOR_NOSQL_TABLE_VIEW } from "@/utils/storage-keys";
-import { getInstanceResource } from "@/utils/v1/database";
+import {
+  extractDatabaseResourceName,
+  getDatabaseProject,
+  getInstanceResource,
+} from "@/utils/v1/database";
+import { instanceV1AllowsExplain } from "@/utils/v1/instance";
 import { compareQueryRowValues, extractSQLRowValuePlain } from "@/utils/v1/sql";
 import { CopyAllButton } from "./CopyAllButton";
 import { SQLResultViewProvider } from "./context";
@@ -70,7 +81,18 @@ import { DetailPanel } from "./DetailPanel";
 import { DocumentJSONView } from "./DocumentJSONView";
 import { EmptyView } from "./EmptyView";
 import { ErrorView } from "./ErrorView";
+import {
+  canReplayStatement,
+  isTextPlanFormat,
+  planAvailability,
+} from "./planAvailability";
+import { tableFactsLookup } from "./planTableFacts";
+import {
+  type InlineQueryPlan,
+  QueryPlanResultView,
+} from "./QueryPlanResultView";
 import { formatQueryTime, ResultStatusBar } from "./ResultStatusBar";
+import { inlineQueryPlan } from "./resultPlans";
 import { SelectionCopyTooltips } from "./SelectionCopyTooltips";
 import { TextSearchControl } from "./TextSearchControl";
 import type {
@@ -94,17 +116,19 @@ export interface SingleResultViewProps {
   params: SQLEditorQueryParams;
   database: Database;
   result: QueryResult;
-  // Which statement of a multi-statement run this view shows. Visualize re-runs
-  // the whole statement and has to pick the same one back out.
+  // Every result of the run, and which one this view shows. Visualize uses
+  // earlier results to decide whether replaying this statement is safe.
+  results?: QueryResult[];
   resultIndex?: number;
   showExport: boolean;
   // Optional tooltip shown on the export button — used to explain when the
-  // export is enabled by a JIT access grant despite the policy disabling it.
+  // export is enabled by a JIT access grant rather than bb.sql.export.
   exportTooltip?: ReactNode;
+  exportDestination?: ExportDestinationState;
   maximumExportCount?: number;
   onExport?: (req: DataExportRequest & { statement: string }) => void;
-  // Rendered in the toolbar when `showExport` is false — e.g. a
-  // "Request export" affordance when the policy disables direct export.
+  // Rendered in the toolbar after the export button — e.g. a "Request export"
+  // affordance when the user lacks bb.sql.export.
   requestExportSlot?: ReactNode;
   // Compact layout (fixed-height, non-growing body) used by the terminal /
   // admin result panel. Defaults to the flex-grow saved query layout.
@@ -281,9 +305,11 @@ function SingleResultViewInner({
   params,
   database,
   result,
+  results = [],
   resultIndex = 0,
   showExport,
   exportTooltip,
+  exportDestination,
   maximumExportCount,
   onExport,
   requestExportSlot,
@@ -325,7 +351,100 @@ function SingleResultViewInner({
     VirtualDataTableHandle | VirtualDataBlockHandle | null
   >(null);
 
-  const [vertical, setVertical] = useState(false);
+  // The view switch's choice is remembered per editor tab, so the next run in
+  // this tab opens the same way.
+  const rememberedLayout = useSQLEditorTabState(
+    (s) => s.tabsById.get(s.currentTabId)?.resultLayout
+  );
+  const updateCurrentTab = useSQLEditorTabState((s) => s.updateCurrentTab);
+  const [chosenLayout, setChosenLayout] = useState<ResultLayout>(
+    rememberedLayout ?? "TABLE"
+  );
+  const setLayout = useCallback(
+    (next: ResultLayout) => {
+      setChosenLayout(next);
+      updateCurrentTab({ resultLayout: next });
+    },
+    [updateCurrentTab]
+  );
+  const planOption = planAvailability({
+    result,
+    results,
+    resultIndex,
+    engineExplains: instanceV1AllowsExplain(engine),
+    canExplain: hasProjectPermissionV2(
+      getDatabaseProject(database),
+      "bb.sql.explain"
+    ),
+  });
+  // A remembered Plan choice falls back to the table where this result offers
+  // no plan.
+  const layout: ResultLayout =
+    chosenLayout === "PLAN" && planOption !== "offered"
+      ? "TABLE"
+      : chosenLayout;
+  const vertical = layout === "VERTICAL";
+  // The plan fetched for this result, kept so switching views does not fetch
+  // it again.
+  const [planCache, setPlanCache] = useState<{
+    result: QueryResult;
+    plan: InlineQueryPlan;
+  }>();
+  const resultPlan = planCache?.result === result ? planCache.plan : undefined;
+  const loadResultPlan = useCallback(
+    async (signal: AbortSignal) => {
+      const loaded = await explainStatement(
+        database,
+        params,
+        result.statement,
+        runQuery,
+        engine,
+        signal
+      );
+      if (loaded) setPlanCache({ result, plan: loaded });
+      return loaded;
+    },
+    [database, engine, params, result, runQuery]
+  );
+  // Document and search engines keep their own view controls; the SQL
+  // engines get the one switch with Table, Vertical and Plan.
+  const sqlLayoutSwitch = !supportsDocumentJSONView && !supportsTableViewToggle;
+  const layoutOptions = useMemo(() => {
+    const options: SegmentedControlOption<ResultLayout>[] = [
+      {
+        value: "TABLE",
+        label: (
+          <SegmentIcon icon={Table2Icon} label={t("sql-editor.table-view")} />
+        ),
+        tooltip: t("sql-editor.table-view"),
+      },
+      {
+        value: "VERTICAL",
+        label: (
+          <SegmentIcon
+            icon={Rows3Icon}
+            label={t("sql-editor.vertical-display")}
+          />
+        ),
+        tooltip: t("sql-editor.vertical-display"),
+      },
+    ];
+    if (planOption !== "absent") {
+      const needsPermission = planOption === "needs-permission";
+      options.push({
+        value: "PLAN",
+        label: (
+          <SegmentIcon icon={NetworkIcon} label={t("sql-editor.plan-view")} />
+        ),
+        tooltip: needsPermission
+          ? t("sql-editor.query-plan-requires-explain")
+          : t("sql-editor.plan-view"),
+        disabled: needsPermission,
+      });
+    }
+    return options;
+  }, [planOption, t]);
+
   const {
     params: searchParams,
     setParams: setSearchParams,
@@ -397,51 +516,59 @@ function SingleResultViewInner({
     [flattenedTableView, result.masked]
   );
 
-  const showVisualizeButton = isVisualizerEngine(engine) && !!params.explain;
+  // The editor's panels already fetch this database's metadata, so the plan
+  // reads that cache rather than asking for it again; without it a node simply
+  // says nothing about its table.
+  const databaseMetadata = useAppDatabaseMetadata(database.name, {
+    autoFetch: false,
+  });
+  const describeTable = useMemo(
+    () =>
+      tableFactsLookup(
+        databaseMetadata,
+        extractDatabaseResourceName(database.name).databaseName
+      ),
+    [databaseMetadata, database.name]
+  );
 
-  const visualizeExplain = async () => {
-    if (!isVisualizerEngine(engine)) return;
-    try {
-      // Spanner explains only as JSON, so the result on screen already is the
-      // plan the visualizer reads; the other engines show a readable plan.
-      const token =
-        engine === Engine.SPANNER
-          ? getExplainTokenFromResult(result, engine)
-          : await getExplainToken(
-              database,
-              params,
-              runQuery,
-              engine,
-              resultIndex
-            );
-      if (!token) {
-        // The plan is fetched by a second query, so a failure here is invisible
-        // unless we say so — the button would otherwise do nothing.
-        useAppStore.getState().notify({
-          module: "bytebase",
-          style: "CRITICAL",
-          title: t("sql-editor.visualize-explain-failed"),
-        });
-        return;
-      }
-      // A blocked popup returns null rather than throwing, and the wait for the
-      // plan can outlast the click's user activation, so say so instead of
-      // leaving the button looking dead.
-      if (!window.open(`/explain-visualizer.html?token=${token}`, "_blank")) {
-        useAppStore.getState().notify({
-          module: "bytebase",
-          style: "CRITICAL",
-          title: t("sql-editor.visualize-explain-blocked"),
-        });
-      }
-    } catch {
-      useAppStore.getState().notify({
-        module: "bytebase",
-        style: "CRITICAL",
-        title: t("sql-editor.visualize-explain-failed"),
-      });
-    }
-  };
+  const plan = result.queryPlan;
+  const planInRows =
+    isVisualizerEngine(engine) &&
+    plan?.format ===
+      QueryOption_ExplainFormat[VISUALIZER_EXPLAIN_FORMATS[engine]];
+  const planInResult = useMemo(() => inlineQueryPlan(result), [result]);
+  // The plan BigQuery states beside the rows: already in hand, and a record of
+  // the run that returned them rather than an estimate made since.
+  const carriedPlan = plan?.content ? planInResult : undefined;
+  const canReplay =
+    isVisualizerEngine(engine) &&
+    !!plan &&
+    // Redshift's text plan is the one the viewer draws, so there is no other
+    // format to ask the server for.
+    !planInRows &&
+    isTextPlanFormat(plan.format) &&
+    !plan.executed &&
+    canReplayStatement(results, resultIndex);
+  // Multi-column plans (SQL Server SHOWPLAN_ALL) keep their table unless the
+  // XML plan can be loaded for the visualizer. A plan the engine stated beside
+  // the rows leaves them as the query's data, however few columns they have,
+  // so that result keeps its table and the plan stays in the Plan view.
+  const showInlinePlan =
+    !!plan && !carriedPlan && (result.columnNames.length === 1 || canReplay);
+  const loadPlan = useCallback(
+    (signal: AbortSignal) =>
+      isVisualizerEngine(engine)
+        ? explainStatement(
+            database,
+            params,
+            result.statement,
+            runQuery,
+            engine,
+            signal
+          )
+        : Promise.resolve(undefined),
+    [database, engine, params, result.statement, runQuery]
+  );
 
   const queryTime = formatQueryTime(result.latency);
 
@@ -509,7 +636,33 @@ function SingleResultViewInner({
         </>
       )}
 
-      {viewMode === "RESULT" && (
+      {viewMode === "RESULT" && showInlinePlan && (
+        <>
+          <div
+            className={cn(
+              "flex flex-col",
+              compact ? "h-80 overflow-hidden" : "flex-1 min-h-0"
+            )}
+          >
+            <QueryPlanResultView
+              key={`${database.name}\n${engine}\n${result.statement}`}
+              rawPlan={planInResult?.source ?? ""}
+              initialPlan={planInRows ? planInResult : undefined}
+              engine={isVisualizerEngine(engine) ? engine : undefined}
+              describeTable={describeTable}
+              loadPlan={canReplay ? loadPlan : undefined}
+              disallowCopyingData={disallowCopyingData}
+            />
+          </div>
+          <ResultStatusBar
+            database={database}
+            statement={result.statement ?? ""}
+            queryTime={queryTime}
+          />
+        </>
+      )}
+
+      {viewMode === "RESULT" && !showInlinePlan && (
         <>
           {result.error && (
             <Alert variant="error" className="w-full mb-2">
@@ -558,24 +711,20 @@ function SingleResultViewInner({
                     {
                       value: "TABLE",
                       label: (
-                        <span className="flex h-[26px] w-7 items-center justify-center">
-                          <Table2Icon className="size-4" aria-hidden />
-                          <span className="sr-only">
-                            {t("sql-editor.table-view")}
-                          </span>
-                        </span>
+                        <SegmentIcon
+                          icon={Table2Icon}
+                          label={t("sql-editor.table-view")}
+                        />
                       ),
                       tooltip: t("sql-editor.table-view"),
                     },
                     {
                       value: "JSON",
                       label: (
-                        <span className="flex h-[26px] w-7 items-center justify-center">
-                          <BracesIcon className="size-4" aria-hidden />
-                          <span className="sr-only">
-                            {t("sql-editor.json-view")}
-                          </span>
-                        </span>
+                        <SegmentIcon
+                          icon={BracesIcon}
+                          label={t("sql-editor.json-view")}
+                        />
                       ),
                       tooltip: t("sql-editor.json-view"),
                     },
@@ -597,13 +746,30 @@ function SingleResultViewInner({
                   </span>
                 </div>
               ) : null}
-              {!isJSONView && (
-                <div className="flex items-center gap-x-1">
-                  <Switch checked={vertical} onCheckedChange={setVertical} />
-                  <span className="whitespace-nowrap text-sm text-control-light">
-                    {t("sql-editor.vertical-display")}
-                  </span>
-                </div>
+              {sqlLayoutSwitch ? (
+                <SegmentedControl<ResultLayout>
+                  value={layout}
+                  options={layoutOptions}
+                  onValueChange={setLayout}
+                  ariaLabel={t("sql-editor.result-view-mode")}
+                  appearance="soft"
+                  className="flex-nowrap"
+                  size="xs"
+                />
+              ) : (
+                !isJSONView && (
+                  <div className="flex items-center gap-x-1">
+                    <Switch
+                      checked={vertical}
+                      onCheckedChange={(checked) =>
+                        setLayout(checked ? "VERTICAL" : "TABLE")
+                      }
+                    />
+                    <span className="whitespace-nowrap text-sm text-control-light">
+                      {t("sql-editor.vertical-display")}
+                    </span>
+                  </div>
+                )
               )}
               {!disallowCopyingData && rows.length > 0 && isJSONView && (
                 <Button
@@ -619,7 +785,7 @@ function SingleResultViewInner({
               {!disallowCopyingData && rows.length > 0 && !isJSONView && (
                 <CopyAllButton />
               )}
-              {showExport ? (
+              {showExport && (
                 <DataExportButton
                   size="sm"
                   disabled={!result || isEmpty(result)}
@@ -627,13 +793,14 @@ function SingleResultViewInner({
                   viewMode="DRAWER"
                   supportPassword
                   tooltip={exportTooltip}
+                  destinations={exportDestination?.destinations}
+                  sharepointUrl={exportDestination?.sharepointUrl}
                   maximumExportCount={maximumExportCount}
                   formContent={<DatabaseInfo database={database} />}
                   onExport={handleExport}
                 />
-              ) : (
-                requestExportSlot
               )}
+              {requestExportSlot}
             </div>
             {!isJSONView && <SelectionCopyTooltips />}
           </div>
@@ -648,6 +815,25 @@ function SingleResultViewInner({
               activeMatchIndex={documentSearchActiveIndex}
               onMatchCountChange={setDocumentSearchMatchCount}
             />
+          ) : layout === "PLAN" ? (
+            <div
+              className={cn(
+                "w-full flex flex-col",
+                compact ? "h-80 overflow-hidden" : "flex-1 min-h-0"
+              )}
+            >
+              <QueryPlanResultView
+                key={planViewKey(result)}
+                rawPlan=""
+                initialPlan={carriedPlan ?? resultPlan}
+                engine={isVisualizerEngine(engine) ? engine : undefined}
+                describeTable={describeTable}
+                loadPlan={carriedPlan ? undefined : loadResultPlan}
+                estimated={!carriedPlan}
+                onCancel={() => setLayout("TABLE")}
+                disallowCopyingData={disallowCopyingData}
+              />
+            </div>
           ) : (
             <div
               className={cn(
@@ -754,13 +940,11 @@ function SingleResultViewInner({
             database={database}
             statement={result.statement ?? ""}
             queryTime={queryTime}
-            showVisualizeButton={showVisualizeButton}
-            onVisualizeExplain={visualizeExplain}
           />
         </>
       )}
 
-      {!isJSONView && (
+      {!isJSONView && !showInlinePlan && (
         <DetailPanel
           rows={rows}
           columns={columns}
@@ -806,6 +990,33 @@ function useLocalStorageBoolean(
   return [value, update];
 }
 
+function SegmentIcon({
+  icon: Icon,
+  label,
+}: {
+  icon: LucideIcon;
+  label: string;
+}) {
+  return (
+    <span className="flex w-7 items-center justify-center py-1">
+      <Icon className="size-4" aria-hidden />
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
+// A plan view is keyed by the result it belongs to, so a re-run of the same
+// statement gets a fresh view and a fresh plan.
+const planViewKeys = new WeakMap<QueryResult, string>();
+function planViewKey(result: QueryResult): string {
+  let key = planViewKeys.get(result);
+  if (!key) {
+    key = uuidv4();
+    planViewKeys.set(result, key);
+  }
+  return key;
+}
+
 function DatabaseInfo({ database }: { database: Database }) {
   const { t } = useTranslation();
   return (
@@ -816,44 +1027,37 @@ function DatabaseInfo({ database }: { database: Database }) {
   );
 }
 
-function getExplainTokenFromResult(
-  result: QueryResult,
-  engine: Engine
-): string | undefined {
-  const { statement } = result;
-  if (!statement) return undefined;
-  const lines = result.rows.map((row) =>
-    row.values.map((value) => String(extractSQLRowValuePlain(value)))
-  );
-  const explain = lines.map((line) => line[0]).join("\n");
-  if (!explain) return undefined;
-  return createExplainToken({ statement, explain, engine });
-}
-
-// getExplainToken re-runs the explain in the format the visualizer reads for
-// the engine, whatever format the grid is showing, so the plan is only fetched
-// when the user asks for it.
-async function getExplainToken(
+// explainStatement asks the engine for the plan of a statement as it ran, in
+// the format the visualizer draws where there is one and the engine's default
+// otherwise. The signal cancels the request.
+async function explainStatement(
   database: Database,
   params: SQLEditorQueryParams,
+  statement: string,
   runQuery: ReturnType<typeof useExecuteSQL>["runQuery"],
-  engine: VisualizerEngine,
-  resultIndex: number
-): Promise<string | undefined> {
-  const explainFormat =
-    QueryOption_ExplainFormat[VISUALIZER_EXPLAIN_FORMATS[engine]];
+  engine: Engine,
+  signal?: AbortSignal
+): Promise<InlineQueryPlan | undefined> {
+  if (!statement) return undefined;
   const context: SQLEditorDatabaseQueryContext = {
     id: uuidv4(),
     params: {
       ...params,
-      queryOption: create(QueryOptionSchema, { explainFormat }),
+      statement,
+      explain: true,
+      queryOption: explainQueryOption(engine),
     },
     status: "PENDING",
   };
-  await runQuery(database, context);
-  // The re-run replays every statement the user submitted, so take the one this
-  // view is showing rather than the first.
-  const result = context.resultSet?.results[resultIndex];
+  const run = runQuery(database, context);
+  signal?.addEventListener("abort", () => context.abortController?.abort(), {
+    once: true,
+  });
+  await run;
+  const resultSet = context.resultSet;
+  if (resultSet?.error) throw new Error(resultSet.error);
+  const result = resultSet?.results[0];
   if (!result) return undefined;
-  return getExplainTokenFromResult(result, engine);
+  if (result.error) throw new Error(result.error);
+  return inlineQueryPlan(result);
 }

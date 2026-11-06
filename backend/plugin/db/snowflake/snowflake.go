@@ -21,8 +21,10 @@ import (
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/transaction"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	snowflakeparser "github.com/bytebase/bytebase/backend/plugin/parser/snowflake"
 
 	snow "github.com/snowflakedb/gosnowflake/v2"
 )
@@ -74,6 +76,11 @@ func (d *Driver) Open(_ context.Context, dbType storepb.Engine, config db.Connec
 func buildSnowflakeDSN(config db.ConnectionConfig) (string, string, error) {
 	snowConfig := &snow.Config{
 		User: config.DataSource.Username,
+		// gosnowflake v2.3.0 turned OCSP off unless a caller opts in; before it,
+		// DSN() always wrote ocspFailOpen=true. Leaving the field unset would
+		// silently drop certificate revocation checking, so set it explicitly to
+		// keep the fail-open checking this driver has always done.
+		OCSPFailOpen: snow.OCSPFailOpenTrue,
 	}
 	if config.ConnectionContext.DatabaseName != "" {
 		snowConfig.Database = fmt.Sprintf(`"%s"`, config.ConnectionContext.DatabaseName)
@@ -238,12 +245,12 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	transactionMode := config.Mode
 
 	// Apply default when transaction mode is not specified
-	if transactionMode == common.TransactionModeUnspecified {
-		transactionMode = common.GetDefaultTransactionMode()
+	if transactionMode == transaction.ModeUnspecified {
+		transactionMode = transaction.DefaultMode()
 	}
 
 	// Execute based on transaction mode
-	if transactionMode == common.TransactionModeOff {
+	if transactionMode == transaction.ModeOff {
 		return d.executeInAutoCommitMode(ctx, statement, opts)
 	}
 	return d.executeInTransactionMode(ctx, statement, opts)
@@ -337,9 +344,13 @@ func (*Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string, 
 	for _, singleSQL := range singleSQLs {
 		statement := singleSQL.Text
 		if queryContext.Explain {
-			statement = fmt.Sprintf("EXPLAIN %s", statement)
+			explained, err := base.ExplainStatement(storepb.Engine_SNOWFLAKE, statement, db.ExplainFormat(queryContext.Option.GetExplainFormat()))
+			if err != nil {
+				return nil, err
+			}
+			statement = explained
 		} else if queryContext.Limit > 0 {
-			statement = getStatementWithResultLimit(statement, queryContext.Limit)
+			statement = base.StatementWithResultLimit(storepb.Engine_SNOWFLAKE, statement, queryContext.Limit, "")
 		}
 
 		_, allQuery, err := base.ValidateSQLForEditor(storepb.Engine_SNOWFLAKE, statement)
@@ -379,6 +390,9 @@ func (*Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string, 
 				}
 				if err := rows.Err(); err != nil {
 					return nil, err
+				}
+				if !queryContext.Explain {
+					r.QueryPlan = db.TypedExplainPlan(snowflakeparser.DescribeExplain(statement))
 				}
 				return r, nil
 			}
@@ -429,9 +443,13 @@ func decodeRSAPrivateKey(key, passphrase string) (*rsa.PrivateKey, error) {
 		}
 		return rsaKey, nil
 	case "ENCRYPTED PRIVATE KEY":
-		// NOTE: As of Jun 2024, Golang's official library does not support passcode-encrypted PKCS8 private key. And
-		// Snowflake do not introduce an external library to achieve this due to the security purposes.
-		// We introduce https://pkg.go.dev/github.com/youmark/pkcs8 to help us to achieve this goal.
+		// crypto/x509 cannot decrypt PKCS#8 keys and gosnowflake does not either, so
+		// youmark/pkcs8 covers the PBES2 scheme. It reads an empty password as "the key
+		// is unencrypted" and would misparse the ciphertext, so reject a missing
+		// passphrase before calling it.
+		if passphrase == "" {
+			return nil, errors.Errorf("private key is encrypted, but no passphrase was provided")
+		}
 		pk, err := pkcs8.ParsePKCS8PrivateKeyRSA(block.Bytes, []byte(passphrase))
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to parse pkcs8 private key to rsa private key with passphrase")

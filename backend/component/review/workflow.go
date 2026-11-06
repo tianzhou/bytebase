@@ -4,7 +4,6 @@ package review
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"time"
 
 	"github.com/pkg/errors"
@@ -12,7 +11,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/bytebase/bytebase/backend/common"
-	"github.com/bytebase/bytebase/backend/common/log"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/store"
 	"github.com/bytebase/bytebase/backend/utils"
@@ -38,6 +36,13 @@ const (
 	ReasonDraftIssue
 	ReasonApprovalRequired
 	ReasonStaleInput
+	// ReasonApproverRoleRequired separates the one ErrorPermissionDenied that
+	// is an IAM verdict about the caller from the project and ownership rules
+	// that answer the same code: only the verdict is marked for the audit log.
+	ReasonApproverRoleRequired
+	// ReasonChangedSinceConfirmed is an ErrorConflict for an action confirmed
+	// against an earlier version of the issue.
+	ReasonChangedSinceConfirmed
 )
 
 // Error is a typed review transition error.
@@ -148,6 +153,9 @@ type IssueInput struct {
 	Actor     *store.UserMessage
 	Action    Action
 	Comment   string
+	// ConfirmedUpdateTime, when set, is the issue version the actor confirmed
+	// the action against, as in an MCP client; it is refused on any other.
+	ConfirmedUpdateTime *time.Time
 }
 
 // IssueResult is the committed state and its post-commit effects.
@@ -253,6 +261,11 @@ func (w *Workflow) ReviewIssue(ctx context.Context, input IssueInput) (*IssueRes
 	if lockedIssue == nil {
 		return nil, workflowError(ErrorNotFound, "issue %d not found in project %s", input.IssueUID, input.ProjectID)
 	}
+	// Checked on the locked row: the action above was computed from an unlocked
+	// read, which can already be newer than what the actor confirmed.
+	if input.ConfirmedUpdateTime != nil && !lockedIssue.UpdatedAt.Equal(*input.ConfirmedUpdateTime) {
+		return nil, workflowReasonError(ErrorConflict, ReasonChangedSinceConfirmed, "the issue changed after the action was confirmed")
+	}
 	plan, err := lockIssuePlan(ctx, tx, lockedIssue)
 	if err != nil {
 		return nil, err
@@ -340,10 +353,15 @@ func (w *Workflow) applyReviewAction(ctx context.Context, project *store.Project
 		if role == "" {
 			return nil, workflowError(ErrorInvalidAction, "the issue has been approved")
 		}
-		if !w.canReview(ctx, project, input.Actor, role) {
-			return nil, workflowError(ErrorPermissionDenied, "cannot %s because the user does not have the required permission", verb)
+		hasRole, err := w.canReview(ctx, project, input.Actor, role)
+		if err != nil {
+			return nil, workflowWrap(ErrorInternal, err, "failed to check the approver role")
 		}
-		if !project.Setting.GetAllowSelfApproval() && issue.CreatorEmail == input.Actor.Email {
+		if !hasRole {
+			return nil, workflowReasonError(ErrorPermissionDenied, ReasonApproverRoleRequired,
+				"cannot %s because the user does not have the required permission", verb)
+		}
+		if refusesSelfApproval(project, issue.CreatorEmail, input.Actor.Email) {
 			return nil, workflowError(ErrorPermissionDenied, "cannot %s because self-approval is not allowed for this project", verb)
 		}
 		if input.Action == ActionApprove && !project.Setting.GetAllowLastPlanEditorApproval() && plan != nil {
@@ -394,6 +412,12 @@ func (w *Workflow) applyReviewAction(ctx context.Context, project *store.Project
 	}
 }
 
+// refusesSelfApproval reports whether the project refuses the actor's review,
+// approval or rejection, of an issue the actor created.
+func refusesSelfApproval(project *store.ProjectMessage, creatorEmail, actorEmail string) bool {
+	return !project.Setting.GetAllowSelfApproval() && creatorEmail == actorEmail
+}
+
 func effectiveLastPlanEditor(plan *store.PlanMessage) string {
 	if plan.LastPlanEditor != nil {
 		return *plan.LastPlanEditor
@@ -401,19 +425,21 @@ func effectiveLastPlanEditor(plan *store.PlanMessage) string {
 	return plan.Creator
 }
 
-func (w *Workflow) canReview(ctx context.Context, project *store.ProjectMessage, user *store.UserMessage, role string) bool {
+// canReview reports whether the user holds the role the approval step requires.
+// A policy it cannot read is an error, not a refusal: answering false would tell
+// the caller they lack a role, and file a permission denial in the audit log,
+// for an outage. The rollout sibling, canUserRunEnvironmentTasks, does the same.
+func (w *Workflow) canReview(ctx context.Context, project *store.ProjectMessage, user *store.UserMessage, role string) (bool, error) {
 	projectPolicy, err := w.store.GetProjectIamPolicy(ctx, project.Workspace, project.ResourceID)
 	if err != nil {
-		slog.Warn("failed to get project IAM policy", slog.String("project", project.ResourceID), log.BBError(err))
-		return false
+		return false, errors.Wrapf(err, "failed to get project %s IAM policy", project.ResourceID)
 	}
 	workspacePolicy, err := w.store.GetWorkspaceIamPolicy(ctx, project.Workspace)
 	if err != nil {
-		slog.Warn("failed to get workspace IAM policy", slog.String("workspace", project.Workspace), log.BBError(err))
-		return false
+		return false, errors.Wrapf(err, "failed to get workspace %s IAM policy", project.Workspace)
 	}
 	roles := utils.GetUserFormattedRolesMap(ctx, w.store, project.Workspace, user, projectPolicy.Policy, workspacePolicy.Policy)
-	return roles[role]
+	return roles[role], nil
 }
 
 func lockIssue(ctx context.Context, tx *sql.Tx, projectID string, issueUID int64) (*store.IssueMessage, error) {
@@ -549,8 +575,8 @@ func workflowError(code ErrorCode, format string, args ...any) error {
 	return &Error{Code: code, Err: errors.Errorf(format, args...)}
 }
 
-func workflowReasonError(code ErrorCode, reason ErrorReason, message string) error {
-	return &Error{Code: code, Reason: reason, Err: errors.New(message)}
+func workflowReasonError(code ErrorCode, reason ErrorReason, format string, args ...any) error {
+	return &Error{Code: code, Reason: reason, Err: errors.Errorf(format, args...)}
 }
 
 func workflowWrap(_ ErrorCode, err error, message string) error {

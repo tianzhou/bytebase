@@ -15,6 +15,7 @@ import {
   navigateToPath,
   resolvePath,
 } from "@/app/router/navigation";
+import { saveWorkspaceSetupFinished } from "@/modules/workspace-setup-guide/setup";
 import {
   LoginRequestSchema,
   SendEmailLoginCodeRequestSchema,
@@ -150,13 +151,13 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
   // sometimes we have to redirect users even if we don't want to redirect them.
   // for example, the user is forced to reset their password,
   // or the user is using the LDAP to signin.
-  login: async ({ request, redirect = true, redirectUrl }) => {
+  login: async ({ request, redirect = true, redirectUrl, silent = false }) => {
     const resp = await authServiceClientConnect.login(
       create(LoginRequestSchema, { ...request, web: true }),
       {
-        contextValues: createContextValues().set(ignoredCodesContextKey, [
-          Code.NotFound,
-        ]),
+        contextValues: createContextValues()
+          .set(ignoredCodesContextKey, [Code.NotFound])
+          .set(silentContextKey, silent),
       }
     );
     const redirectQuery = new URLSearchParams(window.location.search).get(
@@ -204,6 +205,9 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
         .fetchWorkspaceIamPolicy(true)
         .catch(() => undefined);
       if (get().enableOnboarding()) {
+        if (get().isSaaSMode()) {
+          saveWorkspaceSetupFinished(user?.workspace ?? "", false);
+        }
         navigateByName(AUTH_SETUP_MODULE, {
           query: { redirect: nextPage },
         });
@@ -245,6 +249,9 @@ export const createAuthSlice: AppSliceCreator<AuthSlice> = (set, get) => ({
     set({ authSessionKey: uniqueId() });
 
     if (get().enableOnboarding()) {
+      if (get().isSaaSMode()) {
+        saveWorkspaceSetupFinished(user?.workspace ?? "", false);
+      }
       navigateByName(AUTH_SETUP_MODULE, { replace: true });
       return;
     }

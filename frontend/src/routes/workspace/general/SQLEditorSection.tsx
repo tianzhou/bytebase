@@ -18,10 +18,16 @@ import {
   getAvailableEditorThemes,
 } from "@/components/monaco/editorThemes";
 import { PermissionGuard } from "@/components/PermissionGuard";
-import { Checkbox } from "@/components/ui/checkbox";
 import { FormField, FormFieldGroup, FormSection } from "@/components/ui/form";
 import { NumberInput } from "@/components/ui/number-input";
-import { SegmentedControl } from "@/components/ui/segmented-control";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { usePlanFeature, useWorkspaceResourceName } from "@/hooks/useAppState";
 import {
   deriveThemeFromAnchors,
@@ -69,8 +75,8 @@ interface SQLEditorSectionProps {
 }
 
 interface LocalState {
-  disableExport: boolean;
   disableCopyData: boolean;
+  disableDownload: boolean;
   allowAdminDataSource: boolean;
   // `null` represents an empty input while the user is typing; coerced to a
   // number on save.
@@ -143,8 +149,8 @@ export const SQLEditorSection = forwardRef<
       rows = 0;
     }
     return {
-      disableExport: policyPayload.disableExport,
       disableCopyData: policyPayload.disableCopyData,
+      disableDownload: policyPayload.disableDownload,
       allowAdminDataSource: policyPayload.allowAdminDataSource,
       maximumResultSize: Math.round(Number(size) / 1024 / 1024),
       maximumResultRows: rows,
@@ -285,8 +291,8 @@ export const SQLEditorSection = forwardRef<
     const init = getInitialState();
     const maximumResultRows = state.maximumResultRows ?? 0;
     return (
-      init.disableExport !== state.disableExport ||
       init.disableCopyData !== state.disableCopyData ||
+      init.disableDownload !== state.disableDownload ||
       init.allowAdminDataSource !== state.allowAdminDataSource ||
       init.maximumResultRows !== maximumResultRows
     );
@@ -350,8 +356,8 @@ export const SQLEditorSection = forwardRef<
             case: "queryDataPolicy",
             value: create(QueryDataPolicySchema, {
               ...policyPayload,
-              disableExport: state.disableExport,
               disableCopyData: state.disableCopyData,
+              disableDownload: state.disableDownload,
               allowAdminDataSource: state.allowAdminDataSource,
               maximumResultRows,
             }),
@@ -400,7 +406,7 @@ export const SQLEditorSection = forwardRef<
   }, [state, selectedThemeId, customDraft, onDirtyChange]);
 
   const handleToggle = (
-    field: "disableExport" | "disableCopyData" | "allowAdminDataSource",
+    field: "disableCopyData" | "disableDownload" | "allowAdminDataSource",
     value: boolean
   ) => {
     setState((prev) => ({ ...prev, [field]: value }));
@@ -416,24 +422,24 @@ export const SQLEditorSection = forwardRef<
   return (
     <FormSection id="security" title={title}>
       <FormFieldGroup>
-        {/* Data Export toggle */}
+        {/* Allow Download toggle */}
         <PermissionGuard permissions={["bb.policies.update"]} display="block">
           <FormField
             title={
               <span className="w-full inline-flex items-center gap-x-2">
-                <Checkbox
-                  checked={!state.disableExport}
+                <Switch
+                  checked={!state.disableDownload}
                   disabled={!canUpdatePolicy || !hasQueryPolicyFeature}
                   onCheckedChange={(checked) =>
-                    handleToggle("disableExport", !checked)
+                    handleToggle("disableDownload", !checked)
                   }
                 />
-                {t("settings.general.workspace.data-export.self")}
+                {t("settings.general.workspace.allow-download.self")}
                 <FeatureBadge feature={PlanFeature.FEATURE_QUERY_POLICY} />
               </span>
             }
             description={t(
-              "settings.general.workspace.data-export.description"
+              "settings.general.workspace.allow-download.description"
             )}
           />
         </PermissionGuard>
@@ -443,7 +449,7 @@ export const SQLEditorSection = forwardRef<
           <FormField
             title={
               <span className="w-full inline-flex items-center gap-x-2">
-                <Checkbox
+                <Switch
                   checked={!state.disableCopyData}
                   disabled={!canUpdatePolicy || !hasRestrictCopyingDataFeature}
                   onCheckedChange={(checked) =>
@@ -464,7 +470,7 @@ export const SQLEditorSection = forwardRef<
           <FormField
             title={
               <span className="w-full inline-flex items-center gap-x-2">
-                <Checkbox
+                <Switch
                   checked={state.allowAdminDataSource}
                   disabled={!canUpdatePolicy || !hasQueryPolicyFeature}
                   onCheckedChange={(checked) =>
@@ -612,24 +618,36 @@ export const SQLEditorSection = forwardRef<
               "settings.general.workspace.sql-editor-theme.description"
             )}
           >
-            <SegmentedControl
-              ariaLabel={t("settings.general.workspace.sql-editor-theme.self")}
+            <Select
               disabled={!canSetWorkspaceProfile}
               value={isCustomSelected ? CUSTOM_THEME_OPTION : selectedThemeId}
-              onValueChange={handleSelectTheme}
-              options={[
-                ...PRESETS.map((preset) => ({
-                  value: preset.id,
-                  label: preset.name,
-                })),
-                {
-                  value: CUSTOM_THEME_OPTION,
-                  label: t(
-                    "settings.general.workspace.sql-editor-theme.custom"
-                  ),
-                },
-              ]}
-            />
+              onValueChange={(value) => {
+                if (value) handleSelectTheme(value);
+              }}
+            >
+              <SelectTrigger
+                aria-label={t(
+                  "settings.general.workspace.sql-editor-theme.self"
+                )}
+                className="w-full sm:w-80"
+              >
+                <SelectValue>
+                  {isCustomSelected
+                    ? t("settings.general.workspace.sql-editor-theme.custom")
+                    : PRESET_BY_ID[selectedThemeId]?.name}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {PRESETS.map((preset) => (
+                  <SelectItem key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value={CUSTOM_THEME_OPTION}>
+                  {t("settings.general.workspace.sql-editor-theme.custom")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
 
             {isCustomSelected && customDraft && (
               <ThemeAnchorEditor

@@ -1,16 +1,16 @@
-import dayjs from "dayjs";
 import type { TFunction } from "i18next";
-import { ExternalLink, Loader2, Package } from "lucide-react";
+import { Loader2, Package } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RouterLink } from "@/components/RouterLink";
+import { HumanizeTs } from "@/components/HumanizeTs";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { getTimeForPbTimestampProtoEs } from "@/types";
 import { State, VCSType } from "@/types/proto-es/v1/common_pb";
 import type { Release } from "@/types/proto-es/v1/release_service_pb";
 import { Release_Type } from "@/types/proto-es/v1/release_service_pb";
 import { isValidReleaseName } from "@/types/release";
-import { getDateForPbTimestampProtoEs } from "@/types/timestamp";
 
 const MAX_DISPLAYED_RELEASE_FILES = 4;
 
@@ -25,7 +25,6 @@ export function ReleaseInfoCard({
   release?: Release;
   releaseName: string;
 }>) {
-  const { t } = useTranslation();
   // Treat the release as missing when it's absent or its name doesn't parse
   // as a real release resource name.
   const effectiveRelease =
@@ -55,17 +54,6 @@ export function ReleaseInfoCard({
             {releaseTitle}
           </span>
         </div>
-        {effectiveRelease && (
-          <RouterLink
-            to={`/${effectiveRelease.name}`}
-            className="inline-flex items-center gap-x-1 text-sm text-accent hover:underline"
-            rel="noreferrer"
-            target="_blank"
-          >
-            <span>{t("common.view")}</span>
-            <ExternalLink className="h-4 w-4" />
-          </RouterLink>
-        )}
       </div>
       {body}
     </div>
@@ -75,7 +63,7 @@ export function ReleaseInfoCard({
 function LoadingBlock() {
   const { t } = useTranslation();
   return (
-    <div className="rounded-sm border border-control-border bg-gray-50 px-4 py-3 text-sm text-control-light">
+    <div className="rounded-sm border border-control-border bg-control-bg/50 px-4 py-3 text-sm text-control-light">
       <div className="flex items-center gap-x-2">
         <Loader2 className="h-4 w-4 animate-spin" />
         <span>{t("common.loading")}</span>
@@ -95,15 +83,15 @@ function NotFoundBlock() {
 
 function ReleaseBlock({ release }: Readonly<{ release: Release }>) {
   const { t } = useTranslation();
-  const displayedFiles = release.files.slice(0, MAX_DISPLAYED_RELEASE_FILES);
-  const createdTime = release.createTime
-    ? dayjs(getDateForPbTimestampProtoEs(release.createTime)).format(
-        "YYYY-MM-DD HH:mm:ss"
-      )
-    : undefined;
+  const [showAllFiles, setShowAllFiles] = useState(false);
+  const isTruncated =
+    !showAllFiles && release.files.length > MAX_DISPLAYED_RELEASE_FILES;
+  const displayedFiles = isTruncated
+    ? release.files.slice(0, MAX_DISPLAYED_RELEASE_FILES)
+    : release.files;
 
   return (
-    <div className="rounded-sm border border-control-border bg-gray-50 px-4 py-3">
+    <div className="rounded-sm border border-control-border bg-control-bg/50 px-4 py-3">
       <div className="flex flex-col gap-y-3">
         {release.files.length > 0 && (
           <div className="flex flex-col gap-y-2">
@@ -111,34 +99,35 @@ function ReleaseBlock({ release }: Readonly<{ release: Release }>) {
               <div className="text-sm font-medium text-control">
                 {t("release.files")} ({release.files.length})
               </div>
-              {release.files.length > MAX_DISPLAYED_RELEASE_FILES && (
-                <RouterLink
-                  to={`/${release.name}`}
-                  className="text-sm text-accent hover:underline"
-                  rel="noreferrer"
-                  target="_blank"
+              {isTruncated && (
+                <Button
+                  type="button"
+                  appearance="link"
+                  size="sm"
+                  className="h-auto p-0 text-accent"
+                  onClick={() => setShowAllFiles(true)}
                 >
                   {t("release.view-all-files")}
-                </RouterLink>
+                </Button>
               )}
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3">
               {displayedFiles.map((file) => (
                 <div
                   key={file.path}
-                  className="flex items-center justify-between rounded-sm bg-white p-2 text-xs"
+                  className="flex items-center justify-between rounded-sm bg-background p-2 text-xs"
                 >
                   <div className="mr-2 min-w-0 flex-1">
                     <div className="truncate font-medium">{file.path}</div>
                     <div className="text-control-light">{file.version}</div>
                   </div>
-                  <div className="shrink-0 rounded-sm bg-blue-100 px-1.5 py-0.5 text-xs text-blue-800">
+                  <div className="shrink-0 rounded-sm bg-info/10 px-1.5 py-0.5 text-xs text-info">
                     {getReleaseFileTypeText(release.type, t)}
                   </div>
                 </div>
               ))}
-              {release.files.length > MAX_DISPLAYED_RELEASE_FILES && (
-                <div className="flex items-center justify-center rounded-sm border border-dashed border-control-border bg-white p-2 text-xs text-control-light">
+              {isTruncated && (
+                <div className="flex items-center justify-center rounded-sm border border-dashed border-control-border bg-background p-2 text-xs text-control-light">
                   {t("release.and-n-more-files", {
                     count: release.files.length - MAX_DISPLAYED_RELEASE_FILES,
                   })}
@@ -171,9 +160,10 @@ function ReleaseBlock({ release }: Readonly<{ release: Release }>) {
           </div>
         )}
 
-        {createdTime && (
-          <div className="text-xs text-control-light">{createdTime}</div>
-        )}
+        <HumanizeTs
+          className="text-xs text-control-light"
+          tsMs={getTimeForPbTimestampProtoEs(release.createTime)}
+        />
       </div>
     </div>
   );

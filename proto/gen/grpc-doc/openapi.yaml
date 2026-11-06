@@ -19,7 +19,6 @@ paths:
         - name: Connect-Protocol-Version
           in: header
           description: Define the version of the Connect protocol
-          required: true
           schema:
             $ref: '#/components/schemas/connect-protocol-version'
           example: 1
@@ -64,7 +63,6 @@ paths:
         - name: Connect-Protocol-Version
           in: header
           description: Define the version of the Connect protocol
-          required: true
           schema:
             $ref: '#/components/schemas/connect-protocol-version'
           example: 1
@@ -109,7 +107,6 @@ paths:
         - name: Connect-Protocol-Version
           in: header
           description: Define the version of the Connect protocol
-          required: true
           schema:
             $ref: '#/components/schemas/connect-protocol-version'
           example: 1
@@ -501,6 +498,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.BatchParseResponse'
+  /v1/databases:search:
+    post:
+      tags:
+        - DatabaseService
+      summary: SearchDatabases
+      description: |-
+        Searches for databases in every active project where the caller has the bb.databases.get permission, filtered by the specified filter.
+         Permissions required: bb.databases.get (checked in each project)
+      operationId: DatabaseService_SearchDatabases
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/bytebase.v1.SearchDatabasesRequest'
+        required: true
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.SearchDatabasesResponse'
   /v1/environments/{environment}/policies:
     get:
       tags:
@@ -1402,7 +1421,7 @@ paths:
       summary: ListDatabases
       description: |-
         Lists databases in a project, instance, or workspace.
-         Permissions required: bb.projects.get (for project parent), bb.databases.list (for workspace parent), or bb.instances.get (for instance parent)
+         Permissions required: bb.databases.list (for project or workspace parent), or bb.instances.get (for instance parent)
       operationId: DatabaseService_ListDatabases2
       parameters:
         - name: instance
@@ -4736,7 +4755,8 @@ paths:
       summary: Export
       description: |-
         Exports query results to a file format.
-         Permissions required: bb.databases.get
+         Permissions required: bb.databases.get, and bb.sql.export on the data the statement reads.
+         An active access grant with export=true for the statement satisfies bb.sql.export on its target databases.
       operationId: SQLService_Export
       parameters:
         - name: instance
@@ -4806,6 +4826,13 @@ paths:
                   description: |-
                     Container is the container name to execute the query against, used for
                      CosmosDB only.
+                destination:
+                  allOf:
+                    - $ref: '#/components/schemas/bytebase.v1.ExportDestination'
+                  title: destination
+                  description: |-
+                    Where the export goes. A destination the workspace query data policy
+                     does not allow is rejected with FAILED_PRECONDITION.
               title: ExportRequest
               additionalProperties: false
         required: true
@@ -5628,7 +5655,13 @@ paths:
              - issue: the access issue fullname, support "==" operator.
              - expire_time: the access expire time in "2006-01-02T15:04:05Z07:00" format, support ">=", ">", "<=" and "<" operator.
              - create_time: the access creation time in "2006-01-02T15:04:05Z07:00" format, support ">=", ">", "<=" and "<" operator.
-             - query: the access query, support "==" and ".contains(xx)" operator
+             - query: the access query, support "==" and ".contains(xx)" operator.
+               Equality trims only boundary ASCII space, tab, LF, CR, vertical tab, and form feed.
+             - query_hash: supports "==" with a lowercase hexadecimal SHA-256 digest of
+               the UTF-8 query after the same boundary trim. Internal whitespace and Unicode
+               remain unchanged.
+             - schema: execution schema, supports "=="; empty matches only empty or absent values.
+             - container: execution container, supports "=="; empty matches only empty or absent values.
              - target: the target database fullname, support "==" operator.
              - unmask: whether the grant allows unmasking sensitive data, support "==" operator with a boolean literal.
              - export: whether the grant allows exporting the query result, support "==" operator with a boolean literal.
@@ -5923,7 +5956,8 @@ paths:
                      - method: the API name, can be found in the docs. Usually "/bytebase.v1.…", for example "/bytebase.v1.UserService/CreateUser"; entries written outside the v1 API carry their own prefix, such as "/bytebase.mcp.Session/Authorize" or "/bytebase.cli.Recovery/ResetUserPassword". Support "==" operator.
                      - resource: the resource the entry is about, support "==" operator.
                      - severity: support "==" operator, check Severity enum in AuditLog message for values.
-                     - user: the actor, should in "users/{email}" format, support "==" operator.
+                     - actor: the actor, in users/{email}, serviceAccounts/{email}, or
+                       workloadIdentities/{email} format. Support "==" operator.
                      - create_time: support ">=" and "<=" operator.
                      - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support "==" operator.
                      - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry's mcp_delegation.correlation_id. Support "==" operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here.
@@ -5931,7 +5965,7 @@ paths:
                      For example:
                       - filter = "method == '/bytebase.v1.SQLService/Query'"
                       - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR'"
-                      - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && user == 'users/bb@bytebase.com'"
+                      - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && actor == 'users/bb@bytebase.com'"
                       - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && create_time <= '2021-01-01T00:00:00Z' && create_time >= '2020-01-01T00:00:00Z'"
                       - filter = "mcp == true"
                       - filter = "mcp_correlation_id == '0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60'"
@@ -6178,7 +6212,7 @@ paths:
       summary: ListDatabases
       description: |-
         Lists databases in a project, instance, or workspace.
-         Permissions required: bb.projects.get (for project parent), bb.databases.list (for workspace parent), or bb.instances.get (for instance parent)
+         Permissions required: bb.databases.list (for project or workspace parent), or bb.instances.get (for instance parent)
       operationId: DatabaseService_ListDatabases
       parameters:
         - name: project
@@ -6603,7 +6637,7 @@ paths:
       summary: ListDatabases
       description: |-
         Lists databases in a project, instance, or workspace.
-         Permissions required: bb.projects.get (for project parent), bb.databases.list (for workspace parent), or bb.instances.get (for instance parent)
+         Permissions required: bb.databases.list (for project or workspace parent), or bb.instances.get (for instance parent)
       operationId: DatabaseService_ListDatabases4
       parameters:
         - name: project
@@ -10045,7 +10079,8 @@ paths:
       summary: Export
       description: |-
         Exports query results to a file format.
-         Permissions required: bb.databases.get
+         Permissions required: bb.databases.get, and bb.sql.export on the data the statement reads.
+         An active access grant with export=true for the statement satisfies bb.sql.export on its target databases.
       operationId: SQLService_Export2
       parameters:
         - name: project
@@ -10121,6 +10156,13 @@ paths:
                   description: |-
                     Container is the container name to execute the query against, used for
                      CosmosDB only.
+                destination:
+                  allOf:
+                    - $ref: '#/components/schemas/bytebase.v1.ExportDestination'
+                  title: destination
+                  description: |-
+                    Where the export goes. A destination the workspace query data policy
+                     does not allow is rejected with FAILED_PRECONDITION.
               title: ExportRequest
               additionalProperties: false
         required: true
@@ -11102,6 +11144,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/bytebase.v1.ListIssueCommentsResponse'
+  /v1/projects/{project}/issues/{issue}/reviewRuns/{reviewRun}:
+    get:
+      tags:
+        - IssueService
+      summary: GetReviewRun
+      description: |-
+        Gets the current run of one reviewer on an issue. The run carries
+         execution status only; review results are issue comments. A reviewer
+         that has never run on the issue is NOT_FOUND.
+         Permissions required: bb.reviewRuns.get
+      operationId: IssueService_GetReviewRun
+      parameters:
+        - name: project
+          in: path
+          description: The project id.
+          required: true
+          schema:
+            type: string
+        - name: issue
+          in: path
+          description: The issue id.
+          required: true
+          schema:
+            type: string
+        - name: reviewRun
+          in: path
+          description: The reviewRun id.
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/bytebase.v1.ReviewRun'
   /v1/projects/{project}/issues/{issue}/reviewRuns/{reviewRun}:run:
     post:
       tags:
@@ -11111,9 +11190,9 @@ paths:
         Triggers a review run. The slot is reset unconditionally: a RUNNING
          execution is superseded (its completion is fenced off), the attempt
          number is bumped, and the returned run is AVAILABLE.
-         Review results are not returned by this RPC and have no read RPC yet:
-         findings will surface as issue comments once the review comment
-         integration lands. The returned run carries execution status only.
+         Review results are not returned by this RPC: they are posted as issue
+         comments. The returned run carries execution status only, and
+         GetReviewRun reads it back.
          The audit log is the only record of who triggered a run.
          Permissions required: bb.reviewRuns.run
       operationId: IssueService_RunReview
@@ -11566,6 +11645,9 @@ paths:
              - title: the plan title, support "==" operator for exact match and ".contains()" operator for case-insensitive substring match.
              - spec_type: the plan spec config type, support "==" operator, the value should be "create_database_config" or "change_database_config".
              - state: the plan state, support "==" operator, the value should be "ACTIVE" or "DELETED".
+             - has_release: whether a spec references a release, support "==" operator, the value should be "true" or "false".
+             - release: the release a spec references, in "projects/{project}/releases/{release}" format, support "==" operator.
+             - task_status: the current status of any task in the plan, support "in" operator, the values should be Task.Status values except STATUS_UNSPECIFIED.
 
              For example:
              creator == "users/ed@bytebase.com" && create_time >= "2025-01-02T15:04:05Z07:00"
@@ -11573,6 +11655,8 @@ paths:
              title.contains("database migration")
              spec_type == "change_database_config"
              state == "ACTIVE"
+             has_release == true && task_status in ["FAILED", "RUNNING"]
+             release == "projects/my-project/releases/release_20260115-RC00"
           schema:
             type: string
             title: filter
@@ -14653,7 +14737,7 @@ paths:
       summary: GetSetting
       description: |-
         Retrieves a workspace setting by name.
-         Permissions required: bb.settings.get
+         Permissions required: bb.settings.getEnvironment for settings/ENVIRONMENT, bb.settings.getWorkspaceProfile for settings/WORKSPACE_PROFILE, bb.settings.get for the others
       operationId: SettingService_GetSetting
       parameters:
         - name: setting
@@ -14749,9 +14833,9 @@ paths:
           description: |-
             The same Stripe Checkout Session ID PurchaseResponse mints, arriving back
              the other way, so it carries the same classification. VerifyCheckoutSession
-             is EXCLUDED, and the MCP gate records a row for every method it refuses, so
-             leaving this unannotated would write the id into a denial row while the
-             response that produced it was redacted.
+             is EXCLUDED, and a refusal of it streams its request to the stdout audit
+             log, so leaving this unannotated would write the id into that line while
+             the response that produced it was redacted.
           required: true
           schema:
             type: string
@@ -15738,7 +15822,7 @@ paths:
       summary: ListDatabases
       description: |-
         Lists databases in a project, instance, or workspace.
-         Permissions required: bb.projects.get (for project parent), bb.databases.list (for workspace parent), or bb.instances.get (for instance parent)
+         Permissions required: bb.databases.list (for project or workspace parent), or bb.instances.get (for instance parent)
       operationId: DatabaseService_ListDatabases3
       parameters:
         - name: workspace
@@ -16579,9 +16663,25 @@ components:
             - type: "null"
           title: usage
           description: Token usage for this provider call, when available.
+        stopReason:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.AIChatResponse.StopReason'
+          title: stop_reason
+          description: Why the model stopped. A truncated or blocked response can still carry content.
       title: AIChatResponse
       additionalProperties: false
       description: Response message for AIService.Chat.
+    bytebase.v1.AIChatResponse.StopReason:
+      type: string
+      title: StopReason
+      enum:
+        - STOP_REASON_UNSPECIFIED
+        - TURN_COMPLETED
+        - TOKEN_LIMIT
+        - BLOCKED
+        - MALFORMED_TOOL_CALL
+        - OTHER
+      description: Why the model stopped generating a response.
     bytebase.v1.AIChatToolCall:
       type: object
       properties:
@@ -16634,6 +16734,27 @@ components:
           title: total_tokens
           format: int32
           description: Total tokens used by the provider call.
+        inputTokens:
+          type:
+            - integer
+            - "null"
+          title: input_tokens
+          format: int32
+          description: Input tokens used by the provider call, including cached input.
+        outputTokens:
+          type:
+            - integer
+            - "null"
+          title: output_tokens
+          format: int32
+          description: Output tokens used by the provider call, including reasoning tokens.
+        cachedInputTokens:
+          type:
+            - integer
+            - "null"
+          title: cached_input_tokens
+          format: int32
+          description: Input tokens read from cache. This is a subset of input_tokens.
       title: AIChatUsage
       additionalProperties: false
       description: Token usage for a single AI provider call.
@@ -16659,6 +16780,14 @@ components:
         version:
           type: string
           title: version
+        sqlReviewEnabled:
+          type: boolean
+          title: sql_review_enabled
+          description: |-
+            Whether the AI SQL review may run. It is off by default and is a consent
+             of its own beside `enabled`: a review sends the statements of a change to
+             the provider, and can send the schema of its target databases and their
+             table statistics.
       title: AISetting
       additionalProperties: false
     bytebase.v1.AISetting.Provider:
@@ -16718,8 +16847,9 @@ components:
           type: string
           title: creator
           description: |-
-            The creator of the access grant.
+            The creator of the access grant, the caller who requested it.
              Format: users/{email}
+          readOnly: true
         status:
           allOf:
             - $ref: '#/components/schemas/bytebase.v1.AccessGrant.Status'
@@ -16770,7 +16900,9 @@ components:
         export:
           type: boolean
           title: export
-          description: Whether export the query result.
+          description: |-
+            Whether the grant allows exporting the query result.
+             An active grant with export=true grants bb.sql.export for this query until the grant expires.
         schema:
           type: string
           title: schema
@@ -16781,7 +16913,6 @@ components:
           description: The container name to execute the query against, used for CosmosDB only.
       title: AccessGrant
       required:
-        - creator
         - targets
     bytebase.v1.AccessGrant.Status:
       type: string
@@ -16919,6 +17050,18 @@ components:
             - $ref: '#/components/schemas/bytebase.v1.MCPSetting'
           title: mcp_setting
           description: The MCP (Model Context Protocol) setting in the current workspace.
+          readOnly: true
+        aiEnabled:
+          type: boolean
+          title: ai_enabled
+          description: Whether the workspace AI setting enables the AI agent.
+          readOnly: true
+        aiSqlReviewEnabled:
+          type: boolean
+          title: ai_sql_review_enabled
+          description: |-
+            Whether the workspace AI setting switches the AI SQL review on. A review
+             also needs `ai_enabled`.
           readOnly: true
       title: ActuatorInfo
       additionalProperties: false
@@ -17525,12 +17668,12 @@ components:
           title: create_time
           description: The timestamp when the audit log was created.
           readOnly: true
-        user:
+        actor:
           type: string
-          title: user
+          title: actor
           description: |-
-            The user who performed the action.
-             Format: users/{email}
+            The principal who performed the action.
+             Formats: users/{email}, serviceAccounts/{email}, or workloadIdentities/{email}
         method:
           type: string
           title: method
@@ -18189,9 +18332,9 @@ components:
              The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
 
              Support variables:
-             resource.database: the canonical database full name in "instances/{instance}/databases/{database}" or "projects/{project}/instances/{instance}/databases/{database}" format, used by any role with SQL Editor read (e.g. "roles/sqlEditorUser", "roles/sqlEditorReadUser") or write (bb.sql.ddl / bb.sql.dml) access, support "==" operator.
-             resource.schema_name: the schema name, used by any role with SQL Editor read or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
-             resource.table_name: the table name, used by any role with SQL Editor read or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
+             resource.database: the canonical database full name in "instances/{instance}/databases/{database}" or "projects/{project}/instances/{instance}/databases/{database}" format, used by any role with SQL Editor read (e.g. "roles/sqlEditorUser", "roles/sqlEditorReadUser"), export (bb.sql.export, e.g. "roles/sqlEditorExporter") or write (bb.sql.ddl / bb.sql.dml) access, support "==" operator.
+             resource.schema_name: the schema name, used by any role with SQL Editor read, export (bb.sql.export) or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
+             resource.table_name: the table name, used by any role with SQL Editor read, export (bb.sql.export) or write (bb.sql.ddl / bb.sql.dml) access; for writes it is evaluated per write-target table, support "==" operator.
              resource.environment_id: the environment to allow the DDL/DML operation in the SQL Editor, only works for the role with bb.sql.ddl or bb.sql.dml permissions. Support "in" operator.
              request.time: the expiration. Only support "<" operation in `request.time < timestamp("{ISO datetime string format}")`.
 
@@ -20841,6 +20984,14 @@ components:
       title: ExportAuditLogsResponse
       additionalProperties: false
       description: Response message for exporting audit logs.
+    bytebase.v1.ExportDestination:
+      type: string
+      title: ExportDestination
+      enum:
+        - EXPORT_DESTINATION_UNSPECIFIED
+        - DOWNLOAD
+        - SHAREPOINT
+      description: Where an export goes. Values are added as destinations are supported.
     bytebase.v1.ExportFormat:
       type: string
       title: ExportFormat
@@ -20910,6 +21061,13 @@ components:
           description: |-
             Container is the container name to execute the query against, used for
              CosmosDB only.
+        destination:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.ExportDestination'
+          title: destination
+          description: |-
+            Where the export goes. A destination the workspace query data policy
+             does not allow is rejected with FAILED_PRECONDITION.
       title: ExportRequest
       required:
         - name
@@ -20929,8 +21087,26 @@ components:
             The just-in-time access grant applied to this export, if any.
              Format: projects/{project}/accessGrants/{accessGrant}.
              Empty when the user was authorized through normal ACL rather than a grant.
+        uri:
+          type: string
+          title: uri
+          description: |-
+            Set when the export was sent to an export destination: the absolute
+             location of the folder or key prefix created for this export, for example
+             https://… for SharePoint or s3://bucket/prefix for S3. content is then empty.
       title: ExportResponse
       additionalProperties: false
+    bytebase.v1.ExportSetting:
+      type: object
+      properties:
+        sharepoint:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.SharePointSetting'
+          title: sharepoint
+          description: Unset when SharePoint is not configured.
+      title: ExportSetting
+      additionalProperties: false
+      description: ExportSetting holds each export destination provider's credentials.
     bytebase.v1.ExportVCSProviderUsersRequest:
       type: object
       title: ExportVCSProviderUsersRequest
@@ -21466,6 +21642,19 @@ components:
             The name of the SQL review config to retrieve.
              Format: reviewConfigs/{reviewConfig}
       title: GetReviewConfigRequest
+      required:
+        - name
+      additionalProperties: false
+    bytebase.v1.GetReviewRunRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          title: name
+          description: |-
+            The name of the review run to retrieve.
+             Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun}
+      title: GetReviewRunRequest
       required:
         - name
       additionalProperties: false
@@ -22359,6 +22548,14 @@ components:
           title: plan_update
         - type: object
           properties:
+            reviewRunCompletion:
+              allOf:
+                - $ref: '#/components/schemas/bytebase.v1.IssueComment.ReviewRunCompletion'
+              title: review_run_completion
+              description: Review run completion event.
+          title: review_run_completion
+        - type: object
+          properties:
             reviewSubmission:
               allOf:
                 - $ref: '#/components/schemas/bytebase.v1.IssueComment.ReviewSubmission'
@@ -22376,6 +22573,8 @@ components:
               - required:
                   - planUpdate
               - required:
+                  - reviewRunCompletion
+              - required:
                   - reviewSubmission
           - not:
               oneOf:
@@ -22385,6 +22584,8 @@ components:
                     - issueUpdate
                 - required:
                     - planUpdate
+                - required:
+                    - reviewRunCompletion
                 - required:
                     - reviewSubmission
       properties:
@@ -22442,8 +22643,18 @@ components:
           title: statement_anchor
           description: |-
             (IMMUTABLE) Optional source context on a root or reply. A reply's anchor must share
-             the root's spec and sheet_sha256; it may narrow the range.
-             Cannot be set on events. Immutable after creation.
+             the root's spec and sheet_sha256 when created; it may narrow the range.
+             Cannot be set on events. Immutable after creation, except that a later
+             review run reporting a review result again moves the result to its
+             statement in the SQL that run reviewed.
+        reviewMetadata:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.IssueComment.ReviewMetadata'
+          title: review_metadata
+          description: |-
+            Present on review results, the comments the review executor posts.
+             Never accepted on create or update.
+          readOnly: true
       title: IssueComment
       description: A comment on an issue.
     bytebase.v1.IssueComment.Approval:
@@ -22530,6 +22741,108 @@ components:
       description: |-
         Plan update event information (snapshot of plan.config.specs before
          and after a PlanService.UpdatePlan call that mutated specs).
+    bytebase.v1.IssueComment.ReviewMetadata:
+      type: object
+      properties:
+        runType:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.ReviewRun.Type'
+          title: run_type
+          description: The reviewer that posted the result.
+        ruleType:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.ReviewRuleType'
+          title: rule_type
+          description: The rule judged against. Set if and only if run_type is RULE.
+        priority:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.IssueComment.ReviewMetadata.Priority'
+          title: priority
+        targets:
+          type: array
+          items:
+            type: string
+          title: targets
+          description: |-
+            Every database the result applies to, sorted.
+             Format: instances/{instance}/databases/{database}
+        superseded:
+          type: boolean
+          title: superseded
+          description: |-
+            A later run of the same reviewer has completed without reporting the
+             result again, whatever its thread state.
+        attempt:
+          type: string
+          title: attempt
+          format: int64
+          description: |-
+            The ReviewRunCompletion.attempt of the run that posted the result. A
+             result a later run reports again keeps its thread and its attempt.
+        codes:
+          type: array
+          items:
+            type: string
+          title: codes
+          description: |-
+            The conditions a RULE result reports, as finding codes such as
+             "WT101", one per reason. A code names the same condition on every
+             engine. Empty for other reviewers.
+        title:
+          type: string
+          title: title
+          description: |-
+            The name of the problem an AI result reports, on one line; the comment
+             holds the rest. Empty for a RULE result, which rule_type names.
+      title: ReviewMetadata
+      additionalProperties: false
+      description: What a review result carries beyond its text.
+    bytebase.v1.IssueComment.ReviewMetadata.Priority:
+      type: string
+      title: Priority
+      enum:
+        - PRIORITY_UNSPECIFIED
+        - P0
+        - P1
+        - P2
+      description: |-
+        Priority says what resolving the thread means. It has no bearing on
+         blocking, which thread_state alone decides.
+    bytebase.v1.IssueComment.ReviewRunCompletion:
+      type: object
+      properties:
+        runType:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.ReviewRun.Type'
+          title: run_type
+          description: The reviewer that ran.
+        attempt:
+          type: string
+          title: attempt
+          format: int64
+          description: |-
+            Identifies the run among its reviewer's runs on the issue. The results
+             it posted carry the same ReviewMetadata.attempt.
+        postedCount:
+          type: integer
+          title: posted_count
+          format: int32
+          description: Results the run posted as new threads.
+        keptCount:
+          type: integer
+          title: kept_count
+          format: int32
+          description: Earlier results the run reported again, which kept their threads.
+        supersededCount:
+          type: integer
+          title: superseded_count
+          format: int32
+          description: Earlier results the run no longer reports, now superseded.
+      title: ReviewRunCompletion
+      additionalProperties: false
+      description: |-
+        A review run completed, and what it did to the results of its reviewer.
+         Posted by the reviewer, with no creator.
     bytebase.v1.IssueComment.ReviewSubmission:
       type: object
       title: ReviewSubmission
@@ -22725,7 +23038,13 @@ components:
              - issue: the access issue fullname, support "==" operator.
              - expire_time: the access expire time in "2006-01-02T15:04:05Z07:00" format, support ">=", ">", "<=" and "<" operator.
              - create_time: the access creation time in "2006-01-02T15:04:05Z07:00" format, support ">=", ">", "<=" and "<" operator.
-             - query: the access query, support "==" and ".contains(xx)" operator
+             - query: the access query, support "==" and ".contains(xx)" operator.
+               Equality trims only boundary ASCII space, tab, LF, CR, vertical tab, and form feed.
+             - query_hash: supports "==" with a lowercase hexadecimal SHA-256 digest of
+               the UTF-8 query after the same boundary trim. Internal whitespace and Unicode
+               remain unchanged.
+             - schema: execution schema, supports "=="; empty matches only empty or absent values.
+             - container: execution container, supports "=="; empty matches only empty or absent values.
              - target: the target database fullname, support "==" operator.
              - unmask: whether the grant allows unmasking sensitive data, support "==" operator with a boolean literal.
              - export: whether the grant allows exporting the query result, support "==" operator with a boolean literal.
@@ -22876,7 +23195,7 @@ components:
           type: string
           title: parent
           description: |-
-            - projects/{project}: list databases in a project, require "bb.projects.get" permission.
+            - projects/{project}: list databases in a project, require "bb.databases.list" permission.
              - workspaces/{id}: list databases in the workspace, require "bb.databases.list" permission.
              - instances/{instance}: list databases in an instance, require "bb.instances.get" permission.
              - projects/{project}/instances/{instance}: list databases in a project instance, require "bb.instances.get" permission.
@@ -23428,6 +23747,9 @@ components:
              - title: the plan title, support "==" operator for exact match and ".contains()" operator for case-insensitive substring match.
              - spec_type: the plan spec config type, support "==" operator, the value should be "create_database_config" or "change_database_config".
              - state: the plan state, support "==" operator, the value should be "ACTIVE" or "DELETED".
+             - has_release: whether a spec references a release, support "==" operator, the value should be "true" or "false".
+             - release: the release a spec references, in "projects/{project}/releases/{release}" format, support "==" operator.
+             - task_status: the current status of any task in the plan, support "in" operator, the values should be Task.Status values except STATUS_UNSPECIFIED.
 
              For example:
              creator == "users/ed@bytebase.com" && create_time >= "2025-01-02T15:04:05Z07:00"
@@ -23435,6 +23757,8 @@ components:
              title.contains("database migration")
              spec_type == "change_database_config"
              state == "ACTIVE"
+             has_release == true && task_status in ["FAILED", "RUNNING"]
+             release == "projects/my-project/releases/release_20260115-RC00"
       title: ListPlansRequest
       required:
         - parent
@@ -24401,6 +24725,7 @@ components:
         - OPENS_AN_ADMIN_CONNECTION
         - SENDS_DATA_TO_A_THIRD_PARTY
         - RETURNS_A_STORED_SECRET
+        - REDRAWS_GOVERNANCE_BOUNDARY
       description: |-
         Why an MCP session may not call an RPC. The mechanism, not the wording: each
          value names what its methods actually do, and the serving side turns that
@@ -24410,7 +24735,7 @@ components:
 
          One enum covers both refused classes, and every value belongs to exactly one
          of them: values 1-8 name a mechanism that breaks the MCP boundary, which is
-         what FORBIDDEN means, and values 9-13 name a scope decision this phase took,
+         what FORBIDDEN means, and values 9-14 name a scope decision this phase took,
          which is what EXCLUDED means. The distinction is real and lives on the class
          annotation — a FORBIDDEN mechanism is a durable never, an EXCLUDED scope
          decision is what a future admin-capable ceiling would argue with, one
@@ -24438,6 +24763,9 @@ components:
          between, EXCLUDED and FORBIDDEN are served by no ceiling, and an unclassified
          method is refused rather than served. Annotating a method is therefore a
          change to what an MCP session can reach, taking effect on the next request.
+         READ and WRITE methods are also disclosed to workspace admins, as capability
+         rows on the Access policy page, so annotating a method changes what the
+         product promises as well as what it serves.
     bytebase.v1.MCPSetting:
       type: object
       properties:
@@ -24452,20 +24780,6 @@ components:
              on the internal MCP chain decides, per request, which method classes are
              served, and under READ_ONLY the SQL clamp decides, per statement, whether
              it only reads.
-        ignoreMaskingExemptions:
-          type: boolean
-          title: ignore_masking_exemptions
-          description: |-
-            Whether a request that arrived over MCP stops applying the caller's own
-             unmasking provisioning. Two mechanisms let a user see a real value and this
-             suppresses both: the masking exemptions granted to them, and the unmask
-             carried by an access grant. The same user in the console is untouched.
-
-             It cannot force masking where there is none. Masking substitutes values in
-             query results, so this does not reach data copied into a column carrying no
-             masking policy, and it does nothing on the engines Bytebase does not mask.
-             It narrows what an agent reads through the paths Bytebase masks; it is not
-             a confidentiality boundary.
       title: MCPSetting
       additionalProperties: false
       description: |-
@@ -24481,8 +24795,8 @@ components:
         - READ_WRITE
       description: |-
         Capability is the ceiling: a session runs at this level or lower.
-         Writing CAPABILITY_UNSPECIFIED explicitly is rejected; omit the update mask
-         path to leave the current ceiling unchanged.
+         Writing CAPABILITY_UNSPECIFIED, explicitly or by leaving
+         value.mcp.capability out of the update mask, is rejected.
     bytebase.v1.MaskingExemptionPolicy:
       type: object
       properties:
@@ -25463,6 +25777,7 @@ components:
         - FEATURE_COMMUNITY_SUPPORT
         - FEATURE_EMAIL_SUPPORT
         - FEATURE_DEDICATED_SUPPORT_WITH_SLA
+        - FEATURE_SHAREPOINT_EXPORT
       description: PlanFeature represents the available features in Bytebase
     bytebase.v1.PlanLimitConfig:
       type: object
@@ -25521,6 +25836,20 @@ components:
           title: query_data_policy
         - type: object
           properties:
+            reviewAiPolicy:
+              allOf:
+                - $ref: '#/components/schemas/bytebase.v1.ReviewAIPolicy'
+              title: review_ai_policy
+          title: review_ai_policy
+        - type: object
+          properties:
+            reviewRulePolicy:
+              allOf:
+                - $ref: '#/components/schemas/bytebase.v1.ReviewRulePolicy'
+              title: review_rule_policy
+          title: review_rule_policy
+        - type: object
+          properties:
             rolloutPolicy:
               allOf:
                 - $ref: '#/components/schemas/bytebase.v1.RolloutPolicy'
@@ -25544,6 +25873,10 @@ components:
               - required:
                   - queryDataPolicy
               - required:
+                  - reviewAiPolicy
+              - required:
+                  - reviewRulePolicy
+              - required:
                   - rolloutPolicy
               - required:
                   - tagPolicy
@@ -25555,6 +25888,10 @@ components:
                     - maskingRulePolicy
                 - required:
                     - queryDataPolicy
+                - required:
+                    - reviewAiPolicy
+                - required:
+                    - reviewRulePolicy
                 - required:
                     - rolloutPolicy
                 - required:
@@ -25619,6 +25956,8 @@ components:
         - ROLLOUT_POLICY
         - TAG
         - DATA_QUERY
+        - REVIEW_RULE
+        - REVIEW_AI
       description: The type of organizational policy.
     bytebase.v1.Position:
       type: object
@@ -25788,8 +26127,9 @@ components:
           title: ci_sampling_size
           format: int32
           description: |-
-            The maximum number of database rows to sample during CI data validation.
-             Without specification, sampling is disabled, resulting in full validation.
+            The maximum number of databases to sample during CI data validation and
+             AI review. Without specification, sampling is disabled, resulting in full
+             validation.
         parallelTasksPerRollout:
           type: integer
           title: parallel_tasks_per_rollout
@@ -25829,6 +26169,11 @@ components:
           type: boolean
           title: allow_last_plan_editor_approval
           description: Whether to allow the last Plan editor to approve a database change issue.
+        exportSetting:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.Project.ExportSetting'
+          title: export_setting
+          description: Export configuration for this project.
       title: Project
       additionalProperties: false
     bytebase.v1.Project.ExecutionRetryPolicy:
@@ -25842,6 +26187,17 @@ components:
       title: ExecutionRetryPolicy
       additionalProperties: false
       description: Execution retry policy configuration.
+    bytebase.v1.Project.ExportSetting:
+      type: object
+      properties:
+        sharepoint:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.SharePointDestination'
+          title: sharepoint
+          description: Unset when the project has no SharePoint destination.
+      title: ExportSetting
+      additionalProperties: false
+      description: Destinations offered for this project's exports, at most one per provider.
     bytebase.v1.PurchaseBillingMethod:
       type: object
       properties:
@@ -25960,9 +26316,8 @@ components:
         disableExport:
           type: boolean
           title: disable_export
-          description: |-
-            workspace-level policy
-             Disable data export in the SQL editor.
+          description: 'Deprecated: export is controlled by the bb.sql.export permission. Always false; setting it to true is rejected.'
+          deprecated: true
         disableCopyData:
           type: boolean
           title: disable_copy_data
@@ -25979,6 +26334,14 @@ components:
              If false,
              1. when read-only data source is configured, users're force to use the read-only data source
              2. otherwise fallback to use the admin data source.
+        disableDownload:
+          type: boolean
+          title: disable_download
+          description: |-
+            workspace-level policy
+             Hide the Download export destination in the SQL Editor. Exports can still go
+             to a configured storage destination such as SharePoint. The Export API does
+             not check this setting.
       title: QueryDataPolicy
       additionalProperties: false
       description: QueryDataPolicy is the policy configuration for querying data in the SQL Editor.
@@ -26047,6 +26410,13 @@ components:
           allOf:
             - $ref: '#/components/schemas/bytebase.v1.QueryOption.ExplainFormat'
           title: explain_format
+          description: |-
+            Which explain output the caller wants, for an explain request.
+
+             Leave it unspecified for the engine's own default, which is the only
+             output most engines have. Naming a format an engine cannot produce is
+             INVALID_ARGUMENT rather than a silent fallback, as is any explain request
+             against an engine that has no explain at all.
       title: QueryOption
       additionalProperties: false
     bytebase.v1.QueryOption.ExplainFormat:
@@ -26057,13 +26427,8 @@ components:
         - TEXT
         - JSON
         - XML
-      description: |-
-        Which explain output the caller wants, for an explain request.
-
-         Leave it unspecified for the engine's own default, which is the only
-         output most engines have. Naming a format an engine cannot produce is
-         INVALID_ARGUMENT rather than a silent fallback, as is any explain request
-         against an engine that has no explain at all.
+        - YAML
+      description: The output format of a query plan.
     bytebase.v1.QueryOption.RedisRunCommandsOn:
       type: string
       title: RedisRunCommandsOn
@@ -26250,6 +26615,11 @@ components:
             $ref: '#/components/schemas/bytebase.v1.MaskingReason'
           title: masked
           description: Masking reasons for each column (empty for non-masked columns).
+        queryPlan:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.QueryResult.QueryPlan'
+          title: query_plan
+          description: Set when the result is a query plan. Unset for any other result.
       title: QueryResult
     bytebase.v1.QueryResult.CommandError:
       type: object
@@ -26357,6 +26727,32 @@ components:
       description: |-
         refer https://www.postgresql.org/docs/11/protocol-error-fields.html
          for field description.
+    bytebase.v1.QueryResult.QueryPlan:
+      type: object
+      properties:
+        format:
+          allOf:
+            - $ref: '#/components/schemas/bytebase.v1.QueryOption.ExplainFormat'
+          title: format
+        executed:
+          type: boolean
+          title: executed
+          description: |-
+            Whether producing the plan executed the statement, as EXPLAIN ANALYZE
+             does.
+        content:
+          type: string
+          title: content
+          description: |-
+            The plan itself, where the engine states it beside the result rather
+             than in the result's rows. BigQuery reports the stages its job ran in
+             the job's own statistics, so one result carries the query's data and
+             the plan of the run that produced it. Empty when the plan is the rows,
+             which is every other engine. Omitted from the audit log, as the rows
+             are: the statement is what an audit reads.
+      title: QueryPlan
+      additionalProperties: false
+      description: 'A query plan the result carries: in its rows, or beside them.'
     bytebase.v1.QueryResult.SyntaxError:
       type: object
       properties:
@@ -26730,6 +27126,19 @@ components:
       required:
         - name
       additionalProperties: false
+    bytebase.v1.ReviewAIPolicy:
+      type: object
+      properties:
+        content:
+          type: string
+          title: content
+          description: The policy text. Must not be blank, at most 64 KiB.
+      title: ReviewAIPolicy
+      additionalProperties: false
+      description: |-
+        Natural-language policy for the AI review. Unlike the review rule policy,
+         both levels apply: the workspace policy and the project policy both reach
+         the reviewer, and the project policy wins where they conflict.
     bytebase.v1.ReviewConfig:
       type: object
       properties:
@@ -26765,6 +27174,55 @@ components:
              Format: {resource}/{resource id}, e.g., environments/test.
       title: ReviewConfig
       additionalProperties: false
+    bytebase.v1.ReviewRulePolicy:
+      type: object
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.ReviewRuleType'
+          title: rules
+          description: The rules switched on. Unknown or unspecified values are rejected.
+      title: ReviewRulePolicy
+      additionalProperties: false
+      description: |-
+        Standard review rule policy: the rules switched on. The nearest policy
+         wins: a project's own policy applies as is; a project without one uses
+         the workspace policy; with neither, every rule is on. Getting the policy
+         of a project without its own is NOT_FOUND; getting the workspace's when it
+         has none returns every rule on.
+
+         SYNTAX gates the rest: the other rules judge only SQL that parses, so a
+         list without SYNTAX switches every rule off.
+
+         A saved list is explicit, so a rule added to the standard set in a later
+         release is appended to every saved policy by a data migration in that
+         release.
+    bytebase.v1.ReviewRuleType:
+      type: string
+      title: ReviewRuleType
+      enum:
+        - REVIEW_RULE_TYPE_UNSPECIFIED
+        - SYNTAX
+        - WALK_THROUGH
+        - ONLINE_MIGRATION
+        - PRIOR_BACKUP
+        - REQUIRE_IS_NULL
+        - REQUIRE_WHERE
+        - DISALLOW_DROP_OBJECT
+        - DISALLOW_TRUNCATE
+        - DISALLOW_DROP_CONSTRAINT
+        - DISALLOW_RENAME
+        - REQUIRE_PRIMARY_KEY
+      description: |-
+        ReviewRuleType is the standard review rule set. The rules are fixed:
+         every project gets them without configuration, and the only setting is a
+         switch (see ReviewRulePolicy).
+
+         A rule id names what the rule examines. An execution check is named for
+         what it checks; a rule about the SQL itself carries REQUIRE or DISALLOW so
+         the id says which way it cuts. DISALLOW on a P1 rule means the operation
+         needs a person's acceptance, not that it is forbidden.
     bytebase.v1.ReviewRun:
       type: object
       properties:
@@ -26773,7 +27231,7 @@ components:
           title: name
           description: |-
             Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun}
-             The {reviewRun} id is the reviewer: "rule" or "guideline". The name
+             The {reviewRun} id is the reviewer: "rule" or "ai". The name
              addresses a slot, not an execution.
         type:
           allOf:
@@ -26808,6 +27266,14 @@ components:
              failed to execute (a platform problem, never the SQL — SQL problems are
              review results on a DONE run).
           readOnly: true
+        outdated:
+          type: boolean
+          title: outdated
+          description: |-
+            Whether the plan's SQL changed after this run started, so the run
+             reviews an earlier version of it. The server starts a new run before it
+             creates the rollout automatically.
+          readOnly: true
       title: ReviewRun
       additionalProperties: false
     bytebase.v1.ReviewRun.Status:
@@ -26829,7 +27295,7 @@ components:
       enum:
         - TYPE_UNSPECIFIED
         - RULE
-        - GUIDELINE
+        - AI
     bytebase.v1.Revision:
       type: object
       properties:
@@ -26973,7 +27439,7 @@ components:
           title: role
           description: |-
             The requested role.
-             Format: roles/EXPORTER.
+             Format: roles/{role}.
         user:
           type: string
           title: user
@@ -27033,13 +27499,15 @@ components:
         automatic:
           type: boolean
           title: automatic
-          description: Whether rollout is automatic without manual approval.
+          description: Whether the environment's rollout tasks start on their own, with no one running them.
         roles:
           type: array
           items:
             type: string
           title: roles
-          description: The roles that can approve rollout execution.
+          description: |-
+            Who can run, skip or cancel the environment's rollout tasks; WORKSPACE_APPROVAL sets approvers.
+             Anyone with bb.taskRuns.create can too.
       title: RolloutPolicy
       additionalProperties: false
       description: Rollout policy configuration.
@@ -27923,7 +28391,8 @@ components:
              - method: the API name, can be found in the docs. Usually "/bytebase.v1.…", for example "/bytebase.v1.UserService/CreateUser"; entries written outside the v1 API carry their own prefix, such as "/bytebase.mcp.Session/Authorize" or "/bytebase.cli.Recovery/ResetUserPassword". Support "==" operator.
              - resource: the resource the entry is about, support "==" operator.
              - severity: support "==" operator, check Severity enum in AuditLog message for values.
-             - user: the actor, should in "users/{email}" format, support "==" operator.
+             - actor: the actor, in users/{email}, serviceAccounts/{email}, or
+               workloadIdentities/{email} format. Support "==" operator.
              - create_time: support ">=" and "<=" operator.
              - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support "==" operator.
              - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry's mcp_delegation.correlation_id. Support "==" operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here.
@@ -27931,7 +28400,7 @@ components:
              For example:
               - filter = "method == '/bytebase.v1.SQLService/Query'"
               - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR'"
-              - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && user == 'users/bb@bytebase.com'"
+              - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && actor == 'users/bb@bytebase.com'"
               - filter = "method == '/bytebase.v1.SQLService/Query' && severity == 'ERROR' && create_time <= '2021-01-01T00:00:00Z' && create_time >= '2020-01-01T00:00:00Z'"
               - filter = "mcp == true"
               - filter = "mcp_correlation_id == '0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60'"
@@ -27982,6 +28451,56 @@ components:
       title: SearchAuditLogsResponse
       additionalProperties: false
       description: Response message for searching audit logs.
+    bytebase.v1.SearchDatabasesRequest:
+      type: object
+      properties:
+        pageSize:
+          type: integer
+          title: page_size
+          format: int32
+          description: |-
+            The maximum number of databases to return. The service may return fewer
+             than this value.
+             If unspecified, at most 10 databases will be returned.
+             The maximum value is 1000; values above 1000 will be coerced to 1000.
+        pageToken:
+          type: string
+          title: page_token
+          description: |-
+            A page token, received from a previous `SearchDatabases` call.
+             Provide this to retrieve the subsequent page.
+
+             When paginating, all other parameters provided to `SearchDatabases` must
+             match the call that provided the page token.
+        filter:
+          type: string
+          title: filter
+          description: |-
+            Filter is used to filter databases returned in the list.
+             It supports the same fields and operators as `ListDatabasesRequest.filter`.
+
+             For example:
+             project == "projects/{project resource id}"
+             name.contains("database name") && engine == "POSTGRES"
+      title: SearchDatabasesRequest
+      additionalProperties: false
+    bytebase.v1.SearchDatabasesResponse:
+      type: object
+      properties:
+        databases:
+          type: array
+          items:
+            $ref: '#/components/schemas/bytebase.v1.Database'
+          title: databases
+          description: The databases from the specified request.
+        nextPageToken:
+          type: string
+          title: next_page_token
+          description: |-
+            A token, which can be sent as `page_token` to retrieve the next page.
+             If this field is omitted, there are no subsequent pages.
+      title: SearchDatabasesResponse
+      additionalProperties: false
     bytebase.v1.SearchIssuesRequest:
       type: object
       properties:
@@ -28592,6 +29111,7 @@ components:
         - ENVIRONMENT
         - EMAIL
         - MCP
+        - EXPORT
     bytebase.v1.SettingValue:
       type: object
       anyOf:
@@ -28630,6 +29150,13 @@ components:
                 - $ref: '#/components/schemas/bytebase.v1.EnvironmentSetting'
               title: environment
           title: environment
+        - type: object
+          properties:
+            export:
+              allOf:
+                - $ref: '#/components/schemas/bytebase.v1.ExportSetting'
+              title: export
+          title: export
         - type: object
           properties:
             mcp:
@@ -28673,6 +29200,8 @@ components:
               - required:
                   - environment
               - required:
+                  - export
+              - required:
                   - mcp
               - required:
                   - semanticType
@@ -28693,6 +29222,8 @@ components:
                 - required:
                     - environment
                 - required:
+                    - export
+                - required:
                     - mcp
                 - required:
                     - semanticType
@@ -28702,6 +29233,45 @@ components:
                     - workspaceProfile
       title: SettingValue
       description: The data in setting value.
+    bytebase.v1.SharePointDestination:
+      type: object
+      properties:
+        url:
+          type: string
+          title: url
+          description: |-
+            The URL of the library root or folder. Normalized to its canonical form
+             and resolved with the workspace credentials on save.
+      title: SharePointDestination
+      additionalProperties: false
+      description: A SharePoint document library root or folder that receives exports.
+    bytebase.v1.SharePointSetting:
+      type: object
+      properties:
+        tenantId:
+          type: string
+          title: tenant_id
+          description: The Microsoft Entra tenant (directory) ID.
+        clientId:
+          type: string
+          title: client_id
+          description: The application (client) ID.
+        clientSecret:
+          type: string
+          title: client_secret
+          description: The client secret. It is never returned.
+          writeOnly: true
+        clientSecretSet:
+          type: boolean
+          title: client_secret_set
+          description: Whether a client secret is stored.
+          readOnly: true
+      title: SharePointSetting
+      additionalProperties: false
+      description: |-
+        SharePointSetting is the Microsoft Entra application that uploads exports to
+         SharePoint. It is granted access per library by the customer's SharePoint
+         administrators.
     bytebase.v1.Sheet:
       type: object
       properties:
@@ -31293,9 +31863,9 @@ components:
           description: |-
             The same Stripe Checkout Session ID PurchaseResponse mints, arriving back
              the other way, so it carries the same classification. VerifyCheckoutSession
-             is EXCLUDED, and the MCP gate records a row for every method it refuses, so
-             leaving this unannotated would write the id into a denial row while the
-             response that produced it was redacted.
+             is EXCLUDED, and a refusal of it streams its request to the stdout audit
+             log, so leaving this unannotated would write the id into that line while
+             the response that produced it was redacted.
       title: VerifyCheckoutSessionRequest
       additionalProperties: false
     bytebase.v1.VerifyCheckoutSessionResponse:
@@ -31751,32 +32321,32 @@ components:
           type: integer
           title: min_length
           format: int32
-          description: min_length is the minimum length for password, should no less than 8.
+          description: min_length is the minimum password length. It must be at least 8.
         requireNumber:
           type: boolean
           title: require_number
-          description: require_number requires the password must contains at least one number.
+          description: require_number requires the password to contain at least one number.
         requireLetter:
           type: boolean
           title: require_letter
-          description: require_letter requires the password must contains at least one letter, regardless of upper case or lower case
+          description: require_letter requires the password to contain at least one letter, either uppercase or lowercase.
         requireUppercaseLetter:
           type: boolean
           title: require_uppercase_letter
-          description: require_uppercase_letter requires the password must contains at least one upper case letter.
+          description: require_uppercase_letter requires the password to contain at least one uppercase letter.
         requireSpecialCharacter:
           type: boolean
           title: require_special_character
-          description: require_special_character requires the password must contains at least one special character.
+          description: require_special_character requires the password to contain at least one special character.
         requireResetPasswordForFirstLogin:
           type: boolean
           title: require_reset_password_for_first_login
-          description: require_reset_password_for_first_login requires users to reset their password after the 1st login.
+          description: require_reset_password_for_first_login requires users to change their password after their first login.
         passwordRotation:
           allOf:
             - $ref: '#/components/schemas/google.protobuf.Duration'
           title: password_rotation
-          description: password_rotation requires users to reset their password after the duration.
+          description: password_rotation requires users to change their password after the duration.
       title: PasswordRestriction
       additionalProperties: false
     connect-protocol-version:
@@ -31836,7 +32406,7 @@ components:
           description: 'A URL that acts as a globally unique identifier for the type of the serialized message. For example: `type.googleapis.com/google.rpc.ErrorInfo`.'
         value:
           type: string
-          format: binary
+          format: byte
           description: The Protobuf message, serialized as bytes and base64-encoded. The specific message type is identified by the `type` field.
         debug:
           type: object

@@ -18,6 +18,37 @@ func (x *Policy) Equal(y *Policy) bool {
 	return true
 }
 
+func (x *ReviewRulePolicy) Equal(y *ReviewRulePolicy) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if len(x.Rules) != len(y.Rules) {
+		return false
+	}
+	for i := 0; i < len(x.Rules); i++ {
+		if x.Rules[i] != y.Rules[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (x *ReviewAIPolicy) Equal(y *ReviewAIPolicy) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.Content != y.Content {
+		return false
+	}
+	return true
+}
+
 func (x *RolloutPolicy) Equal(y *RolloutPolicy) bool {
 	if x == y {
 		return true
@@ -192,9 +223,6 @@ func (x *QueryDataPolicy) Equal(y *QueryDataPolicy) bool {
 	if x == nil || y == nil {
 		return x == nil && y == nil
 	}
-	if x.DisableExport != y.DisableExport {
-		return false
-	}
 	if x.MaximumResultRows != y.MaximumResultRows {
 		return false
 	}
@@ -202,6 +230,9 @@ func (x *QueryDataPolicy) Equal(y *QueryDataPolicy) bool {
 		return false
 	}
 	if x.AllowAdminDataSource != y.AllowAdminDataSource {
+		return false
+	}
+	if x.DisableDownload != y.DisableDownload {
 		return false
 	}
 	if x.DisallowDdl != y.DisallowDdl {

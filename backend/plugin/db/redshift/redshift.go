@@ -22,6 +22,7 @@ import (
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/transaction"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	redshiftparser "github.com/bytebase/bytebase/backend/plugin/parser/redshift"
@@ -77,7 +78,11 @@ func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionC
 		return nil, errors.Errorf("ssl-cert and ssl-key must be both set or unset")
 	}
 
-	pgxConnConfig, err := pgx.ParseConfig(fmt.Sprintf("host=%s port=%s", config.DataSource.Host, config.DataSource.Port))
+	hostPort, err := util.PGHostPort(config.DataSource.Host, config.DataSource.Port)
+	if err != nil {
+		return nil, err
+	}
+	pgxConnConfig, err := pgx.ParseConfig(hostPort)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +110,8 @@ func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionC
 		}
 		d.sshClient = sshClient
 
-		pgxConnConfig.DialFunc = func(_ context.Context, network, addr string) (net.Conn, error) {
-			conn, err := sshClient.Dial(network, addr)
-			if err != nil {
-				return nil, err
-			}
-			return &util.NoDeadlineConn{Conn: conn}, nil
+		pgxConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return util.DialSSHTunnel(ctx, sshClient, network, addr)
 		}
 	}
 	d.databaseName = config.ConnectionContext.DatabaseName
@@ -172,8 +173,8 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	transactionMode := config.Mode
 
 	// Apply default when transaction mode is not specified
-	if transactionMode == common.TransactionModeUnspecified {
-		transactionMode = common.GetDefaultTransactionMode()
+	if transactionMode == transaction.ModeUnspecified {
+		transactionMode = transaction.DefaultMode()
 	}
 
 	var commands []base.Statement
@@ -197,7 +198,7 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	}
 
 	// Execute based on transaction mode
-	if transactionMode == common.TransactionModeOff {
+	if transactionMode == transaction.ModeOff {
 		return d.executeInAutoCommitMode(ctx, commands, opts)
 	}
 	return d.executeInTransactionMode(ctx, commands, opts)
@@ -388,9 +389,13 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 			statement = strings.ReplaceAll(statement, fmt.Sprintf("%s.", d.databaseName), "")
 		}
 		if queryContext.Explain {
-			statement = fmt.Sprintf("EXPLAIN %s", statement)
+			explained, err := base.ExplainStatement(storepb.Engine_REDSHIFT, statement, db.ExplainFormat(queryContext.Option.GetExplainFormat()))
+			if err != nil {
+				return nil, err
+			}
+			statement = explained
 		} else if queryContext.Limit > 0 {
-			statement = getStatementWithResultLimit(statement, queryContext.Limit)
+			statement = base.StatementWithResultLimit(storepb.Engine_REDSHIFT, statement, queryContext.Limit, "")
 		}
 
 		_, allQuery, err := base.ValidateSQLForEditor(storepb.Engine_REDSHIFT, statement)
@@ -400,12 +405,13 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 		startTime := time.Now()
 		queryResult, err := func() (*v1pb.QueryResult, error) {
 			if allQuery {
+				location := util.PgSessionLocation(conn)
 				rows, err := conn.QueryContext(ctx, statement)
 				if err != nil {
 					return nil, err
 				}
 				defer rows.Close()
-				r, err := util.RowsToQueryResult(rows, makeValueByTypeName, convertValue, queryContext.MaximumSQLResultSize)
+				r, err := util.RowsToQueryResult(rows, makeValueByTypeName, convertValueIn(location), queryContext.MaximumSQLResultSize)
 				if err != nil {
 					return nil, err
 				}
@@ -442,8 +448,4 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 	}
 
 	return results, nil
-}
-
-func getStatementWithResultLimit(stmt string, limit int) string {
-	return fmt.Sprintf("WITH result AS (%s) SELECT * FROM result LIMIT %d;", util.TrimStatement(stmt), limit)
 }

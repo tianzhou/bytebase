@@ -122,13 +122,27 @@
     - [PlanConfig.CreateDatabaseConfig](#bytebase-store-PlanConfig-CreateDatabaseConfig)
     - [PlanConfig.Spec](#bytebase-store-PlanConfig-Spec)
   
+- [store/review_rule.proto](#store_review_rule-proto)
+    - [ReviewRuleType](#bytebase-store-ReviewRuleType)
+  
+- [store/review_run.proto](#store_review_run-proto)
+    - [ReviewRun](#bytebase-store-ReviewRun)
+    - [ReviewRunPayload](#bytebase-store-ReviewRunPayload)
+  
+    - [ReviewRun.Status](#bytebase-store-ReviewRun-Status)
+    - [ReviewRun.Type](#bytebase-store-ReviewRun-Type)
+  
 - [store/issue_comment.proto](#store_issue_comment-proto)
     - [IssueCommentPayload](#bytebase-store-IssueCommentPayload)
     - [IssueCommentPayload.Approval](#bytebase-store-IssueCommentPayload-Approval)
     - [IssueCommentPayload.IssueUpdate](#bytebase-store-IssueCommentPayload-IssueUpdate)
     - [IssueCommentPayload.PlanUpdate](#bytebase-store-IssueCommentPayload-PlanUpdate)
+    - [IssueCommentPayload.ReviewMetadata](#bytebase-store-IssueCommentPayload-ReviewMetadata)
+    - [IssueCommentPayload.ReviewRunCompletion](#bytebase-store-IssueCommentPayload-ReviewRunCompletion)
     - [IssueCommentPayload.ReviewSubmission](#bytebase-store-IssueCommentPayload-ReviewSubmission)
     - [IssueCommentPayload.StatementAnchor](#bytebase-store-IssueCommentPayload-StatementAnchor)
+  
+    - [IssueCommentPayload.ReviewMetadata.Priority](#bytebase-store-IssueCommentPayload-ReviewMetadata-Priority)
   
 - [store/oauth2.proto](#store_oauth2-proto)
     - [OAuth2AuthorizationCodeConfig](#bytebase-store-OAuth2AuthorizationCodeConfig)
@@ -156,6 +170,8 @@
     - [MaskingRulePolicy.MaskingRule](#bytebase-store-MaskingRulePolicy-MaskingRule)
     - [Policy](#bytebase-store-Policy)
     - [QueryDataPolicy](#bytebase-store-QueryDataPolicy)
+    - [ReviewAIPolicy](#bytebase-store-ReviewAIPolicy)
+    - [ReviewRulePolicy](#bytebase-store-ReviewRulePolicy)
     - [RolloutPolicy](#bytebase-store-RolloutPolicy)
     - [TagPolicy](#bytebase-store-TagPolicy)
     - [TagPolicy.TagsEntry](#bytebase-store-TagPolicy-TagsEntry)
@@ -167,7 +183,9 @@
     - [Label](#bytebase-store-Label)
     - [Project](#bytebase-store-Project)
     - [Project.ExecutionRetryPolicy](#bytebase-store-Project-ExecutionRetryPolicy)
+    - [Project.ExportSetting](#bytebase-store-Project-ExportSetting)
     - [Project.LabelsEntry](#bytebase-store-Project-LabelsEntry)
+    - [Project.SharePointDestination](#bytebase-store-Project-SharePointDestination)
   
 - [store/project_webhook.proto](#store_project_webhook-proto)
     - [Activity](#bytebase-store-Activity)
@@ -195,12 +213,6 @@
   
     - [SQLReviewRule.Level](#bytebase-store-SQLReviewRule-Level)
     - [SQLReviewRule.Type](#bytebase-store-SQLReviewRule-Type)
-  
-- [store/review_run.proto](#store_review_run-proto)
-    - [ReviewRun](#bytebase-store-ReviewRun)
-    - [ReviewRunPayload](#bytebase-store-ReviewRunPayload)
-  
-    - [ReviewRun.Status](#bytebase-store-ReviewRun-Status)
   
 - [store/revision.proto](#store_revision-proto)
     - [RevisionPayload](#bytebase-store-RevisionPayload)
@@ -248,11 +260,13 @@
     - [EnvironmentSetting](#bytebase-store-EnvironmentSetting)
     - [EnvironmentSetting.Environment](#bytebase-store-EnvironmentSetting-Environment)
     - [EnvironmentSetting.Environment.TagsEntry](#bytebase-store-EnvironmentSetting-Environment-TagsEntry)
+    - [ExportSetting](#bytebase-store-ExportSetting)
     - [MCPSetting](#bytebase-store-MCPSetting)
     - [SQLEditorThemeSetting](#bytebase-store-SQLEditorThemeSetting)
     - [SQLEditorThemeSetting.TokensEntry](#bytebase-store-SQLEditorThemeSetting-TokensEntry)
     - [SemanticTypeSetting](#bytebase-store-SemanticTypeSetting)
     - [SemanticTypeSetting.SemanticType](#bytebase-store-SemanticTypeSetting-SemanticType)
+    - [SharePointSetting](#bytebase-store-SharePointSetting)
     - [SystemSetting](#bytebase-store-SystemSetting)
     - [WorkspaceApprovalSetting](#bytebase-store-WorkspaceApprovalSetting)
     - [WorkspaceApprovalSetting.Rule](#bytebase-store-WorkspaceApprovalSetting-Rule)
@@ -373,6 +387,7 @@
 | export | [bool](#bool) |  | Whether export the query result. |
 | schema | [string](#string) |  | The default schema to execute the query. |
 | container | [string](#string) |  | The container name to execute the query against, used for CosmosDB only. |
+| query_hash | [string](#string) |  | Lowercase hex SHA-256 of query after trimming boundary space, tab, LF, CR, vertical tab, and form feed. Derived by the store for grant matching. |
 
 
 
@@ -419,6 +434,7 @@ PageToken is used internally for obfuscating pagination tokens.
 | ----- | ---- | ----- | ----------- |
 | limit | [int32](#int32) |  | Maximum number of items to return. |
 | offset | [int32](#int32) |  | Number of items to skip before starting to return results. |
+| create_time_upper_bound | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | Bounds later pages to the rows that existed when the traversal started, inclusive. Set by a list whose own reads write rows it would page over. |
 
 
 
@@ -809,7 +825,7 @@ Status represents the approver&#39;s decision state.
 | parent | [string](#string) |  | The project or workspace the audit log belongs to. Formats: - projects/{project} - workspaces/{workspace} |
 | method | [string](#string) |  | Example: /bytebase.v1.SQLService/Query |
 | resource | [string](#string) |  | The resource name. Example: projects/{project} |
-| user | [string](#string) |  | Format: users/{email}. |
+| user | [string](#string) |  | The principal who performed the action. Formats: users/{email}, serviceAccounts/{email}, or workloadIdentities/{email}. |
 | severity | [AuditLog.Severity](#bytebase-store-AuditLog-Severity) |  |  |
 | request | [string](#string) |  | Marshalled request. |
 | response | [string](#string) |  | Marshalled response. Some fields are omitted because they are too large or contain sensitive information. |
@@ -1944,7 +1960,7 @@ RoleGrant contains details for requesting a project role.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| role | [string](#string) |  | The role being requested for the user. Format: roles/EXPORTER. |
+| role | [string](#string) |  | The role being requested for the user. Format: roles/{role}. |
 | user | [string](#string) |  | The user who will receive the role. Format: users/{email}. |
 | condition | [google.type.Expr](#google-type-Expr) |  | Optional conditional expression that limits when the grant applies. |
 | expiration | [google.protobuf.Duration](#google-protobuf-Duration) |  | Duration after which the grant automatically expires. |
@@ -2081,6 +2097,123 @@ Type represents the category of issue.
 
 
 
+<a name="store_review_rule-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/review_rule.proto
+
+
+ 
+
+
+<a name="bytebase-store-ReviewRuleType"></a>
+
+### ReviewRuleType
+ReviewRuleType mirrors bytebase.v1.ReviewRuleType. The values are shared by
+ReviewRulePolicy and IssueCommentPayload.ReviewMetadata.
+
+A value is never removed, only marked deprecated: both payloads are jsonb,
+protojson stores the enum name, and the store&#39;s unmarshaler discards an
+unknown name into REVIEW_RULE_TYPE_UNSPECIFIED, which would blank the rule
+on every stored comment that used it.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| REVIEW_RULE_TYPE_UNSPECIFIED | 0 |  |
+| SYNTAX | 1 |  |
+| WALK_THROUGH | 2 |  |
+| ONLINE_MIGRATION | 3 |  |
+| PRIOR_BACKUP | 4 |  |
+| REQUIRE_IS_NULL | 5 |  |
+| REQUIRE_WHERE | 6 |  |
+| DISALLOW_DROP_OBJECT | 7 |  |
+| DISALLOW_TRUNCATE | 8 |  |
+| DISALLOW_DROP_CONSTRAINT | 9 |  |
+| DISALLOW_RENAME | 10 |  |
+| REQUIRE_PRIMARY_KEY | 11 |  |
+
+
+ 
+
+ 
+
+ 
+
+
+
+<a name="store_review_run-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/review_run.proto
+
+
+
+<a name="bytebase-store-ReviewRun"></a>
+
+### ReviewRun
+ReviewRun is the status slot of one reviewer (rule engine or AI) on one
+issue. Results live in issue comments; the run carries none.
+
+
+
+
+
+
+<a name="bytebase-store-ReviewRunPayload"></a>
+
+### ReviewRunPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| error | [string](#string) |  | Fatal execution error for the FAILED status, e.g. &#34;metadata not synced: instances/prod/databases/db1, db2, db3 (&#43;497 more)&#34;. Written by the executor or by the reaper. |
+| approval_input_version | [int64](#int64) |  | The plan&#39;s PlanConfig.approval_input_version when the slot was reset: the version of the plan&#39;s SQL this run reviews. Completion keeps it. |
+
+
+
+
+
+ 
+
+
+<a name="bytebase-store-ReviewRun-Status"></a>
+
+### ReviewRun.Status
+Strictly 1:1 with the status CHECK constraint — no unpersisted values.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| STATUS_UNSPECIFIED | 0 |  |
+| AVAILABLE | 1 |  |
+| RUNNING | 2 |  |
+| DONE | 3 |  |
+| FAILED | 4 |  |
+
+
+
+<a name="bytebase-store-ReviewRun-Type"></a>
+
+### ReviewRun.Type
+The reviewer. Stored by name in review_run.type, which has no CHECK:
+like Issue.Type and Task.Type, the enum is the source of truth and a
+new reviewer is a new value, not a migration.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| TYPE_UNSPECIFIED | 0 |  |
+| RULE | 1 | Review against the standard rules. |
+| AI | 2 | Review against the natural-language AI review policy, performed by a model. |
+
+
+ 
+
+ 
+
+ 
+
+
+
 <a name="store_issue_comment-proto"></a>
 <p align="right"><a href="#top">Top</a></p>
 
@@ -2101,7 +2234,9 @@ Type represents the category of issue.
 | issue_update | [IssueCommentPayload.IssueUpdate](#bytebase-store-IssueCommentPayload-IssueUpdate) |  |  |
 | plan_update | [IssueCommentPayload.PlanUpdate](#bytebase-store-IssueCommentPayload-PlanUpdate) |  |  |
 | review_submission | [IssueCommentPayload.ReviewSubmission](#bytebase-store-IssueCommentPayload-ReviewSubmission) |  |  |
-| statement_anchor | [IssueCommentPayload.StatementAnchor](#bytebase-store-IssueCommentPayload-StatementAnchor) |  | The statement context an inline comment references. Set at creation and immutable afterward; never set together with an event. |
+| review_run_completion | [IssueCommentPayload.ReviewRunCompletion](#bytebase-store-IssueCommentPayload-ReviewRunCompletion) |  |  |
+| statement_anchor | [IssueCommentPayload.StatementAnchor](#bytebase-store-IssueCommentPayload-StatementAnchor) |  | The statement context an inline comment references. Set at creation and immutable afterward, except that a later run reporting a review result again moves the result to its statement in the SQL that run reviewed. Never set together with an event. |
+| review_metadata | [IssueCommentPayload.ReviewMetadata](#bytebase-store-IssueCommentPayload-ReviewMetadata) |  | Present on review results only, beside the text and never together with an event. Written by the review executor; CreateIssueComment rejects it. The anchor is statement_anchor; a result without one addresses the whole change. |
 
 
 
@@ -2164,6 +2299,56 @@ add/remove/update from the snapshot pair.
 
 
 
+<a name="bytebase-store-IssueCommentPayload-ReviewMetadata"></a>
+
+### IssueCommentPayload.ReviewMetadata
+ReviewMetadata is what a review result carries beyond its text: which
+reviewer posted it, what it was judged against, its priority, the
+databases it applies to, and for an AI result, its title. When a run
+completes, an earlier result of its type whose fingerprint the run
+reports again keeps its thread, and the run posts no new result for it;
+every other earlier root of its type is resolved and marked superseded,
+in the transaction that posts the new results.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| run_type | [ReviewRun.Type](#bytebase-store-ReviewRun-Type) |  | The reviewer slot that posted the result; review_run.type stores the same enum by name. |
+| rule_type | [ReviewRuleType](#bytebase-store-ReviewRuleType) |  | The rule judged against. Set if and only if run_type is RULE. |
+| priority | [IssueCommentPayload.ReviewMetadata.Priority](#bytebase-store-IssueCommentPayload-ReviewMetadata-Priority) |  | A result merged across databases carries the highest priority among them. |
+| targets | [string](#string) | repeated | Every database the result applies to, sorted. Always complete; the renderer collapses it when it equals the spec&#39;s target set. Format: instances/{instance}/databases/{database} |
+| superseded | [bool](#bool) |  | A later run of the same reviewer has completed without reporting the result again, so the latest review does not hold it. Set by that run whatever the thread state, and never cleared. |
+| fingerprint | [string](#string) |  | Identifies the finding across runs: equal fingerprints are the same finding on the same SQL. The rule review derives it from what it judged. The AI review starts it with a hash of its statement and ends it at random, and a later run carries it over to the finding its merge matches to the result. Unique among the results of one run. Empty on a result that predates it, and an empty fingerprint matches nothing. |
+| attempt | [int64](#int64) |  | The review_run.attempt of the run that posted the result. A result a later run reports again keeps its attempt. |
+| codes | [string](#string) | repeated | The conditions a RULE result reports, as omni finding codes such as &#34;WT101&#34;, one per reason. Empty for other reviewers. |
+| title | [string](#string) |  | The name of the problem an AI result reports, on one line; the comment holds the rest. Empty for a RULE result, which rule_type names. |
+
+
+
+
+
+
+<a name="bytebase-store-IssueCommentPayload-ReviewRunCompletion"></a>
+
+### IssueCommentPayload.ReviewRunCompletion
+ReviewRunCompletion records that a review run completed DONE, and what
+it did to the results of its reviewer. Posted with no creator, in the
+transaction that posts the run&#39;s results.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| run_type | [ReviewRun.Type](#bytebase-store-ReviewRun-Type) |  |  |
+| attempt | [int64](#int64) |  | The run&#39;s review_run.attempt; its new results carry the same ReviewMetadata.attempt. |
+| posted_count | [int32](#int32) |  | Results the run posted as new threads. |
+| kept_count | [int32](#int32) |  | Earlier results the run reported again, which kept their threads. |
+| superseded_count | [int32](#int32) |  | Earlier results the run no longer reports, which it superseded. |
+
+
+
+
+
+
 <a name="bytebase-store-IssueCommentPayload-ReviewSubmission"></a>
 
 ### IssueCommentPayload.ReviewSubmission
@@ -2194,6 +2379,22 @@ read against the anchored sheet and the current plan, not stored.
 
 
  
+
+
+<a name="bytebase-store-IssueCommentPayload-ReviewMetadata-Priority"></a>
+
+### IssueCommentPayload.ReviewMetadata.Priority
+Priority says what resolving the thread means. It has no bearing on
+blocking: an OPEN root thread blocks whatever its priority, and a
+result with no thread state never does.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| PRIORITY_UNSPECIFIED | 0 |  |
+| P0 | 1 | The SQL is wrong and must change. Resolving without changing the SQL is a claim of false positive. |
+| P1 | 2 | Dangerous but legitimate; a person must accept it. |
+| P2 | 3 | Advisory. |
+
 
  
 
@@ -2567,12 +2768,46 @@ QueryDataPolicy is the policy configuration for querying data in the SQL Editor.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| disable_export | [bool](#bool) |  | workspace-level policy Disable exporting data in the SQL editor. |
 | maximum_result_rows | [int32](#int32) |  | Support both project-level and workspace-level. The maximum number of rows to return in the SQL editor. The default value &lt;= 0, means no limit. |
 | disable_copy_data | [bool](#bool) |  | workspace-level policy Disable copying data. |
 | allow_admin_data_source | [bool](#bool) |  | workspace-level policy Allow using the admin data source to query in the SQL editor. |
+| disable_download | [bool](#bool) |  | workspace-level policy Hide the Download export destination in the SQL Editor. Exports can still go to a configured storage destination such as SharePoint. The Export API does not check this setting. |
 | disallow_ddl | [bool](#bool) |  | ================ Deprecate following fields. Disallow running DDL statements in the SQL editor. |
 | disallow_dml | [bool](#bool) |  | Disallow running DML statements in the SQL editor. |
+
+
+
+
+
+
+<a name="bytebase-store-ReviewAIPolicy"></a>
+
+### ReviewAIPolicy
+ReviewAIPolicy holds the natural-language policy the AI review judges a
+change against. Both levels apply: the workspace policy and the project
+policy both reach the reviewer, and the project policy wins where they
+conflict.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| content | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-ReviewRulePolicy"></a>
+
+### ReviewRulePolicy
+ReviewRulePolicy is the standard review rule switch. The nearest policy
+wins: the project&#39;s if it has one, else the workspace&#39;s, else every rule.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| rules | [ReviewRuleType](#bytebase-store-ReviewRuleType) | repeated |  |
 
 
 
@@ -2656,6 +2891,8 @@ QueryDataPolicy is the policy configuration for querying data in the SQL Editor.
 | MASKING_RULE | 4 |  |
 | IAM | 5 |  |
 | TAG | 6 |  |
+| REVIEW_RULE | 7 |  |
+| REVIEW_AI | 8 |  |
 
 
  
@@ -2704,7 +2941,7 @@ Project contains settings and configuration for a Bytebase project.
 | postgres_database_tenant_mode | [bool](#bool) |  | Whether to enable the database tenant mode for PostgreSQL. If enabled, the issue will be created with the prepend &#34;set role &lt;db_owner&gt;&#34; statement. |
 | allow_self_approval | [bool](#bool) |  | Whether to allow the issue creator to self-approve the issue. |
 | execution_retry_policy | [Project.ExecutionRetryPolicy](#bytebase-store-Project-ExecutionRetryPolicy) |  | Configuration for automatic retry on task execution failures. |
-| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation. If not specified, sampling is disabled, resulting in a full validation. |
+| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation and AI review. If not specified, sampling is disabled, resulting in a full validation. |
 | parallel_tasks_per_rollout | [int32](#int32) |  | The maximum number of parallel tasks to run during the rollout. |
 | labels | [Project.LabelsEntry](#bytebase-store-Project-LabelsEntry) | repeated | Labels are key-value pairs that can be attached to the project. For example, { &#34;environment&#34;: &#34;production&#34;, &#34;team&#34;: &#34;backend&#34; } |
 | enforce_sql_review | [bool](#bool) |  | Whether to enforce SQL review checks to pass before issue creation. If enabled, issues cannot be created when SQL review finds errors. |
@@ -2714,6 +2951,7 @@ Project contains settings and configuration for a Bytebase project.
 | data_classification_config_id | [string](#string) |  | The data classification configuration ID for the project. |
 | allow_just_in_time_access | [bool](#bool) |  | Once enabled, users can request and use the just-in-time access in the SQL Editor. |
 | allow_last_plan_editor_approval | [bool](#bool) |  | Whether to allow the last Plan editor to approve a database change issue. |
+| export_setting | [Project.ExportSetting](#bytebase-store-Project-ExportSetting) |  | Destinations offered for this project&#39;s exports. |
 
 
 
@@ -2735,6 +2973,21 @@ ExecutionRetryPolicy defines retry behavior for failed task executions.
 
 
 
+<a name="bytebase-store-Project-ExportSetting"></a>
+
+### Project.ExportSetting
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sharepoint | [Project.SharePointDestination](#bytebase-store-Project-SharePointDestination) |  |  |
+
+
+
+
+
+
 <a name="bytebase-store-Project-LabelsEntry"></a>
 
 ### Project.LabelsEntry
@@ -2745,6 +2998,21 @@ ExecutionRetryPolicy defines retry behavior for failed task executions.
 | ----- | ---- | ----- | ----------- |
 | key | [string](#string) |  |  |
 | value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-Project-SharePointDestination"></a>
+
+### Project.SharePointDestination
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  | The canonical URL of a SharePoint document library root or folder. |
 
 
 
@@ -3195,63 +3463,6 @@ The severity level for SQL review rules.
 
 
 
-<a name="store_review_run-proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## store/review_run.proto
-
-
-
-<a name="bytebase-store-ReviewRun"></a>
-
-### ReviewRun
-ReviewRun is the status slot of one reviewer (rule engine or AI) on one
-issue. Results live in issue comments; the run carries none.
-
-
-
-
-
-
-<a name="bytebase-store-ReviewRunPayload"></a>
-
-### ReviewRunPayload
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| error | [string](#string) |  | Fatal execution error for the FAILED status, e.g. &#34;metadata not synced: instances/prod/databases/db1, db2, db3 (&#43;497 more)&#34;. Written by the executor or by the reaper. |
-
-
-
-
-
- 
-
-
-<a name="bytebase-store-ReviewRun-Status"></a>
-
-### ReviewRun.Status
-Strictly 1:1 with the status CHECK constraint — no unpersisted values.
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| STATUS_UNSPECIFIED | 0 |  |
-| AVAILABLE | 1 |  |
-| RUNNING | 2 |  |
-| DONE | 3 |  |
-| FAILED | 4 |  |
-
-
- 
-
- 
-
- 
-
-
-
 <a name="store_revision-proto"></a>
 <p align="right"><a href="#top">Top</a></p>
 
@@ -3509,6 +3720,7 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 | api_key | [string](#string) |  |  |
 | model | [string](#string) |  |  |
 | version | [string](#string) |  |  |
+| sql_review_enabled | [bool](#bool) |  | Whether the AI SQL review may run. It is a consent of its own beside `enabled`, because a review sends the statements of a change to the provider and can send the schema of its target databases. |
 
 
 
@@ -3917,6 +4129,21 @@ All other settings live in per-workspace WORKSPACE_PROFILE.
 
 
 
+<a name="bytebase-store-ExportSetting"></a>
+
+### ExportSetting
+ExportSetting holds each export destination provider&#39;s credentials.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| sharepoint | [SharePointSetting](#bytebase-store-SharePointSetting) |  |  |
+
+
+
+
+
+
 <a name="bytebase-store-MCPSetting"></a>
 
 ### MCPSetting
@@ -3930,9 +4157,6 @@ sign-in configuration.
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | capability | [MCPSetting.Capability](#bytebase-store-MCPSetting-Capability) |  | The maximum capability available to MCP sessions in this workspace, acting as an admin-set ceiling. Enforced server-side at three points: the /mcp endpoint decides whether a connection is admitted at all, the ceiling gate on the internal MCP chain decides, per request, which method classes are served, and under READ_ONLY the SQL clamp decides, per statement, whether it only reads. |
-| ignore_masking_exemptions | [bool](#bool) |  | Whether a request that arrived over MCP stops applying the caller&#39;s own unmasking provisioning. Two mechanisms let a user see a real value and this suppresses both: the masking exemptions granted to them, and the unmask carried by an access grant. The same user in the console is untouched.
-
-It cannot force masking where there is none. Masking substitutes values in query results, so this does not reach data copied into a column carrying no masking policy, and it does nothing on the engines Bytebase does not mask. It narrows what an agent reads through the paths Bytebase masks; it is not a confidentiality boundary. |
 
 
 
@@ -4001,6 +4225,24 @@ It cannot force masking where there is none. Masking substitutes values in query
 | description | [string](#string) |  | the description of the semantic type, it can be empty. |
 | algorithm | [Algorithm](#bytebase-store-Algorithm) |  |  |
 | icon | [string](#string) |  | icon is the icon for semantic type, it can be emoji or base64 encoded image. |
+
+
+
+
+
+
+<a name="bytebase-store-SharePointSetting"></a>
+
+### SharePointSetting
+SharePointSetting is the Microsoft Entra application that uploads exports to
+SharePoint.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| tenant_id | [string](#string) |  |  |
+| client_id | [string](#string) |  |  |
+| client_secret | [string](#string) |  |  |
 
 
 
@@ -4133,13 +4375,13 @@ It cannot force masking where there is none. Masking substitutes values in query
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| min_length | [int32](#int32) |  | min_length is the minimum length for password, should be no less than 8. |
-| require_number | [bool](#bool) |  | require_number requires the password must contain at least one number. |
-| require_letter | [bool](#bool) |  | require_letter requires the password must contain at least one letter, regardless of upper case or lower case |
-| require_uppercase_letter | [bool](#bool) |  | require_uppercase_letter requires the password must contain at least one upper case letter. |
-| require_special_character | [bool](#bool) |  | require_special_character requires the password must contain at least one special character. |
-| require_reset_password_for_first_login | [bool](#bool) |  | require_reset_password_for_first_login requires users to reset their password after the 1st login. |
-| password_rotation | [google.protobuf.Duration](#google-protobuf-Duration) |  | password_rotation requires users to reset their password after the duration. |
+| min_length | [int32](#int32) |  | min_length is the minimum password length. It must be at least 8. |
+| require_number | [bool](#bool) |  | require_number requires the password to contain at least one number. |
+| require_letter | [bool](#bool) |  | require_letter requires the password to contain at least one letter, either uppercase or lowercase. |
+| require_uppercase_letter | [bool](#bool) |  | require_uppercase_letter requires the password to contain at least one uppercase letter. |
+| require_special_character | [bool](#bool) |  | require_special_character requires the password to contain at least one special character. |
+| require_reset_password_for_first_login | [bool](#bool) |  | require_reset_password_for_first_login requires users to change their password after their first login. |
+| password_rotation | [google.protobuf.Duration](#google-protobuf-Duration) |  | password_rotation requires users to change their password after the duration. |
 
 
 
@@ -4249,6 +4491,7 @@ Capability is the ceiling: a session runs at this level or lower.
 | ENVIRONMENT | 8 |  |
 | EMAIL | 9 |  |
 | MCP | 10 |  |
+| EXPORT | 11 |  |
 
 
 

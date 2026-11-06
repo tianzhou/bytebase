@@ -493,6 +493,50 @@ func (x *UpdateIssueCommentRequest) Equal(y *UpdateIssueCommentRequest) bool {
 	return true
 }
 
+func (x *IssueComment_ReviewMetadata) Equal(y *IssueComment_ReviewMetadata) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.RunType != y.RunType {
+		return false
+	}
+	if x.RuleType != y.RuleType {
+		return false
+	}
+	if x.Priority != y.Priority {
+		return false
+	}
+	if len(x.Targets) != len(y.Targets) {
+		return false
+	}
+	for i := 0; i < len(x.Targets); i++ {
+		if x.Targets[i] != y.Targets[i] {
+			return false
+		}
+	}
+	if x.Superseded != y.Superseded {
+		return false
+	}
+	if x.Attempt != y.Attempt {
+		return false
+	}
+	if len(x.Codes) != len(y.Codes) {
+		return false
+	}
+	for i := 0; i < len(x.Codes); i++ {
+		if x.Codes[i] != y.Codes[i] {
+			return false
+		}
+	}
+	if x.Title != y.Title {
+		return false
+	}
+	return true
+}
+
 func (x *IssueComment_Approval) Equal(y *IssueComment_Approval) bool {
 	if x == y {
 		return true
@@ -560,6 +604,31 @@ func (x *IssueComment_ReviewSubmission) Equal(y *IssueComment_ReviewSubmission) 
 	return true
 }
 
+func (x *IssueComment_ReviewRunCompletion) Equal(y *IssueComment_ReviewRunCompletion) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.RunType != y.RunType {
+		return false
+	}
+	if x.Attempt != y.Attempt {
+		return false
+	}
+	if x.PostedCount != y.PostedCount {
+		return false
+	}
+	if x.KeptCount != y.KeptCount {
+		return false
+	}
+	if x.SupersededCount != y.SupersededCount {
+		return false
+	}
+	return true
+}
+
 func (x *IssueComment_PlanUpdate) Equal(y *IssueComment_PlanUpdate) bool {
 	if x == y {
 		return true
@@ -620,6 +689,9 @@ func (x *IssueComment) Equal(y *IssueComment) bool {
 	if !x.StatementAnchor.Equal(y.StatementAnchor) {
 		return false
 	}
+	if !x.ReviewMetadata.Equal(y.ReviewMetadata) {
+		return false
+	}
 	if !x.GetApproval().Equal(y.GetApproval()) {
 		return false
 	}
@@ -630,6 +702,9 @@ func (x *IssueComment) Equal(y *IssueComment) bool {
 		return false
 	}
 	if !x.GetReviewSubmission().Equal(y.GetReviewSubmission()) {
+		return false
+	}
+	if !x.GetReviewRunCompletion().Equal(y.GetReviewRunCompletion()) {
 		return false
 	}
 	return true
@@ -680,6 +755,22 @@ func (x *ReviewRun) Equal(y *ReviewRun) bool {
 		return false
 	}
 	if x.Error != y.Error {
+		return false
+	}
+	if x.Outdated != y.Outdated {
+		return false
+	}
+	return true
+}
+
+func (x *GetReviewRunRequest) Equal(y *GetReviewRunRequest) bool {
+	if x == y {
+		return true
+	}
+	if x == nil || y == nil {
+		return x == nil && y == nil
+	}
+	if x.Name != y.Name {
 		return false
 	}
 	return true

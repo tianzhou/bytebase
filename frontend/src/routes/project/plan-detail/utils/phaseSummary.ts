@@ -1,55 +1,36 @@
 import {
+  getPlanCheckSummaryWithFallback,
+  type PlanCheckSummary,
+} from "@/lib/plan/check";
+import {
   ApprovalStatus,
   IssueStatus,
   State,
 } from "@/types/proto-es/v1/common_pb";
 import type { Issue } from "@/types/proto-es/v1/issue_service_pb";
 import type { Plan } from "@/types/proto-es/v1/plan_service_pb";
-import { PlanCheckRun_Status } from "@/types/proto-es/v1/plan_service_pb";
 import type { Rollout } from "@/types/proto-es/v1/rollout_service_pb";
 import { Task_Status } from "@/types/proto-es/v1/rollout_service_pb";
-import { Advice_Level } from "@/types/proto-es/v1/sql_service_pb";
+import type { AutomatedReviewRow } from "./planGates";
+import { reviewSummaryPart } from "./reviewLabels";
+
+export type { PlanCheckSummary } from "@/lib/plan/check";
 
 type T = (key: string, options?: Record<string, unknown>) => string;
 
 const isDatabaseGroupName = (name: string): boolean =>
   name.includes("/databaseGroups/");
 
-export interface PlanCheckSummary {
-  error: number;
-  running: number;
-  success: number;
-  total: number;
-  warning: number;
-}
-
 // Mirrors the eligibility gates that can permanently prevent RolloutCreator
 // from materializing a rollout. Transient approval and check gates are handled
 // separately below.
-const supportsAutomaticRollout = (plan: Plan): boolean =>
+export const supportsAutomaticRollout = (plan: Plan): boolean =>
   plan.state === State.ACTIVE &&
   plan.specs.length > 0 &&
   plan.specs.every((spec) => spec.config?.case === "changeDatabaseConfig");
 
-export const getPlanCheckSummary = (plan: Plan): PlanCheckSummary => {
-  const statusCount = plan.planCheckRunStatusCount || {};
-  const running =
-    statusCount[PlanCheckRun_Status[PlanCheckRun_Status.RUNNING]] || 0;
-  const success = statusCount[Advice_Level[Advice_Level.SUCCESS]] || 0;
-  const warning = statusCount[Advice_Level[Advice_Level.WARNING]] || 0;
-  const error = statusCount[Advice_Level[Advice_Level.ERROR]] || 0;
-  const failed =
-    statusCount[PlanCheckRun_Status[PlanCheckRun_Status.FAILED]] || 0;
-  const totalError = error + failed;
-
-  return {
-    error: totalError,
-    running,
-    success,
-    total: running + success + warning + totalError,
-    warning,
-  };
-};
+export const getPlanCheckSummary = (plan: Plan): PlanCheckSummary =>
+  getPlanCheckSummaryWithFallback([], plan.planCheckRunStatusCount);
 
 export const isRolloutExpected = ({
   issue,
@@ -78,8 +59,7 @@ export const isRolloutExpected = ({
   return (
     checks.running === 0 &&
     checks.error === 0 &&
-    (plan.planCheckRunStatusCount?.AVAILABLE ?? 0) === 0 &&
-    (plan.planCheckRunStatusCount?.CANCELED ?? 0) === 0
+    (plan.planCheckRunStatusCount?.AVAILABLE ?? 0) === 0
   );
 };
 
@@ -93,7 +73,13 @@ const targetsForSpec = (spec: Plan["specs"][number]): string[] => {
 const extractPrincipalEmail = (principal: string): string =>
   principal.replace(/^users\//, "");
 
-export const buildChangesSummary = (plan: Plan, t: T): string => {
+// Under SQL Review V2 the checks are reviewers in the Review section, so the
+// Changes summary leaves them out.
+export const buildChangesSummary = (
+  plan: Plan,
+  t: T,
+  { includeChecks = true }: { includeChecks?: boolean } = {}
+): string => {
   const parts: string[] = [];
 
   parts.push(t("plan.summary.n-changes", { n: plan.specs.length }));
@@ -115,7 +101,7 @@ export const buildChangesSummary = (plan: Plan, t: T): string => {
   }
 
   const checks = getPlanCheckSummary(plan);
-  if (checks.total > 0) {
+  if (includeChecks && checks.total > 0) {
     const checkParts: string[] = [];
     if (checks.success > 0) {
       checkParts.push(t("plan.summary.n-passed", { n: checks.success }));
@@ -166,6 +152,50 @@ export const buildReviewSummary = (
     );
   }
 
+  return parts.join(" · ");
+};
+
+// The Review summary under SQL Review V2: the approval outcome, then each
+// reviewer's conclusion, so a reader can tell people resolved the findings.
+export const buildReviewSummaryV2 = (
+  issue: Issue | undefined,
+  t: T,
+  rows: readonly AutomatedReviewRow[],
+  openDiscussions: number
+): string => {
+  if (!issue) return "";
+  const parts: string[] = [];
+  const roles = issue.approvalTemplate?.flow?.roles ?? [];
+  if (!issue.draft) {
+    if (
+      issue.approvalStatus === ApprovalStatus.SKIPPED ||
+      (issue.approvalTemplate && roles.length === 0)
+    ) {
+      parts.push(t("plan.summary.no-approval-required"));
+    } else if (issue.approvalStatus === ApprovalStatus.APPROVED) {
+      const names = issue.approvers.map(
+        (approver) => extractPrincipalEmail(approver.principal).split("@")[0]
+      );
+      parts.push(t("plan.summary.approved-by", { names: names.join(", ") }));
+    } else if (issue.approvalStatus === ApprovalStatus.REJECTED) {
+      parts.push(t("plan.lifecycle.gate-review-rejected"));
+    } else if (roles.length > 0) {
+      parts.push(
+        t("plan.summary.n-of-m-approved", {
+          m: roles.length,
+          n: issue.approvers.length,
+        })
+      );
+    }
+  }
+  for (const row of rows) {
+    parts.push(reviewSummaryPart(t, row));
+  }
+  if (openDiscussions > 0) {
+    parts.push(
+      t("plan.deploy-waiting.open-discussions", { count: openDiscussions })
+    );
+  }
   return parts.join(" · ");
 };
 

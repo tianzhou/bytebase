@@ -1,12 +1,13 @@
 import { create } from "@bufbuild/protobuf";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { SQLEditorQueryParams } from "@/types";
 import { Engine } from "@/types/proto-es/v1/common_pb";
 import type { Database } from "@/types/proto-es/v1/database_service_pb";
 import {
   QueryOption_ExplainFormat,
+  QueryResult_QueryPlanSchema,
   QueryResultSchema,
   QueryRowSchema,
   RowValueSchema,
@@ -64,6 +65,12 @@ const {
   };
 });
 
+const { explainPermission, tabState, updateCurrentTab } = vi.hoisted(() => ({
+  explainPermission: { granted: true },
+  tabState: { resultLayout: undefined as string | undefined },
+  updateCurrentTab: vi.fn(),
+}));
+
 vi.mock("react-i18next", () => ({
   initReactI18next: {
     init: vi.fn(),
@@ -99,11 +106,7 @@ vi.mock("@/components/monaco/MonacoEditor", () => ({
   },
 }));
 
-const { createExplainToken, notify, runQuery } = vi.hoisted(() => ({
-  createExplainToken: vi.fn(() => "explain-token"),
-  notify: vi.fn(),
-  runQuery: vi.fn(),
-}));
+const { runQuery } = vi.hoisted(() => ({ runQuery: vi.fn() }));
 
 vi.mock("@/hooks/useExecuteSQL", () => ({
   useExecuteSQL: () => ({ runQuery }),
@@ -193,32 +196,56 @@ vi.mock("@/modules/sql-editor/store/tab", () => ({
   useSQLEditorTabState: (
     selector: (state: {
       currentTabId: string;
-      tabsById: Map<string, { mode: string }>;
+      tabsById: Map<string, { mode: string; resultLayout?: string }>;
+      updateCurrentTab: typeof updateCurrentTab;
     }) => unknown
   ) =>
     selector({
       currentTabId: "tab-1",
-      tabsById: new Map([["tab-1", { mode: "READ_ONLY" }]]),
+      tabsById: new Map([
+        ["tab-1", { mode: "READ_ONLY", resultLayout: tabState.resultLayout }],
+      ]),
+      updateCurrentTab,
     }),
 }));
 
-vi.mock("@/stores/app", () => ({
-  useAppStore: {
-    getState: () => ({ notify }),
-  },
+vi.mock("@/utils/iam/permission", () => ({
+  hasProjectPermissionV2: () => explainPermission.granted,
 }));
 
-vi.mock("@/utils/explainToken", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/utils/explainToken")>()),
-  createExplainToken,
+vi.mock("@/utils/v1/instance", () => ({
+  instanceV1AllowsExplain: (engine: Engine) =>
+    engine === Engine.POSTGRES || engine === Engine.MYSQL,
 }));
+
+vi.mock("@/stores/app", () => {
+  // Zustand's hook is called with a selector and also carries getState. The
+  // plan view reads the database's synced metadata through it; an empty
+  // catalog is what a test that has not set one up should see.
+  const state = {
+    getDatabaseMetadata: () => ({ schemas: [] }),
+    getOrFetchDatabaseMetadata: async () => undefined,
+    metadataByName: {},
+  };
+  const useAppStore = (selector?: (s: typeof state) => unknown) =>
+    selector ? selector(state) : state;
+  useAppStore.getState = () => state;
+  return { useAppStore };
+});
 
 vi.mock("@/utils/util", () => ({
   isNullOrUndefined: (value: unknown) => value === null || value === undefined,
+  // Reached through the app store, which the plan view reads the database's
+  // synced metadata from.
+  isDev: () => false,
 }));
 
 vi.mock("@/utils/v1/database", () => ({
+  getDatabaseProject: (database: Database) => ({ name: database.project }),
   getInstanceResource: (database: Database) => database.instanceResource,
+  extractDatabaseResourceName: (name: string) => ({
+    databaseName: name.split("/").pop() ?? "",
+  }),
 }));
 
 vi.mock("@/utils/v1/sql", () => ({
@@ -257,21 +284,45 @@ vi.mock("./ErrorView", () => ({
 
 vi.mock("./ResultStatusBar", () => ({
   formatQueryTime: () => "-",
-  ResultStatusBar: ({
-    showVisualizeButton,
-    onVisualizeExplain,
+  ResultStatusBar: () => <div data-testid="result-status" />,
+}));
+
+vi.mock("./QueryPlanResultView", () => ({
+  QueryPlanResultView: ({
+    rawPlan,
+    initialPlan,
+    loadPlan,
+    estimated,
+    disallowCopyingData,
   }: {
-    showVisualizeButton?: boolean;
-    onVisualizeExplain?: () => void;
-  }) => (
-    <div data-testid="result-status">
-      {showVisualizeButton ? (
-        <button type="button" onClick={onVisualizeExplain}>
-          visualize-explain
-        </button>
-      ) : null}
-    </div>
-  ),
+    rawPlan: string;
+    initialPlan?: { source: string };
+    loadPlan?: () => Promise<
+      { source: string } | undefined
+    >;
+    estimated?: boolean;
+    disallowCopyingData?: boolean;
+  }) => {
+    const [plan, setPlan] = useState(initialPlan);
+    return (
+      <div
+        data-testid="query-plan-result"
+        data-copy-disabled={disallowCopyingData}
+        data-estimated={estimated ? "true" : "false"}
+      >
+        <span data-testid="raw-plan">{rawPlan}</span>
+        {plan ? <span data-testid="inline-plan">{plan.source}</span> : null}
+        {loadPlan ? (
+          <button
+            type="button"
+            onClick={() => void loadPlan().then(setPlan)}
+          >
+            common.plan
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 vi.mock("./SelectionCopyTooltips", () => ({
@@ -599,15 +650,30 @@ describe("SingleResultView document view", () => {
   });
 });
 
+const textPlanResult = (statement: string) =>
+  create(QueryResultSchema, {
+    columnNames: ["QUERY PLAN"],
+    statement,
+    queryPlan: create(QueryResult_QueryPlanSchema, {
+      format: QueryOption_ExplainFormat.TEXT,
+    }),
+    rows: [
+      create(QueryRowSchema, {
+        values: [
+          create(RowValueSchema, {
+            kind: { case: "stringValue", value: "Result" },
+          }),
+        ],
+      }),
+    ],
+  });
+
 describe("SingleResultView explain visualizer", () => {
   beforeEach(() => {
-    createExplainToken.mockClear();
-    notify.mockClear();
     runQuery.mockReset();
   });
 
   test("PostgreSQL asks for the JSON plan instead of reusing the text plan", async () => {
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     const planJSON = '[{"Plan": {"Node Type": "Seq Scan"}}]';
     runQuery.mockImplementation(
       async (
@@ -619,7 +685,7 @@ describe("SingleResultView explain visualizer", () => {
         context.resultSet = {
           results: [
             create(QueryResultSchema, {
-              statement: "SELECT 1",
+              statement: "EXPLAIN (FORMAT JSON) SELECT 1",
               rows: [
                 create(QueryRowSchema, {
                   values: [
@@ -638,12 +704,20 @@ describe("SingleResultView explain visualizer", () => {
     render(
       <SingleResultView
         disallowCopyingData={false}
-        params={{ ...params, engine: Engine.POSTGRES, explain: true }}
+        params={{
+          ...params,
+          engine: Engine.POSTGRES,
+          explain: false,
+          statement: "EXPLAIN SELECT 1",
+        }}
         database={databaseForEngine(Engine.POSTGRES)}
         result={create(QueryResultSchema, {
           columnNames: ["QUERY PLAN"],
           columnTypeNames: ["TEXT"],
-          statement: "SELECT 1",
+          statement: "EXPLAIN SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.TEXT,
+          }),
           rows: [
             create(QueryRowSchema, {
               values: [
@@ -658,27 +732,23 @@ describe("SingleResultView explain visualizer", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("visualize-explain"));
+    expect(screen.getByTestId("raw-plan")).toHaveTextContent("Seq Scan on t");
+    fireEvent.click(screen.getByText("common.plan"));
 
-    await waitFor(() => expect(openSpy).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByTestId("inline-plan")).toHaveTextContent(planJSON)
+    );
     expect(runQuery).toHaveBeenCalledTimes(1);
     expect(
       runQuery.mock.calls[0][1].params.queryOption?.explainFormat
     ).toBe(QueryOption_ExplainFormat.JSON);
-    expect(createExplainToken).toHaveBeenCalledWith({
-      statement: "SELECT 1",
-      explain: planJSON,
-      engine: Engine.POSTGRES,
-    });
-    expect(openSpy).toHaveBeenCalledWith(
-      "/explain-visualizer.html?token=explain-token",
-      "_blank"
+    expect(runQuery.mock.calls[0][1].params.explain).toBe(true);
+    expect(runQuery.mock.calls[0][1].params.statement).toBe(
+      "EXPLAIN SELECT 1"
     );
-    openSpy.mockRestore();
   });
 
-  test("re-runs for the tab the user clicked, not the first result", async () => {
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+  test("re-runs only the statement for the tab the user clicked", async () => {
     runQuery.mockImplementation(
       async (_database: unknown, context: { resultSet?: { results: unknown[] } }) => {
         const plan = (name: string) =>
@@ -694,19 +764,27 @@ describe("SingleResultView explain visualizer", () => {
               }),
             ],
           });
-        context.resultSet = { results: [plan("first"), plan("second")] };
+        context.resultSet = { results: [plan("second")] };
       }
     );
 
     render(
       <SingleResultView
         disallowCopyingData={false}
-        params={{ ...params, engine: Engine.POSTGRES, explain: true }}
+        params={{
+          ...params,
+          engine: Engine.POSTGRES,
+          explain: true,
+          statement: "first; second",
+        }}
         database={databaseForEngine(Engine.POSTGRES)}
         result={create(QueryResultSchema, {
           columnNames: ["QUERY PLAN"],
           columnTypeNames: ["TEXT"],
           statement: "second",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.TEXT,
+          }),
           rows: [
             create(QueryRowSchema, {
               values: [
@@ -722,78 +800,18 @@ describe("SingleResultView explain visualizer", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("visualize-explain"));
+    fireEvent.click(screen.getByText("common.plan"));
 
-    await waitFor(() => expect(createExplainToken).toHaveBeenCalled());
-    expect(createExplainToken).toHaveBeenCalledWith({
-      statement: "second",
-      explain: "plan of second",
-      engine: Engine.POSTGRES,
-    });
-    openSpy.mockRestore();
-  });
-
-  test("reports a blocked pop-up instead of doing nothing", async () => {
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
-    runQuery.mockImplementation(
-      async (_database: unknown, context: { resultSet?: { results: unknown[] } }) => {
-        context.resultSet = {
-          results: [
-            create(QueryResultSchema, {
-              statement: "SELECT 1",
-              rows: [
-                create(QueryRowSchema, {
-                  values: [
-                    create(RowValueSchema, {
-                      kind: { case: "stringValue", value: "[]" },
-                    }),
-                  ],
-                }),
-              ],
-            }),
-          ],
-        };
-      }
+    await waitFor(() => expect(runQuery).toHaveBeenCalled());
+    expect(runQuery.mock.calls[0][1].params.statement).toBe("second");
+    expect(screen.getByTestId("inline-plan")).toHaveTextContent(
+      "plan of second"
     );
-
-    render(
-      <SingleResultView
-        disallowCopyingData={false}
-        params={{ ...params, engine: Engine.POSTGRES, explain: true }}
-        database={databaseForEngine(Engine.POSTGRES)}
-        result={create(QueryResultSchema, {
-          columnNames: ["QUERY PLAN"],
-          columnTypeNames: ["TEXT"],
-          statement: "SELECT 1",
-          rows: [
-            create(QueryRowSchema, {
-              values: [
-                create(RowValueSchema, {
-                  kind: { case: "stringValue", value: "Seq Scan on t" },
-                }),
-              ],
-            }),
-          ],
-        })}
-        showExport={false}
-      />
-    );
-
-    fireEvent.click(screen.getByText("visualize-explain"));
-
-    await waitFor(() => expect(notify).toHaveBeenCalled());
-    expect(notify.mock.calls[0][0].title).toBe(
-      "sql-editor.visualize-explain-blocked"
-    );
-    openSpy.mockRestore();
   });
 
   test.each([[Engine.MSSQL, QueryOption_ExplainFormat.XML, "<ShowPlanXML/>"]])(
     "asks engine %s for the plan in the format its visualizer reads",
     async (engine, explainFormat, plan) => {
-      const openSpy = vi
-        .spyOn(window, "open")
-        .mockReturnValue({} as Window);
       runQuery.mockImplementation(
         async (
           _database: unknown,
@@ -826,6 +844,9 @@ describe("SingleResultView explain visualizer", () => {
           result={create(QueryResultSchema, {
             columnNames: ["QUERY PLAN"],
             statement: "SELECT 1",
+            queryPlan: create(QueryResult_QueryPlanSchema, {
+              format: QueryOption_ExplainFormat.TEXT,
+            }),
             rows: [
               create(QueryRowSchema, {
                 values: [
@@ -840,24 +861,18 @@ describe("SingleResultView explain visualizer", () => {
         />
       );
 
-      fireEvent.click(screen.getByText("visualize-explain"));
+      fireEvent.click(screen.getByText("common.plan"));
 
-      await waitFor(() => expect(openSpy).toHaveBeenCalled());
+      await waitFor(() =>
+        expect(screen.getByTestId("inline-plan")).toHaveTextContent(plan)
+      );
       expect(
         runQuery.mock.calls[0][1].params.queryOption?.explainFormat
       ).toBe(explainFormat);
-      expect(createExplainToken).toHaveBeenCalledWith({
-        statement: "SELECT 1",
-        explain: plan,
-        engine,
-      });
-      expect(notify).not.toHaveBeenCalled();
-      openSpy.mockRestore();
     }
   );
 
   test("Spanner hands over the plan already in the result", async () => {
-    const openSpy = vi.spyOn(window, "open").mockReturnValue({} as Window);
     const plan = '{"planNodes":[]}';
 
     render(
@@ -869,6 +884,9 @@ describe("SingleResultView explain visualizer", () => {
           columnNames: ["QUERY PLAN"],
           columnTypeNames: ["JSON"],
           statement: "SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.JSON,
+          }),
           rows: [
             create(QueryRowSchema, {
               values: [
@@ -883,27 +901,156 @@ describe("SingleResultView explain visualizer", () => {
       />
     );
 
-    fireEvent.click(screen.getByText("visualize-explain"));
-
-    await waitFor(() => expect(openSpy).toHaveBeenCalled());
     expect(runQuery).not.toHaveBeenCalled();
-    expect(createExplainToken).toHaveBeenCalledWith({
-      statement: "SELECT 1",
-      explain: plan,
-      engine: Engine.SPANNER,
-    });
-    openSpy.mockRestore();
+    expect(screen.getByTestId("inline-plan")).toHaveTextContent(plan);
   });
 
-  test("offers no visualizer for an engine it cannot draw", () => {
+  test("uses a typed structured plan without running another query", async () => {
+    const plan = '[{"Plan":{"Node Type":"Result"}}]';
+
     render(
       <SingleResultView
         disallowCopyingData={false}
+        params={{
+          ...params,
+          engine: Engine.POSTGRES,
+          explain: false,
+          statement: "EXPLAIN (FORMAT JSON) SELECT 1",
+        }}
+        database={databaseForEngine(Engine.POSTGRES)}
+        result={create(QueryResultSchema, {
+          columnNames: ["QUERY PLAN"],
+          statement: "EXPLAIN (FORMAT JSON) SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.JSON,
+          }),
+          rows: [
+            create(QueryRowSchema, {
+              values: [
+                create(RowValueSchema, {
+                  kind: { case: "stringValue", value: plan },
+                }),
+              ],
+            }),
+          ],
+        })}
+        showExport={false}
+      />
+    );
+
+    expect(runQuery).not.toHaveBeenCalled();
+    expect(screen.getByTestId("inline-plan")).toHaveTextContent(plan);
+  });
+
+  test("does not offer a re-explain after the plan executed the query", () => {
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{
+          ...params,
+          engine: Engine.POSTGRES,
+          explain: false,
+          statement: "EXPLAIN ANALYZE SELECT 1",
+        }}
+        database={databaseForEngine(Engine.POSTGRES)}
+        result={create(QueryResultSchema, {
+          columnNames: ["QUERY PLAN"],
+          statement: "EXPLAIN ANALYZE SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.TEXT,
+            executed: true,
+          }),
+          rows: [],
+        })}
+        showExport={false}
+      />
+    );
+
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+    expect(screen.queryByText("common.plan")).toBeNull();
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  test("does not replay after a result that was not a plan", () => {
+    const earlier = create(QueryResultSchema, { statement: "SET x = 1" });
+    const current = textPlanResult("EXPLAIN SELECT 1");
+
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{ ...params, engine: Engine.POSTGRES }}
+        database={databaseForEngine(Engine.POSTGRES)}
+        result={current}
+        results={[earlier, current]}
+        resultIndex={1}
+        showExport={false}
+      />
+    );
+
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+    expect(screen.queryByText("common.plan")).toBeNull();
+  });
+
+  test("ignores later statements when replaying an earlier plan", async () => {
+    const current = textPlanResult("EXPLAIN SELECT 1");
+    const later = create(QueryResultSchema, { statement: "SET x = 1" });
+    runQuery.mockImplementation(
+      async (_database: unknown, context: { resultSet?: { results: unknown[] } }) => {
+        context.resultSet = {
+          results: [
+            create(QueryResultSchema, {
+              statement: "EXPLAIN (FORMAT JSON) SELECT 1",
+              rows: [
+                create(QueryRowSchema, {
+                  values: [
+                    create(RowValueSchema, {
+                      kind: { case: "stringValue", value: "[]" },
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          ],
+        };
+      }
+    );
+
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{
+          ...params,
+          engine: Engine.POSTGRES,
+          statement: "EXPLAIN SELECT 1; SET x = 1",
+        }}
+        database={databaseForEngine(Engine.POSTGRES)}
+        result={current}
+        results={[current, later]}
+        resultIndex={0}
+        showExport={false}
+      />
+    );
+
+    fireEvent.click(screen.getByText("common.plan"));
+
+    await waitFor(() => expect(runQuery).toHaveBeenCalled());
+    expect(runQuery.mock.calls[0][1].params.statement).toBe(
+      "EXPLAIN SELECT 1"
+    );
+  });
+
+  test("shows a text plan inline for an engine it cannot draw", () => {
+    render(
+      <SingleResultView
+        disallowCopyingData
         params={{ ...params, engine: Engine.MYSQL, explain: true }}
         database={databaseForEngine(Engine.MYSQL)}
         result={create(QueryResultSchema, {
           columnNames: ["EXPLAIN"],
           statement: "SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.TEXT,
+          }),
           rows: [
             create(QueryRowSchema, {
               values: [
@@ -918,6 +1065,243 @@ describe("SingleResultView explain visualizer", () => {
       />
     );
 
-    expect(screen.queryByText("visualize-explain")).toBeNull();
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+    expect(screen.getByTestId("query-plan-result")).toHaveAttribute(
+      "data-copy-disabled",
+      "true"
+    );
+    expect(screen.getByTestId("raw-plan")).toHaveTextContent(
+      "-> Table scan on t"
+    );
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  const tabularPlan = (engine: Engine, format: QueryOption_ExplainFormat) =>
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{ ...params, engine, explain: true }}
+        database={databaseForEngine(engine)}
+        result={create(QueryResultSchema, {
+          columnNames: ["table", "type"],
+          columnTypeNames: ["TEXT", "TEXT"],
+          statement: "EXPLAIN SELECT * FROM t",
+          queryPlan: create(QueryResult_QueryPlanSchema, { format }),
+          rows: [
+            create(QueryRowSchema, {
+              values: [
+                create(RowValueSchema, {
+                  kind: { case: "stringValue", value: "t" },
+                }),
+                create(RowValueSchema, {
+                  kind: { case: "stringValue", value: "ALL" },
+                }),
+              ],
+            }),
+          ],
+        })}
+        showExport={false}
+      />
+    );
+
+  test("keeps multi-column explain output in the result table", () => {
+    // Databricks' plan is text and comes back in one column, which is what its
+    // parser reads; a grid of several columns is not that plan, and there is no
+    // other format to fetch, so the grid is all there is.
+    tabularPlan(Engine.DATABRICKS, QueryOption_ExplainFormat.TEXT);
+
+    expect(screen.queryByTestId("query-plan-result")).toBeNull();
+    expect(screen.getByTestId("result-table")).toHaveTextContent(
+      "table,typet,ALL"
+    );
+  });
+
+  test("offers a MySQL tabular plan the visualizer, in whatever format it came back", () => {
+    // A tabular EXPLAIN can be re-explained as FORMAT=JSON, so it opens the
+    // viewer with Visualize rather than staying a grid. An omitted FORMAT is
+    // unknown rather than text, and is worth the same offer.
+    for (const format of [
+      QueryOption_ExplainFormat.TEXT,
+      QueryOption_ExplainFormat.EXPLAIN_FORMAT_UNSPECIFIED,
+    ]) {
+      const { unmount } = tabularPlan(Engine.MYSQL, format);
+      expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  test("SQL Server multi-column SHOWPLAN_ALL still opens the visualizer", () => {
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{ ...params, engine: Engine.MSSQL, explain: true }}
+        database={databaseForEngine(Engine.MSSQL)}
+        result={create(QueryResultSchema, {
+          columnNames: ["StmtText", "EstimateRows"],
+          columnTypeNames: ["TEXT", "TEXT"],
+          statement: "SELECT 1",
+          queryPlan: create(QueryResult_QueryPlanSchema, {
+            format: QueryOption_ExplainFormat.TEXT,
+          }),
+          rows: [
+            create(QueryRowSchema, {
+              values: [
+                create(RowValueSchema, {
+                  kind: { case: "stringValue", value: "Clustered Index Scan" },
+                }),
+                create(RowValueSchema, {
+                  kind: { case: "stringValue", value: "1" },
+                }),
+              ],
+            }),
+          ],
+        })}
+        showExport={false}
+      />
+    );
+
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+  });
+});
+
+const rowsResult = (statement = "SELECT * FROM t") =>
+  create(QueryResultSchema, {
+    statement,
+    columnNames: ["id"],
+    columnTypeNames: ["INT"],
+    rows: [
+      create(QueryRowSchema, {
+        values: [
+          create(RowValueSchema, { kind: { case: "stringValue", value: "1" } }),
+        ],
+      }),
+    ],
+  });
+
+describe("SingleResultView plan view", () => {
+  beforeEach(() => {
+    explainPermission.granted = true;
+    tabState.resultLayout = undefined;
+    updateCurrentTab.mockClear();
+  });
+
+  const renderRows = (
+    engine: Engine,
+    overrides: Partial<React.ComponentProps<typeof SingleResultView>> = {}
+  ) =>
+    render(
+      <SingleResultView
+        disallowCopyingData={false}
+        params={{ ...params, engine, statement: "SELECT * FROM t" }}
+        database={databaseForEngine(engine)}
+        result={rowsResult()}
+        showExport={false}
+        {...overrides}
+      />
+    );
+
+  test("draws the plan an engine stated beside the rows, without fetching", () => {
+    // BigQuery reports the stages its job ran, so the Plan view has the plan
+    // already: nothing is explained again, and what it shows is a record of the
+    // run that returned these rows rather than an estimate made since.
+    const content = JSON.stringify([{ id: 0, name: "S00: Input" }]);
+    renderRows(Engine.BIGQUERY, {
+      result: create(QueryResultSchema, {
+        statement: "SELECT * FROM t",
+        columnNames: ["id"],
+        columnTypeNames: ["INT"],
+        rows: [
+          create(QueryRowSchema, {
+            values: [
+              create(RowValueSchema, {
+                kind: { case: "stringValue", value: "1" },
+              }),
+            ],
+          }),
+        ],
+        queryPlan: create(QueryResult_QueryPlanSchema, {
+          format: QueryOption_ExplainFormat.JSON,
+          executed: true,
+          content,
+        }),
+      }),
+    });
+
+    // The rows are the query's data, so the table is what opens.
+    expect(screen.getByTestId("result-table")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("sql-editor.plan-view"));
+
+    expect(screen.getByTestId("inline-plan")).toHaveTextContent("S00: Input");
+    expect(screen.getByTestId("query-plan-result")).toHaveAttribute(
+      "data-estimated",
+      "false"
+    );
+    // No button to load one: there is nothing left to ask the server for.
+    expect(screen.queryByRole("button", { name: "common.plan" })).toBeNull();
+    expect(runQuery).not.toHaveBeenCalled();
+  });
+
+  test("offers Plan beside Table and Vertical and shows the plan in place", () => {
+    renderRows(Engine.POSTGRES);
+
+    expect(screen.getByText("sql-editor.table-view")).toHaveClass("sr-only");
+    expect(screen.getByText("sql-editor.vertical-display")).toHaveClass(
+      "sr-only"
+    );
+    expect(screen.getByText("sql-editor.plan-view")).toHaveClass("sr-only");
+    expect(screen.getByTestId("result-table")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("sql-editor.plan-view"));
+
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+    expect(screen.queryByTestId("result-table")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "common.plan" })).toBeEnabled();
+    expect(updateCurrentTab).toHaveBeenCalledWith({ resultLayout: "PLAN" });
+
+    fireEvent.click(screen.getByText("sql-editor.table-view"));
+    expect(screen.getByTestId("result-table")).toBeInTheDocument();
+  });
+
+  test("disables Plan when the user lacks the explain permission", () => {
+    explainPermission.granted = false;
+    renderRows(Engine.POSTGRES);
+
+    expect(
+      screen.getByRole("radio", { name: "sql-editor.plan-view" })
+    ).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByText("sql-editor.plan-view"));
+    expect(screen.getByTestId("result-table")).toBeInTheDocument();
+  });
+
+  test("offers no Plan on an engine that cannot explain", () => {
+    renderRows(Engine.REDIS);
+
+    expect(screen.getByText("sql-editor.vertical-display")).toBeInTheDocument();
+    expect(screen.queryByText("sql-editor.plan-view")).not.toBeInTheDocument();
+  });
+
+  test("offers no Plan after an earlier statement of the run", () => {
+    const setSearchPath = create(QueryResultSchema, {
+      statement: "SET search_path = tenant",
+    });
+    renderRows(Engine.POSTGRES, {
+      results: [setSearchPath, rowsResult()],
+      resultIndex: 1,
+    });
+
+    expect(screen.queryByText("sql-editor.plan-view")).not.toBeInTheDocument();
+  });
+
+  test("opens on the remembered Plan choice, falling back where nothing can be planned", () => {
+    tabState.resultLayout = "PLAN";
+    const { unmount } = renderRows(Engine.POSTGRES);
+    expect(screen.getByTestId("query-plan-result")).toBeInTheDocument();
+    unmount();
+
+    renderRows(Engine.REDIS);
+    expect(screen.getByTestId("result-table")).toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", { name: "sql-editor.table-view" })
+    ).toHaveAttribute("aria-checked", "true");
   });
 });

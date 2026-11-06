@@ -1,19 +1,22 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { DatabaseTargetDisplay } from "@/components/DatabaseTargetDisplay";
 import { RouterLink } from "@/components/RouterLink";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useTimeReading } from "@/hooks/useTimeReading";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app";
 import type { AccessGrant } from "@/types/proto-es/v1/access_grant_service_pb";
 import type { Issue } from "@/types/proto-es/v1/issue_service_pb";
 import {
-  getAccessGrantDisplayStatus,
+  accessGrantStatusReading,
   getAccessGrantDisplayStatusText,
-  getAccessGrantExpirationText,
-  getAccessGrantExpireTimeMs,
   getAccessGrantStatusTagType,
+  getActiveAccessGrantDeadlineMs,
 } from "@/utils/accessGrant";
+import { countdownReading, formatAbsoluteDateTime } from "@/utils/datetime";
 
 function mapTagTypeToBadgeVariant(
   tagType: "success" | "warning" | "error" | "default"
@@ -40,38 +43,89 @@ export function AccessGrantItem({
   onRequest,
 }: Props) {
   const { t } = useTranslation();
+  const batchGetOrFetchDatabases = useAppStore(
+    (state) => state.batchGetOrFetchDatabases
+  );
+  const statementRef = useRef<HTMLParagraphElement>(null);
+  const hydratedRemainingTargets = useRef<string | undefined>(undefined);
+  const [isStatementExpanded, setIsStatementExpanded] = useState(false);
+  const [isStatementTruncated, setIsStatementTruncated] = useState(false);
 
-  const displayStatus = getAccessGrantDisplayStatus(grant, issue);
+  useLayoutEffect(() => {
+    setIsStatementExpanded(false);
+  }, [grant.query]);
+
+  useLayoutEffect(() => {
+    if (isStatementExpanded) return;
+    const statement = statementRef.current;
+    if (!statement) return;
+
+    const check = () => {
+      setIsStatementTruncated(statement.scrollHeight > statement.clientHeight);
+    };
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(check);
+    observer.observe(statement);
+    return () => observer.disconnect();
+  }, [grant.query, isStatementExpanded]);
+
+  // Two readings, each on its own boundary. The countdown's last step lands on
+  // the deadline, the same instant the status turns expired, so the status
+  // subscription adds no wake today -- it is here so the badge does not depend
+  // on that coincidence holding.
+  const deadlineMs = getActiveAccessGrantDeadlineMs(grant);
+  const countdown = useTimeReading(countdownReading, deadlineMs);
+  const displayStatus = useTimeReading(accessGrantStatusReading, {
+    grant,
+    issue,
+  });
   const isActive = displayStatus === "ACTIVE";
   const isExpired = displayStatus === "EXPIRED";
   const isRejectedOrCanceled =
     displayStatus !== "ACTIVE" && displayStatus !== "PENDING";
-  const statusLabel = getAccessGrantDisplayStatusText(grant, issue);
-  const expireTimeMs = getAccessGrantExpireTimeMs(grant);
+  const statusLabel = getAccessGrantDisplayStatusText(displayStatus);
 
   const statusTagType = getAccessGrantStatusTagType(displayStatus);
   const badgeVariant = mapTagTypeToBadgeVariant(statusTagType);
 
-  const expirationText = (() => {
-    if (displayStatus !== "ACTIVE" && displayStatus !== "EXPIRED") return;
-    const info = getAccessGrantExpirationText(grant);
-    if (info.type === "never" || info.type === "duration") return;
-
-    if (!isExpired && expireTimeMs !== undefined) {
-      const diff = expireTimeMs - Date.now();
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      if (hours >= 24) {
-        return t("sql-editor.expire-at", { time: info.value });
+  // The countdown is the one form that hides the deadline, so it alone carries
+  // it in a tooltip; the other two are interpolated sentences and state the
+  // deadline in full themselves.
+  const expiration = (() => {
+    if (deadlineMs === undefined || countdown === undefined) return undefined;
+    const deadline = formatAbsoluteDateTime(deadlineMs);
+    switch (countdown.kind) {
+      case "passed":
+        return { text: `${t("issue.access-grant.expired-at")} ${deadline}` };
+      case "beyondDay":
+        return { text: t("sql-editor.expire-at", { time: deadline }) };
+      case "within": {
+        const { hours, minutes } = countdown;
+        const left = hours > 0 ? `${hours}h${minutes}m` : `${minutes}m`;
+        return {
+          text: t("sql-editor.expire-in", { time: left }),
+          hiddenDeadline: deadline,
+        };
       }
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const dur = hours > 0 ? `${hours}h${minutes}m` : `${minutes}m`;
-      return t("sql-editor.expire-in", { time: dur });
     }
-    return `${t("issue.access-grant.expired-at")} ${info.value}`;
   })();
 
   const visibleTargets = grant.targets.slice(0, 2);
   const remainingTargetCount = grant.targets.length - visibleTargets.length;
+  const remainingTargets = grant.targets.slice(visibleTargets.length);
+  const handleTargetTooltipOpen = (open: boolean) => {
+    if (!open || remainingTargets.length === 0) return;
+    const targetKey = remainingTargets.join("\u0000");
+    if (hydratedRemainingTargets.current === targetKey) return;
+    hydratedRemainingTargets.current = targetKey;
+    void batchGetOrFetchDatabases(remainingTargets, true).catch(() => {
+      if (hydratedRemainingTargets.current === targetKey) {
+        hydratedRemainingTargets.current = undefined;
+      }
+    });
+  };
   const databaseTargets = (
     <div className="flex w-full min-w-0 flex-col gap-y-1">
       {visibleTargets.map((target, index) => (
@@ -96,7 +150,6 @@ export function AccessGrantItem({
       ? grant.issue
       : `/${grant.issue}`
     : "";
-
   return (
     <div
       className={cn(
@@ -110,8 +163,8 @@ export function AccessGrantItem({
        * `flex-wrap` + `justify-between` keeps the original "badges left,
        * expiration right" layout when both fit on the row, but lets the
        * row wrap when the panel is narrow. Pairing it with `shrink-0`
-       * on the badges container preserves each pill at its natural size
-       * so the label never wraps inside the pill (`脱敏豁免` → "脱敏豁
+       * on the badges container preserves each label at its natural size
+       * so the label never wraps inside the badge (`脱敏豁免` → "脱敏豁
        * \n免"). When the expiration wraps to a second row it falls back
        * to the row's start alignment (justify-between has no effect on
        * a single-item row), so it reads naturally left-to-right under
@@ -119,54 +172,50 @@ export function AccessGrantItem({
        */}
       <div className="w-full flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="flex items-center gap-x-1 shrink-0">
-          <Badge
-            variant={badgeVariant}
-            className="text-xs px-1.5 py-0 rounded-full"
-          >
+          <Badge variant={badgeVariant} className="px-1.5 py-0.5">
             {statusLabel}
           </Badge>
           {grant.unmask && (
-            <Badge
-              variant="default"
-              className="text-xs px-1.5 py-0 rounded-full"
-            >
-              {t("sql-editor.grant-type-unmask")}
-            </Badge>
+            <Badge variant="default">{t("sql-editor.grant-type-unmask")}</Badge>
           )}
           {grant.export && (
-            <Badge
-              variant="default"
-              className="text-xs px-1.5 py-0 rounded-full"
-            >
-              {t("sql-editor.grant-type-export")}
-            </Badge>
+            <Badge variant="default">{t("sql-editor.grant-type-export")}</Badge>
           )}
         </div>
-        {expirationText && (
+        {expiration && (
+          // The span stays outside the tooltip: it carries this row's layout,
+          // and a tooltip with nothing to say renders its children bare.
           <span className="text-xs text-control-placeholder shrink-0">
-            {expirationText}
+            <Tooltip content={expiration.hiddenDeadline}>
+              {expiration.text}
+            </Tooltip>
           </span>
         )}
       </div>
 
-      <Tooltip
-        content={
-          <pre className="max-w-lg whitespace-pre-wrap text-xs">
-            {grant.query}
-          </pre>
-        }
-        side="right"
-      >
+      <div className="w-full min-w-0">
         <p
+          ref={statementRef}
           className={cn(
-            "w-full min-w-0 text-xs wrap-anywhere whitespace-pre-wrap font-mono line-clamp-2",
+            "w-full min-w-0 text-xs wrap-anywhere whitespace-pre-wrap font-mono",
+            !isStatementExpanded && "line-clamp-2",
             (isExpired || isRejectedOrCanceled) &&
               "line-through text-control-placeholder"
           )}
         >
           {grant.query}
         </p>
-      </Tooltip>
+        {isStatementTruncated && (
+          <Button
+            appearance="link"
+            size="xs"
+            className="h-auto px-0"
+            onClick={() => setIsStatementExpanded((expanded) => !expanded)}
+          >
+            {isStatementExpanded ? t("common.hide") : t("common.show-more")}
+          </Button>
+        )}
+      </div>
 
       <div className="w-full flex flex-col gap-y-2">
         {remainingTargetCount === 0 ? (
@@ -185,6 +234,7 @@ export function AccessGrantItem({
               </div>
             }
             side="right"
+            onOpenChange={handleTargetTooltipOpen}
           >
             {databaseTargets}
           </Tooltip>
@@ -211,6 +261,7 @@ export function AccessGrantItem({
               <Button
                 appearance="secondary"
                 size="xs"
+                className="hover:!bg-control-bg-hover"
                 data-re-request-btn
                 onClick={(e) => {
                   e.stopPropagation();
@@ -226,7 +277,11 @@ export function AccessGrantItem({
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="inline-flex items-center justify-center h-6 text-xs px-2 rounded-xs hover:bg-control-bg text-control"
+                className={buttonVariants({
+                  appearance: "secondary",
+                  size: "xs",
+                  className: "hover:!bg-control-bg-hover",
+                })}
               >
                 {t("sql-editor.view-issue")}
               </RouterLink>

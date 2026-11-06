@@ -20,7 +20,7 @@ import { ProjectSchema } from "@/types/proto-es/v1/project_service_pb";
 import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
 import { unknownInstance } from "@/types/v1/instance";
 import type { EditDataSource } from "./common";
-import { wrapEditDataSource } from "./common";
+import { createDataSourceDraft } from "./common";
 import {
   InstanceFormProvider,
   useInstanceFormContext,
@@ -41,11 +41,13 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/components/EngineIcon", () => ({ EngineIcon: () => null }));
 vi.mock("@/components/EnvironmentSelect", () => ({
-  EnvironmentSelect: () => null,
+  EnvironmentSelect: ({ className }: { className?: string }) => (
+    <div data-testid="environment-select" className={className} />
+  ),
 }));
 vi.mock("@/components/FeatureBadge", () => ({ FeatureBadge: () => null }));
 vi.mock("@/components/LabelListEditor", () => ({
-  LabelListEditor: () => null,
+  LabelListEditor: () => <div data-testid="label-list-editor" />,
 }));
 vi.mock("@/components/LearnMoreLink", () => ({ LearnMoreLink: () => null }));
 vi.mock("@/components/ResourceIdField", () => ({
@@ -83,7 +85,9 @@ vi.mock(
 
 vi.mock("@/types", () => ({
   DATASOURCE_ADMIN_USER_NAME: "bytebase",
+  UNKNOWN_ID: "-",
   UNKNOWN_INSTANCE_NAME: "instances/-",
+  isValidEnvironmentName: () => true,
   unknownDataSource: () => ({
     id: "admin",
     type: 1,
@@ -109,6 +113,7 @@ vi.mock("@/stores/app", () => {
     createInstance: mocks.createInstance,
     listInstanceDatabases: mocks.listInstanceDatabases,
     updateDataSource: vi.fn(),
+    hasUnifiedInstanceLicense: () => false,
     getEnvironmentByName: (name: string) => ({ name }),
     hasInstanceFeature: () => false,
     instanceLicenseCount: () => 1,
@@ -132,6 +137,8 @@ vi.mock("@/utils", () => ({
     Object.fromEntries(list.map(({ key, value }) => [key, value])),
   convertLabelsToKVList: (labels: Record<string, string>) =>
     Object.entries(labels).map(([key, value]) => ({ key, value })),
+  engineNameV1: () => "PostgreSQL",
+  extractInstanceResourceName: () => "instance",
   hasWorkspacePermissionV2: () => true,
   instanceV1HasExtraParameters: () => mocks.hasExtraParameters,
   instanceV1HasSSH: () => false,
@@ -140,6 +147,11 @@ vi.mock("@/utils", () => ({
     ds.projectId !== "" && ds.instanceId !== "",
   isValidBigQueryDataSource: (ds: { projectId: string }) =>
     ds.projectId !== "",
+  onlyAllowNumber: (value: string) => value,
+  RE_GCP_INSTANCE_ID: /^[a-z]+$/,
+  RE_GCP_PROJECT_ID: /^[a-z]+$/,
+  supportedEngineV1List: () => [],
+  urlfy: (value: string) => value,
 }));
 
 vi.mock("@/utils/connect", () => ({
@@ -350,6 +362,212 @@ describe("InstanceFormProvider", () => {
       }
     }
   );
+
+  test("updates the sync database selection after the instance loads", async () => {
+    const { SyncDatabases } = await import("./InstanceFormBody");
+    const instance = create(InstanceSchema, {
+      name: "instances/production",
+      engine: Engine.POSTGRES,
+    });
+    const selectedDatabases = create(SyncDatabasesSchema, {
+      databases: ["app"],
+    });
+    const harness = renderIntoContainer();
+
+    try {
+      await harness.render(
+        <InstanceFormProvider instance={instance}>
+          <SyncDatabases
+            isCreating={false}
+            showLabel={false}
+            allowEdit
+            syncDatabases={undefined}
+            onSyncDatabasesChange={() => undefined}
+          />
+        </InstanceFormProvider>
+      );
+
+      await harness.render(
+        <InstanceFormProvider instance={instance}>
+          <SyncDatabases
+            isCreating={false}
+            showLabel={false}
+            allowEdit
+            syncDatabases={selectedDatabases}
+            onSyncDatabasesChange={() => undefined}
+          />
+        </InstanceFormProvider>
+      );
+
+      expect(harness.container.querySelector('[role="switch"]')).toHaveAttribute(
+        "aria-checked",
+        "false"
+      );
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("lists selected databases before unselected databases", async () => {
+    const { SyncDatabases } = await import("./InstanceFormBody");
+    mocks.listInstanceDatabases.mockResolvedValue({
+      databases: ["analytics", "app", "warehouse"],
+    });
+    const instance = create(InstanceSchema, {
+      name: "instances/production",
+      engine: Engine.POSTGRES,
+      syncDatabases: { databases: ["app"] },
+    });
+    const harness = renderIntoContainer();
+
+    try {
+      await harness.render(
+        <InstanceFormProvider instance={instance}>
+          <SyncDatabases
+            isCreating={false}
+            showLabel={false}
+            allowEdit
+            syncDatabases={instance.syncDatabases}
+            onSyncDatabasesChange={() => undefined}
+          />
+        </InstanceFormProvider>
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(
+        Array.from(harness.container.querySelectorAll('[role="checkbox"]')).map(
+          (checkbox) => checkbox.parentElement?.textContent
+        )
+      ).toEqual(["app", "analytics", "warehouse"]);
+    } finally {
+      harness.unmount();
+    }
+  });
+
+  test("finishes loading after an equivalent instance refresh", async () => {
+    const { SyncDatabases } = await import("./InstanceFormBody");
+    let resolveDatabases: (value: { databases: string[] }) => void;
+    mocks.listInstanceDatabases.mockImplementation(
+      () =>
+        new Promise<{ databases: string[] }>((resolve) => {
+          resolveDatabases = resolve;
+        })
+    );
+    const instance = create(InstanceSchema, {
+      name: "instances/production",
+      engine: Engine.POSTGRES,
+      syncDatabases: { databases: ["app"] },
+    });
+    const harness = renderIntoContainer();
+
+    try {
+      await harness.render(
+        <InstanceFormProvider instance={instance}>
+          <SyncDatabases
+            isCreating={false}
+            showLabel={false}
+            allowEdit
+            syncDatabases={instance.syncDatabases}
+            onSyncDatabasesChange={() => undefined}
+          />
+        </InstanceFormProvider>
+      );
+      expect(harness.container.textContent).toContain("common.loading");
+
+      const refreshedInstance = create(InstanceSchema, {
+        name: instance.name,
+        engine: instance.engine,
+        syncDatabases: instance.syncDatabases,
+      });
+      expect(refreshedInstance).not.toBe(instance);
+      await harness.render(
+        <InstanceFormProvider instance={refreshedInstance}>
+          <SyncDatabases
+            isCreating={false}
+            showLabel={false}
+            allowEdit
+            syncDatabases={refreshedInstance.syncDatabases}
+            onSyncDatabasesChange={() => undefined}
+          />
+        </InstanceFormProvider>
+      );
+      await act(async () => {
+        resolveDatabases!({ databases: ["app"] });
+      });
+
+      expect(harness.container.textContent).not.toContain("common.loading");
+    } finally {
+      harness.unmount();
+      mocks.listInstanceDatabases.mockResolvedValue({
+        databases: ["app", "analytics"],
+      });
+    }
+  });
+
+  test("does not reload the database preview when selection changes during creation", async () => {
+    const { SyncDatabases } = await import("./InstanceFormBody");
+    const CreateSelector = () => {
+      const { basicInfo, setBasicInfo } = useInstanceFormContext();
+      return (
+        <SyncDatabases
+          isCreating
+          showLabel={false}
+          allowEdit
+          syncDatabases={basicInfo.syncDatabases}
+          onSyncDatabasesChange={(databases, syncAll) => {
+            setBasicInfo((prev) => ({
+              ...prev,
+              syncDatabases: syncAll
+                ? undefined
+                : create(SyncDatabasesSchema, { databases }),
+            }));
+          }}
+        />
+      );
+    };
+    vi.useFakeTimers();
+    const harness = renderIntoContainer();
+    try {
+      await harness.render(
+        <InstanceFormProvider>
+          <CreateSelector />
+        </InstanceFormProvider>
+      );
+      await act(async () => {
+        const syncScope = harness.container.querySelector<HTMLElement>(
+          '[role="switch"]'
+        );
+        expect(syncScope).not.toBeNull();
+        syncScope!.click();
+        await vi.advanceTimersByTimeAsync(600);
+      });
+
+      const checkbox = harness.container.querySelector<HTMLElement>(
+        '[role="checkbox"]'
+      );
+      expect(checkbox).not.toBeNull();
+      mocks.listInstanceDatabases.mockClear();
+      mocks.listInstanceDatabases.mockImplementation(
+        () => new Promise(() => {})
+      );
+
+      await act(async () => {
+        checkbox!.click();
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      expect(mocks.listInstanceDatabases).not.toHaveBeenCalled();
+      expect(harness.container.textContent).not.toContain("common.loading");
+    } finally {
+      harness.unmount();
+      vi.useRealTimers();
+      mocks.listInstanceDatabases.mockResolvedValue({
+        databases: ["app", "analytics"],
+      });
+    }
+  });
 
   test("refreshes database previews when the create connection changes", async () => {
     const { SyncDatabases } = await import("./InstanceFormBody");
@@ -801,7 +1019,7 @@ describe("InstanceFormProvider", () => {
     const harness = renderIntoContainer();
     try {
       await harness.render(<InstanceFormProvider><Capture /></InstanceFormProvider>);
-      const draft = wrapEditDataSource(create(DataSourceSchema, {
+      const draft = createDataSourceDraft(Engine.MYSQL, create(DataSourceSchema, {
         authenticationType,
         host: "project:region:instance",
         region: "us-east-1",
@@ -956,6 +1174,103 @@ describe("InstanceFormProvider", () => {
     }
   );
 
+  const tlsExtraParameters = {
+    SSL: "FALSE",
+    "ssl verify": "TRUE",
+    WALLET: "/etc/oracle-wallet",
+    SERVER: "standby.example.com:2484",
+  };
+
+  test.each<{
+    name: string;
+    engine: Engine;
+    useSsl: boolean;
+    notices: Partial<Record<string, string>>;
+  }>([
+    {
+      name: "Oracle with TLS mode TLS",
+      engine: Engine.ORACLE,
+      useSsl: true,
+      notices: {
+        SSL: "data-source.extra-params.overridden-by-tls",
+        "ssl verify": "data-source.extra-params.overridden-by-tls",
+        WALLET: "data-source.extra-params.wallet-overridden-by-tls",
+      },
+    },
+    {
+      name: "Oracle with TLS mode Disabled",
+      engine: Engine.ORACLE,
+      useSsl: false,
+      notices: {},
+    },
+    {
+      name: "MySQL with TLS on",
+      engine: Engine.MYSQL,
+      useSsl: true,
+      notices: {},
+    },
+  ])(
+    "marks extra parameters the TLS section overrides: $name",
+    async ({ engine, useSsl, notices }) => {
+      mocks.hasSSL = true;
+      mocks.hasExtraParameters = true;
+      const { DataSourceForm } = await vi.importActual<
+        typeof import("./DataSourceForm")
+      >("./DataSourceForm");
+      let context!: ReturnType<typeof useInstanceFormContext>;
+      const Editor = () => {
+        context = useInstanceFormContext();
+        return (
+          <DataSourceForm
+            dataSource={context.adminDataSource}
+            onDataSourceChange={(ds) => context.setDataSourceEditState((state) => ({
+              ...state, dataSources: [ds],
+            }))}
+            optionsOnly
+          />
+        );
+      };
+      const harness = renderIntoContainer();
+      const notice = (key: string) => {
+        const input = Array.from(
+          harness.container.querySelectorAll<HTMLInputElement>(
+            'input[aria-label="instance.parameter-name-placeholder"]'
+          )
+        ).find((element) => element.value === key);
+        expect(input).toBeDefined();
+        const ids = input?.getAttribute("aria-describedby")?.split(" ") ?? [];
+        const texts = ids.map(
+          (id) => harness.container.querySelector(`[id="${id}"]`)?.textContent
+        );
+        return texts.length > 0 ? texts.join(" ") : undefined;
+      };
+      try {
+        await harness.render(
+          <InstanceFormProvider><Editor /></InstanceFormProvider>
+        );
+        await act(async () => {
+          context.setBasicInfo((previous) => ({ ...previous, engine }));
+          context.setDataSourceEditState((state) => ({
+            ...state,
+            dataSources: [{
+              ...context.adminDataSource,
+              host: "db.example.com",
+              serviceName: "ORCLPDB1",
+              useSsl,
+              extraConnectionParameters: tlsExtraParameters,
+            }],
+          }));
+        });
+        for (const key of Object.keys(tlsExtraParameters)) {
+          expect(notice(key), key).toBe(notices[key]);
+        }
+        expect(context.checkDataSource([context.adminDataSource])).toBe(true);
+      } finally {
+        harness.unmount();
+      }
+    }
+  );
+
   test("places add parameter in the extra parameters form field", async () => {
     mocks.hasExtraParameters = true;
     const { DataSourceForm } = await vi.importActual<
@@ -990,7 +1305,9 @@ describe("InstanceFormProvider", () => {
         field?.querySelector('[data-slot="form-field-title"]')?.textContent
       ).toBe("data-source.extra-params.self");
       expect(addParameter?.className).toContain("h-7");
+      expect(addParameter?.className).toContain("border-control-border");
       expect(addParameter?.className).toContain("self-start");
+      expect(addParameter?.querySelector("svg")).not.toBeNull();
     } finally {
       harness.unmount();
     }
@@ -1087,7 +1404,7 @@ describe("InstanceFormProvider", () => {
     await harness.render(<InstanceFormProvider><Capture /></InstanceFormProvider>);
     await act(async () => {
       context.setBasicInfo((previous) => ({ ...previous, engine, title: "Production" }));
-      context.setDataSourceEditState((previous) => ({ ...previous, dataSources: [wrapEditDataSource(create(DataSourceSchema, { id: "admin", type: DataSourceType.ADMIN, projectId: "valid-project", instanceId: "valid-instance" }))] }));
+      context.setDataSourceEditState((previous) => ({ ...previous, dataSources: [{ ...createDataSourceDraft(engine), id: "admin", type: DataSourceType.ADMIN, projectId: "valid-project", instanceId: "valid-instance" }] }));
     });
     expect(context.allowCreate).toBe(false);
     await act(async () => { context.setResourceIdValidated(true); });
@@ -1099,7 +1416,8 @@ describe("InstanceFormProvider", () => {
 
   describe("checkDataSource AWS region requirement", () => {
     const awsDataSource = (region: string, withCredential: boolean) => {
-      const ds = wrapEditDataSource(
+      const ds = createDataSourceDraft(
+        Engine.MYSQL,
         create(DataSourceSchema, {
           id: "admin",
           type: DataSourceType.ADMIN,
@@ -1203,7 +1521,7 @@ describe("InstanceFormProvider", () => {
     });
 
     const editedDataSource = (edit: (ds: EditDataSource) => void) => {
-      const ds = wrapEditDataSource(storedDataSource);
+      const ds = createDataSourceDraft(Engine.HIVE, storedDataSource);
       edit(ds);
       return ds;
     };
@@ -1314,7 +1632,7 @@ describe("InstanceFormProvider", () => {
       });
       expect(
         await renderWithStored([withoutPort], () =>
-          wrapEditDataSource(withoutPort)
+          createDataSourceDraft(Engine.HIVE, withoutPort)
         )
       ).toBe("true");
     });
@@ -1327,7 +1645,7 @@ describe("InstanceFormProvider", () => {
       });
       expect(
         await renderWithStored([withTunnel], () =>
-          wrapEditDataSource(withTunnel)
+          createDataSourceDraft(Engine.HIVE, withTunnel)
         )
       ).toBe("true");
     });
@@ -1343,12 +1661,12 @@ describe("InstanceFormProvider", () => {
       });
       expect(
         await renderWithStored([storedDataSource, readonlyDataSource], () =>
-          wrapEditDataSource(readonlyDataSource)
+          createDataSourceDraft(Engine.HIVE, readonlyDataSource)
         )
       ).toBe("false");
       expect(
         await renderWithStored([storedDataSource, readonlyDataSource], () => {
-          const ds = wrapEditDataSource(readonlyDataSource);
+          const ds = createDataSourceDraft(Engine.HIVE, readonlyDataSource);
           ds.host = "hive-replica-2.example.com";
           return ds;
         })

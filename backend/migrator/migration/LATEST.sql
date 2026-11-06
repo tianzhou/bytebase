@@ -81,7 +81,8 @@ ALTER SEQUENCE principal_id_seq RESTART WITH 101;
 -- Setting
 CREATE TABLE setting (
     -- name: SYSTEM, WORKSPACE_PROFILE, WORKSPACE_APPROVAL,
-    -- APP_IM, AI, DATA_CLASSIFICATION, SEMANTIC_TYPES, ENVIRONMENT, EMAIL, MCP
+    -- APP_IM, AI, DATA_CLASSIFICATION, SEMANTIC_TYPES, ENVIRONMENT, EMAIL, MCP,
+    -- EXPORT
     -- Enum: SettingName (proto/store/store/setting.proto)
     name text NOT NULL,
     workspace text NOT NULL REFERENCES workspace(resource_id),
@@ -116,7 +117,7 @@ CREATE TABLE policy (
     resource_type text NOT NULL,
     -- resource: resource name in format like "environments/{environment}", "projects/{project}", etc.
     resource TEXT NOT NULL,
-    -- type: ROLLOUT, MASKING_EXCEPTION, QUERY_DATA, MASKING_RULE, IAM, TAG
+    -- type: ROLLOUT, MASKING_EXCEPTION, QUERY_DATA, MASKING_RULE, IAM, TAG, REVIEW_RULE, REVIEW_AI
     -- Enum: Policy.Type (proto/store/store/policy.proto)
     type text NOT NULL,
     -- Stored as different types based on policy type (proto/store/store/policy.proto):
@@ -126,6 +127,8 @@ CREATE TABLE policy (
     -- MASKING_RULE: MaskingRulePolicy
     -- IAM: IamPolicy
     -- TAG: TagPolicy
+    -- REVIEW_RULE: ReviewRulePolicy (the standard review rules switched on; nearest policy wins)
+    -- REVIEW_AI: ReviewAIPolicy (the natural-language policy for the AI review; workspace and project both apply, project wins on conflict)
     payload jsonb NOT NULL DEFAULT '{}',
     inherit_from_parent boolean NOT NULL DEFAULT TRUE,
     PRIMARY KEY (workspace, resource_type, resource, type)
@@ -359,7 +362,9 @@ CREATE INDEX idx_issue_ts_vector ON issue USING GIN(ts_vector);
 CREATE TABLE issue_comment (
     -- global unique
     resource_id text NOT NULL DEFAULT gen_random_uuid()::text,
-    creator text NOT NULL,
+    -- NULL on review results and review run completions, which a reviewer
+    -- posts (the payload names it), never a person.
+    creator text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     project text NOT NULL REFERENCES project(resource_id),
@@ -390,9 +395,9 @@ CREATE INDEX idx_issue_comment_open_thread ON issue_comment(project, issue_id)
 CREATE TABLE review_run (
     project text NOT NULL REFERENCES project(resource_id),
     issue_id bigint NOT NULL,
-    -- Reviewer type: 'RULE' (standard rules) or 'GUIDELINE' (natural-language
-    -- guidelines, performed by AI). No CHECK on purpose: the reviewer-id space
-    -- is open.
+    -- Reviewer type: 'RULE' (standard rules) or 'AI' (the natural-language AI
+    -- review policy, judged by a model). No CHECK on purpose: the reviewer-id
+    -- space is open.
     type text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -516,6 +521,7 @@ CREATE TABLE access_grant (
 );
 
 CREATE INDEX idx_access_grant_project_creator_expire_time ON access_grant(project, creator, expire_time);
+CREATE INDEX idx_access_grant_project_creator_query_hash ON access_grant(project, creator, (payload->>'queryHash'));
 
 CREATE TABLE query_history (
     -- global unique
@@ -582,6 +588,11 @@ CREATE TABLE db_schema (
     raw_dump text NOT NULL DEFAULT '',
     -- Stored as DatabaseConfig (proto/store/store/database.proto)
     config jsonb NOT NULL DEFAULT '{}',
+    -- When the sync that produced metadata and raw_dump read the live database.
+    -- A sync whose read predates this value is refused, so a slow sync cannot
+    -- revert the projection to an older schema. NULL means never stamped, which
+    -- every sync is allowed to overwrite.
+    synced_at timestamptz,
     PRIMARY KEY (instance, db_name),
     CONSTRAINT db_schema_instance_db_name_fkey FOREIGN KEY(instance, db_name) REFERENCES db(instance, name)
 );

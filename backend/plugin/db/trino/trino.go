@@ -19,6 +19,9 @@ import (
 	"github.com/bytebase/bytebase/backend/plugin/db"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+
+	// Register how this engine plans a statement, for base.ExplainStatement below.
+	_ "github.com/bytebase/bytebase/backend/plugin/parser/trino"
 )
 
 func init() {
@@ -50,6 +53,13 @@ func (*Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionCon
 	}
 
 	password := config.Password
+	// trino-go-client refuses a password on a plaintext connection, so name the
+	// setting to change instead of surfacing its DSN error. Such a data source
+	// cannot connect either way: the credentials would go over the wire in the
+	// clear.
+	if password != "" && !config.DataSource.UseSsl {
+		return nil, errors.New("trino requires SSL to authenticate with a password: turn on SSL for this data source, or clear the password")
+	}
 
 	// Set host and port
 	host := config.DataSource.Host
@@ -233,11 +243,15 @@ func (*Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string, 
 				strings.HasPrefix(upperStmt, "EXPLAIN")
 
 			if queryContext.Explain {
-				stmt = fmt.Sprintf("EXPLAIN %s", stmt)
+				explained, err := base.ExplainStatement(storepb.Engine_TRINO, stmt, db.ExplainFormat(queryContext.Option.GetExplainFormat()))
+				if err != nil {
+					return nil, err
+				}
+				stmt = explained
 				isQuery = true
-			}
-
-			if isQuery && queryContext.Limit > 0 && !strings.Contains(upperStmt, " LIMIT ") {
+			} else if isQuery && queryContext.Limit > 0 && !strings.Contains(upperStmt, " LIMIT ") {
+				// A plan of a statement the caller did not write answers the wrong
+				// question, so the limit applies only when the statement runs.
 				stmt = fmt.Sprintf("%s LIMIT %d", stmt, queryContext.Limit)
 			}
 

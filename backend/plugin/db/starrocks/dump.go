@@ -13,8 +13,6 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/bytebase/bytebase/backend/common"
-	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
-	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
 const (
@@ -24,11 +22,6 @@ const (
 
 // Dump and restore.
 const (
-	settingsStmt = "" +
-		"SET character_set_client  = %s;\n" +
-		"SET character_set_results = %s;\n" +
-		"SET collation_connection  = %s;\n" +
-		"SET sql_mode              = '%s';\n"
 	tableStmtFmt = "" +
 		"--\n" +
 		"-- Table structure for `%s`\n" +
@@ -44,11 +37,6 @@ const (
 		"-- Materialized view structure for `%s`\n" +
 		"--\n" +
 		"%s;\n"
-	sequenceStmtFmt = "" +
-		"--\n" +
-		"-- Sequence structure for `%s`\n" +
-		"--\n" +
-		"%s;\n"
 	tempViewStmtFmt = "" +
 		"--\n" +
 		"-- Temporary view structure for `%s`\n" +
@@ -59,58 +47,22 @@ const (
 		"-- Temporary view structure for materialized view `%s`\n" +
 		"--\n" +
 		"%s\n"
-	routineStmtFmt = "" +
-		"--\n" +
-		"-- %s structure for `%s`\n" +
-		"--\n" +
-		settingsStmt +
-		"DELIMITER ;;\n" +
-		"%s ;;\n" +
-		"DELIMITER ;\n"
-	nullRoutineStmtFmt = "" +
-		"--\n" +
-		"-- %s structure for `%s`\n" +
-		"-- NULL statement because user has insufficient permissions.\n" +
-		"--\n"
-	eventStmtFmt = "" +
-		"--\n" +
-		"-- Event structure for `%s`\n" +
-		"--\n" +
-		settingsStmt +
-		"SET time_zone = '%s';\n" +
-		"DELIMITER ;;\n" +
-		"%s ;;\n" +
-		"DELIMITER ;\n"
-
-	disableUniqueAndForeignKeyCheckStmt = "SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0;\nSET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0;\n"
-	restoreUniqueAndForeignKeyCheckStmt = "SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS;\nSET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS;\n"
 )
 
 // Dump dumps the database.
 func (d *Driver) Dump(_ context.Context, out io.Writer, _ *metadatapb.DatabaseSchemaMetadata) error {
-	// mysqldump -u root --databases dbName --no-data --routines --events --triggers --compact
-
 	slog.Debug("begin to dump database", slog.String("database", d.databaseName))
 
 	db := d.GetDB()
 	database := d.databaseName
-	dbType := d.dbType
 
-	// Disable foreign key check.
-	// mysqldump uses the same mechanism. When there is any schema or data dependency, we have to disable
-	// the unique and foreign key check so that the restoring will not fail.
-	// StarRocks has no MySQL UNIQUE_CHECKS/FOREIGN_KEY_CHECKS session variables (and does not
-	// enforce foreign keys), so emitting the guard makes the dump fail to replay with
-	// "Unknown system variable 'UNIQUE_CHECKS'".
-	if d.dbType != storepb.Engine_STARROCKS {
-		if _, err := io.WriteString(out, disableUniqueAndForeignKeyCheckStmt); err != nil {
-			return err
-		}
-	}
+	// mysqldump brackets a dump with UNIQUE_CHECKS/FOREIGN_KEY_CHECKS guards. StarRocks has
+	// neither session variable and does not enforce foreign keys, so emitting them makes the
+	// dump fail to replay with "Unknown system variable 'UNIQUE_CHECKS'".
 
 	// Table and view statement.
 	// We have to dump the table before views because of the structure dependency.
-	tables, err := getTables(db, database, dbType)
+	tables, err := getTables(db, database)
 	if err != nil {
 		return errors.Wrapf(err, "failed to get tables of database %q", database)
 	}
@@ -168,35 +120,6 @@ func (d *Driver) Dump(_ context.Context, out io.Writer, _ *metadatapb.DatabaseSc
 			return err
 		}
 		if _, err := io.WriteString(out, fmt.Sprintf("%s\n", tbl.Statement)); err != nil {
-			return err
-		}
-	}
-
-	// Procedure and function (routine) statements.
-	routines, err := getRoutines(db, database)
-	if err != nil {
-		return errors.Wrapf(err, "failed to get routines of database %q", database)
-	}
-	for _, rt := range routines {
-		if _, err := io.WriteString(out, fmt.Sprintf("%s\n", rt.statement)); err != nil {
-			return err
-		}
-	}
-
-	// Event statements.
-	events, err := getEvents(db, database)
-	if err != nil {
-		return errors.Wrapf(err, "failed to get events of database %q", database)
-	}
-	for _, et := range events {
-		if _, err := io.WriteString(out, fmt.Sprintf("%s\n", et.statement)); err != nil {
-			return err
-		}
-	}
-
-	// Restore foreign key check (skipped for StarRocks, which lacks these variables).
-	if d.dbType != storepb.Engine_STARROCKS {
-		if _, err := io.WriteString(out, restoreUniqueAndForeignKeyCheckStmt); err != nil {
 			return err
 		}
 	}
@@ -267,21 +190,8 @@ type TableSchema struct {
 	InvalidView string
 }
 
-// routineSchema describes the schema of a function or procedure (routine).
-type routineSchema struct {
-	name        string
-	routineType string
-	statement   string
-}
-
-// eventSchema describes the schema of an event.
-type eventSchema struct {
-	name      string
-	statement string
-}
-
 // getTables gets all tables of a database using the provided database instance.
-func getTables(db *sql.DB, dbName string, dbType storepb.Engine) ([]*TableSchema, error) {
+func getTables(db *sql.DB, dbName string) ([]*TableSchema, error) {
 	var tables []*TableSchema
 	query := "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?"
 	rows, err := db.Query(query, dbName)
@@ -296,10 +206,9 @@ func getTables(db *sql.DB, dbName string, dbType storepb.Engine) ([]*TableSchema
 	}
 	for rows.Next() {
 		var tbl TableSchema
-		// StorageFormat is the third but unused column for Doris.
+		// Some versions add a third, unused storage-format column.
 		var unusedStorageFormat string
 		if len(columns) == 3 {
-			// Doris.
 			if err := rows.Scan(&tbl.Name, &tbl.TableType, &unusedStorageFormat); err != nil {
 				return nil, err
 			}
@@ -315,8 +224,8 @@ func getTables(db *sql.DB, dbName string, dbType storepb.Engine) ([]*TableSchema
 	}
 
 	// Materialized views need a separate catalog lookup and re-tagging so the dump emits
-	// SHOW CREATE MATERIALIZED VIEW for them (Doris reports them as BASE TABLE, StarRocks as VIEW).
-	materializedViewNames, err := getMaterializedViewNames(db, dbName, dbType)
+	// SHOW CREATE MATERIALIZED VIEW for them, since StarRocks reports them as VIEW.
+	materializedViewNames, err := getMaterializedViewNames(db, dbName)
 	if err != nil {
 		return nil, err
 	}
@@ -351,23 +260,14 @@ func getTables(db *sql.DB, dbName string, dbType storepb.Engine) ([]*TableSchema
 }
 
 // getMaterializedViewNames returns the set of materialized-view names in the database.
-// Doris and StarRocks expose them through different catalogs; the query is best-effort
-// (an unsupported engine/version logs and yields an empty set). StarRocks sync rollups
-// (REFRESH_TYPE='ROLLUP') are excluded — they are rollup indexes on the base table, not
-// standalone views.
-func getMaterializedViewNames(db *sql.DB, dbName string, dbType storepb.Engine) (map[string]bool, error) {
+// The query is best-effort: an unsupported version logs and yields an empty set. Sync
+// rollups (REFRESH_TYPE='ROLLUP') are excluded: they are rollup indexes on the base
+// table, not standalone views.
+func getMaterializedViewNames(db *sql.DB, dbName string) (map[string]bool, error) {
 	names := make(map[string]bool)
 
-	var query string
-	switch dbType {
-	case storepb.Engine_DORIS:
-		query = fmt.Sprintf(`SELECT Name FROM mv_infos("database"="%s")`, dbName)
-	case storepb.Engine_STARROCKS:
-		// IFNULL guards the bare-string scan below: database/sql errors on a NULL->string scan.
-		query = fmt.Sprintf(`SELECT TABLE_NAME, IFNULL(REFRESH_TYPE, '') FROM information_schema.materialized_views WHERE TABLE_SCHEMA = '%s'`, dbName)
-	default:
-		return names, nil
-	}
+	// IFNULL guards the bare-string scan below: database/sql errors on a NULL->string scan.
+	query := fmt.Sprintf(`SELECT TABLE_NAME, IFNULL(REFRESH_TYPE, '') FROM information_schema.materialized_views WHERE TABLE_SCHEMA = '%s'`, dbName)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -378,17 +278,12 @@ func getMaterializedViewNames(db *sql.DB, dbName string, dbType storepb.Engine) 
 	defer rows.Close()
 
 	for rows.Next() {
-		var name string
-		if dbType == storepb.Engine_STARROCKS {
-			var refreshType string
-			if err := rows.Scan(&name, &refreshType); err != nil {
-				return nil, err
-			}
-			if isSyncRollup(refreshType) {
-				continue
-			}
-		} else if err := rows.Scan(&name); err != nil {
+		var name, refreshType string
+		if err := rows.Scan(&name, &refreshType); err != nil {
 			return nil, err
+		}
+		if isSyncRollup(refreshType) {
+			continue
 		}
 		names[name] = true
 	}
@@ -399,9 +294,9 @@ func getMaterializedViewNames(db *sql.DB, dbName string, dbType storepb.Engine) 
 }
 
 // markMaterializedViews re-tags rows that are actually materialized views so the dump
-// emits SHOW CREATE MATERIALIZED VIEW for them. Doris reports MVs as 'BASE TABLE' and
-// StarRocks as 'VIEW'; either becomes 'MATERIALIZED VIEW' when its name is in the
-// materialized-view set. Regular tables and views are left untouched.
+// emits SHOW CREATE MATERIALIZED VIEW for them. StarRocks reports MVs as 'VIEW', which
+// becomes 'MATERIALIZED VIEW' when the name is in the materialized-view set. Regular
+// tables and views are left untouched.
 func markMaterializedViews(tables []*TableSchema, materializedViewNames map[string]bool) {
 	for _, tbl := range tables {
 		if !materializedViewNames[tbl.Name] {
@@ -442,7 +337,7 @@ func getTableStmt(db *sql.DB, dbName, tblName, tblType string) (string, error) {
 		createStmt = strings.TrimSuffix(createStmt, ";")
 		return fmt.Sprintf(viewStmtFmt, tblName, createStmt), nil
 	case materializedViewType:
-		// For Doris materialized views, we use SHOW CREATE MATERIALIZED VIEW.
+		// For materialized views we use SHOW CREATE MATERIALIZED VIEW.
 		// This command returns 2 columns: materialized view name and create statement.
 		query := fmt.Sprintf("SHOW CREATE MATERIALIZED VIEW `%s`.`%s`;", dbName, tblName)
 		var createStmt, unused string
@@ -485,144 +380,4 @@ func getViewColumns(db *sql.DB, dbName, tblName string) ([]string, error) {
 		return nil, err
 	}
 	return fields, nil
-}
-
-// getRoutines gets all routines of a database.
-func getRoutines(db *sql.DB, dbName string) ([]*routineSchema, error) {
-	var routines []*routineSchema
-	for _, routineType := range []string{"FUNCTION", "PROCEDURE"} {
-		if err := func() error {
-			query := fmt.Sprintf("SHOW %s STATUS WHERE Db = '%s';", routineType, dbName)
-			rows, err := db.Query(query)
-			if err != nil {
-				return errors.Wrapf(err, "failed query %q", query)
-			}
-			defer rows.Close()
-
-			cols, err := rows.Columns()
-			if err != nil {
-				return err
-			}
-			var values []any
-			for i := 0; i < len(cols); i++ {
-				values = append(values, new(any))
-			}
-			for rows.Next() {
-				var r routineSchema
-				if err := rows.Scan(values...); err != nil {
-					return err
-				}
-				r.name = fmt.Sprintf("%s", *values[1].(*any))
-				r.routineType = fmt.Sprintf("%s", *values[2].(*any))
-
-				routines = append(routines, &r)
-			}
-			return rows.Err()
-		}(); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, r := range routines {
-		stmt, err := getRoutineStmt(db, dbName, r.name, r.routineType)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to call getRoutineStmt(%q, %q, %q)", dbName, r.name, r.routineType)
-		}
-		r.statement = stmt
-	}
-	return routines, nil
-}
-
-// getRoutineStmt gets the create statement of a routine.
-func getRoutineStmt(db *sql.DB, dbName, routineName, routineType string) (string, error) {
-	query := fmt.Sprintf("SHOW CREATE %s `%s`.`%s`;", routineType, dbName, routineName)
-	var sqlmode, charset, collation, unused string
-	var stmt sql.NullString
-	if err := db.QueryRow(query).Scan(
-		&unused,
-		&sqlmode,
-		&stmt,
-		&charset,
-		&collation,
-		&unused,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return "", common.FormatDBErrorEmptyRowWithQuery(query)
-		}
-		return "", err
-	}
-	if !stmt.Valid {
-		// https://dev.mysql.com/doc/refman/8.0/en/show-create-procedure.html
-		slog.Warn("Statement is null, user does not have sufficient permissions",
-			slog.String("routineType", routineType),
-			slog.String("dbName", dbName),
-			slog.String("routineName", routineName))
-		return fmt.Sprintf(nullRoutineStmtFmt, getReadableRoutineType(routineType), routineName), nil
-	}
-	return fmt.Sprintf(routineStmtFmt, getReadableRoutineType(routineType), routineName, charset, charset, collation, sqlmode, stmt.String), nil
-}
-
-// getReadableRoutineType gets the printable routine type.
-func getReadableRoutineType(s string) string {
-	switch s {
-	case "FUNCTION":
-		return "Function"
-	case "PROCEDURE":
-		return "Procedure"
-	default:
-		return s
-	}
-}
-
-// getEvents gets all events of a database.
-func getEvents(db *sql.DB, dbName string) ([]*eventSchema, error) {
-	var events []*eventSchema
-	query := fmt.Sprintf("SHOW EVENTS FROM `%s`;", dbName)
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return nil, err
-	}
-	var values []any
-	for i := 0; i < len(cols); i++ {
-		values = append(values, new(any))
-	}
-	for rows.Next() {
-		var r eventSchema
-		if err := rows.Scan(values...); err != nil {
-			return nil, err
-		}
-		r.name = fmt.Sprintf("%s", *values[1].(*any))
-		events = append(events, &r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, util.FormatErrorWithQuery(err, query)
-	}
-
-	for _, r := range events {
-		stmt, err := getEventStmt(db, dbName, r.name)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to call getEventStmt(%q, %q)", dbName, r.name)
-		}
-		r.statement = stmt
-	}
-	return events, nil
-}
-
-// getEventStmt gets the create statement of an event.
-func getEventStmt(db *sql.DB, dbName, eventName string) (string, error) {
-	query := fmt.Sprintf("SHOW CREATE EVENT `%s`.`%s`;", dbName, eventName)
-	var sqlmode, timezone, stmt, charset, collation, unused string
-	if err := db.QueryRow(query).Scan(&unused, &sqlmode, &timezone, &stmt, &charset, &collation, &unused); err != nil {
-		if err == sql.ErrNoRows {
-			return "", common.FormatDBErrorEmptyRowWithQuery(query)
-		}
-		return "", err
-	}
-	return fmt.Sprintf(eventStmtFmt, eventName, charset, charset, collation, sqlmode, timezone, stmt), nil
 }

@@ -3,6 +3,7 @@ package plsql
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -22,20 +23,40 @@ type querySpanExtractor struct {
 
 	outerTableSources []base.TableSource
 	tableSourcesFrom  []base.TableSource
+	linkedDatabases   map[string]linkedDatabaseResolution
 }
 
 func newQuerySpanExtractor(connectionDatabase string, gCtx base.GetQuerySpanContext) *querySpanExtractor {
 	return &querySpanExtractor{
 		defaultDatabase: connectionDatabase,
 		gCtx:            gCtx,
+		linkedDatabases: make(map[string]linkedDatabaseResolution),
 	}
 }
 
+// linkedDatabaseResolution is what a database link resolved to; a nil meta means it
+// resolved to nothing.
+type linkedDatabaseResolution struct {
+	instanceID   string
+	databaseName string
+	meta         *model.DatabaseMetadata
+}
+
+// getLinkedDatabaseMetadata resolves a database link once per (link, schema) for the
+// statement; the access-table pass and the column pass both ask for the same links.
 func (q *querySpanExtractor) getLinkedDatabaseMetadata(linkName string, schema string) (string, string, *model.DatabaseMetadata, error) {
+	if q.gCtx.GetLinkedDatabaseMetadataFunc == nil {
+		return "", "", nil, nil
+	}
+	key := linkName + "\x00" + schema
+	if r, ok := q.linkedDatabases[key]; ok {
+		return r.instanceID, r.databaseName, r.meta, nil
+	}
 	linkedInstanceID, databaseName, meta, err := q.gCtx.GetLinkedDatabaseMetadataFunc(q.ctx, q.gCtx.InstanceID, linkName, schema)
 	if err != nil {
 		return "", "", nil, errors.Wrapf(err, "failed to get linked database metadata for schema: %s", schema)
 	}
+	q.linkedDatabases[key] = linkedDatabaseResolution{instanceID: linkedInstanceID, databaseName: databaseName, meta: meta}
 	return linkedInstanceID, databaseName, meta, nil
 }
 
@@ -48,9 +69,6 @@ func (q *querySpanExtractor) getDatabaseMetadata(schema string) (*model.Database
 }
 
 func (q *querySpanExtractor) existsTableMetadata(resource base.SchemaResource) bool {
-	if resource.Table == "DUAL" {
-		return false
-	}
 	database := resource.Database
 	if database == "" {
 		database = q.defaultDatabase
@@ -70,9 +88,12 @@ func (q *querySpanExtractor) existsTableMetadata(resource base.SchemaResource) b
 		schema.GetExternalTable(resource.Table) != nil
 }
 
-func isMixedQuery(m []base.SchemaResource) (bool, bool) {
-	hasSystem, hasUser := false, false
-	for _, item := range m {
+// isMixedQuery classifies the tables a statement reads. A linked table is a user table:
+// a remote schema name says nothing about the connected instance's system schemas, and an
+// info-schema verdict would skip the per-table check for it.
+func isMixedQuery(local, linked []base.SchemaResource) (allSystem, mixed bool) {
+	hasSystem, hasUser := false, len(linked) > 0
+	for _, item := range local {
 		if systemSchemaMap[item.Database] {
 			hasSystem = true
 		} else {
@@ -140,15 +161,9 @@ var systemSchemaMap = map[string]bool{
 }
 
 func (q *querySpanExtractor) plsqlFindTableSchema(dbLink []string, schemaName, tableName string) (base.TableSource, error) {
-	if tableName == "DUAL" {
-		return &base.PseudoTable{
-			Name:    "DUAL",
-			Columns: []base.QuerySpanResult{},
-		}, nil
-	}
 	if len(dbLink) > 0 {
 		linkName := strings.Join(dbLink, ".")
-		linkedInstanceID, _, linkedMeta, err := q.getLinkedDatabaseMetadata(linkName, schemaName)
+		linkedInstanceID, linkedDatabaseName, linkedMeta, err := q.getLinkedDatabaseMetadata(linkName, schemaName)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get linked database metadata for: %s", dbLink)
 		}
@@ -157,7 +172,9 @@ func (q *querySpanExtractor) plsqlFindTableSchema(dbLink []string, schemaName, t
 				DatabaseLink: &linkName,
 			}
 		}
-		return q.findTableSchemaInMetadata(linkedInstanceID, linkedMeta, schemaName, tableName)
+		// Lineage carries the resolved database, as the access set does, so the masker
+		// finds the policy of the database the link reaches rather than of "" for `t@link`.
+		return q.findTableSchemaInMetadata(linkedInstanceID, linkedMeta, linkedDatabaseName, tableName)
 	}
 
 	if schemaName == q.defaultDatabase {
@@ -202,14 +219,19 @@ func (q *querySpanExtractor) findTableSchemaInMetadata(instanceID string, dbMeta
 
 	if table != nil {
 		var columns []string
+		invisibleColumns := make(map[string]bool)
 		for _, column := range table.GetProto().GetColumns() {
 			columns = append(columns, column.Name)
+			if column.IsInvisible {
+				invisibleColumns[column.Name] = true
+			}
 		}
 		return &base.PhysicalTable{
-			Server:   "",
-			Database: databaseName,
-			Name:     table.GetProto().Name,
-			Columns:  columns,
+			Server:           "",
+			Database:         databaseName,
+			Name:             table.GetProto().Name,
+			Columns:          columns,
+			InvisibleColumns: invisibleColumns,
 		}, nil
 	}
 
@@ -318,17 +340,21 @@ func (q *omniQuerySpanExtractor) getOmniQuerySpan(ctx context.Context, statement
 		return nil, nil
 	}
 
-	accessTables := collectOmniAccessTables(q.defaultDatabase, raw.Stmt)
-	allSystem, mixed := isMixedQuery(accessTables)
+	accessTables, linkedTables := collectOmniAccessTables(q.defaultDatabase, raw.Stmt)
+	allSystem, mixed := isMixedQuery(accessTables, linkedTables)
 	if mixed {
 		return nil, base.MixUserSystemTablesError
 	}
 
 	queryType := omniQueryType(raw.Stmt, allSystem)
 	if queryType != base.Select {
+		sourceColumns := make(base.SourceColumnSet)
+		for _, resource := range accessTables {
+			sourceColumns[base.ColumnResource{Database: resource.Database, Table: resource.Table}] = true
+		}
 		return &base.QuerySpan{
 			Type:          queryType,
-			SourceColumns: base.SourceColumnSet{},
+			SourceColumns: sourceColumns,
 			Results:       []base.QuerySpanResult{},
 		}, nil
 	}
@@ -339,12 +365,17 @@ func (q *omniQuerySpanExtractor) getOmniQuerySpan(ctx context.Context, statement
 			continue
 		}
 		columnSet[base.ColumnResource{
-			Server:   resource.LinkedServer,
 			Database: resource.Database,
 			Table:    resource.Table,
 		}] = true
 	}
-
+	for _, resource := range linkedTables {
+		column, err := q.linkedAccessColumn(resource)
+		if err != nil {
+			return nil, err
+		}
+		columnSet[column] = true
+	}
 	selectStmt, ok := raw.Stmt.(*oracleast.SelectStmt)
 	if !ok {
 		return nil, errors.Errorf("expected SELECT statement, got %T", raw.Stmt)
@@ -448,6 +479,27 @@ func omniQueryType(stmt oracleast.StmtNode, allSystem bool) base.QueryType {
 	return base.QueryTypeUnknown
 }
 
+// linkedAccessColumn authorizes the name as written, not looked up in connected-instance
+// metadata, which would drop a remote table or keep a same-named local one as the wrong
+// resource. A link that resolves to nothing yields Server set and Instance empty.
+func (q *omniQuerySpanExtractor) linkedAccessColumn(resource base.SchemaResource) (base.ColumnResource, error) {
+	column := base.ColumnResource{
+		Server:   resource.LinkedServer,
+		Database: resource.Database,
+		Table:    resource.Table,
+	}
+	linkedInstanceID, linkedDatabaseName, linkedMeta, err := q.getLinkedDatabaseMetadata(resource.LinkedServer, resource.Database)
+	if err != nil {
+		return base.ColumnResource{}, err
+	}
+	if linkedMeta == nil || linkedInstanceID == "" || linkedDatabaseName == "" {
+		return column, nil
+	}
+	column.Instance = linkedInstanceID
+	column.Database = linkedDatabaseName
+	return column, nil
+}
+
 func (q *omniQuerySpanExtractor) findMissingOmniAccessTable(stmt oracleast.StmtNode, accessTables []base.SchemaResource) *base.ResourceNotFoundError {
 	cteNames := collectOmniCTENames(stmt)
 	for _, resource := range accessTables {
@@ -479,39 +531,93 @@ func collectOmniCTENames(stmt oracleast.StmtNode) map[string]bool {
 	return result
 }
 
-func collectOmniAccessTables(defaultDatabase string, stmt oracleast.StmtNode) []base.SchemaResource {
+// isOmniDual reports whether a name is Oracle's DUAL pseudo-table: SYS.DUAL, "PUBLIC".DUAL,
+// or an unqualified local DUAL. A schema may own a real table named DUAL, which a qualified
+// name resolves to; an unqualified name through a link resolves in the link user's schema
+// first, so it is a table there. The unqualified local case assumes the session schema
+// owns no DUAL table, as the extractor always has.
+func isOmniDual(name *oracleast.ObjectName) bool {
+	if name.Name != "DUAL" {
+		return false
+	}
+	return (name.Schema == "" && name.DBLink == "") || name.Schema == "SYS" || name.Schema == "PUBLIC"
+}
+
+func omniDualTable() base.TableSource {
+	return &base.PseudoTable{
+		Name:    "DUAL",
+		Columns: []base.QuerySpanResult{},
+	}
+}
+
+// omniTableLink is the database link a table reference names, as Oracle identifies it. A
+// connection qualifier is part of the name: `t@link@q` reaches the link LINK@Q, which omni
+// splits between ObjectName.DBLink and TableRef.Dblink. TableRef.Dblink alone names no
+// link: omni fills it for a link after a partition clause, which Oracle rejects (ORA-03048).
+func omniTableLink(ref *oracleast.TableRef) string {
+	if ref.Name == nil {
+		return ""
+	}
+	if ref.Name.DBLink != "" && ref.Dblink != "" {
+		return ref.Name.DBLink + "@" + ref.Dblink
+	}
+	return ref.Name.DBLink
+}
+
+// A linked table keeps the schema as written; an unqualified one lives in the link user's
+// schema, which the resolver supplies.
+func collectOmniAccessTables(defaultDatabase string, stmt oracleast.StmtNode) (local, linked []base.SchemaResource) {
 	seen := make(map[base.SchemaResource]bool)
-	var result []base.SchemaResource
-	addResource := func(name *oracleast.ObjectName) {
-		if name == nil || name.Name == "DUAL" || name.DBLink != "" {
+	addResource := func(name *oracleast.ObjectName, link string) {
+		if name == nil || isOmniDual(name) {
 			return
 		}
 		database := name.Schema
-		if database == "" {
+		if database == "" && link == "" {
 			database = defaultDatabase
 		}
 		resource := base.SchemaResource{
-			Database: database,
-			Table:    name.Name,
+			Database:     database,
+			Table:        name.Name,
+			LinkedServer: link,
 		}
-		if !seen[resource] {
-			seen[resource] = true
-			result = append(result, resource)
+		if seen[resource] {
+			return
+		}
+		seen[resource] = true
+		if link != "" {
+			linked = append(linked, resource)
+			return
+		}
+		local = append(local, resource)
+	}
+	addTarget := func(name *oracleast.ObjectName) {
+		if name != nil {
+			addResource(name, name.DBLink)
 		}
 	}
 	oracleast.Inspect(stmt, func(node oracleast.Node) bool {
 		switch node := node.(type) {
 		case *oracleast.TableRef:
-			if node.Dblink == "" {
-				addResource(node.Name)
-			}
+			addResource(node.Name, omniTableLink(node))
 		case *oracleast.ContainersExpr:
-			addResource(node.Name)
+			addTarget(node.Name)
+		// A DML target is an ObjectName, not a TableRef, so it is named here.
+		case *oracleast.InsertStmt:
+			addTarget(node.Table)
+		case *oracleast.InsertIntoClause:
+			addTarget(node.Table)
+		case *oracleast.UpdateStmt:
+			addTarget(node.Table)
+		case *oracleast.DeleteStmt:
+			addTarget(node.Table)
+		case *oracleast.MergeStmt:
+			addTarget(node.Target)
 		default:
 		}
 		return true
 	})
-	return result
+	return local, linked
 }
 
 func (q *omniQuerySpanExtractor) clone() *omniQuerySpanExtractor {
@@ -549,6 +655,11 @@ func (q *omniQuerySpanExtractor) extractOmniSelect(stmt *oracleast.SelectStmt) (
 
 	if stmt.Op != 0 {
 		return q.extractOmniSetSelect(stmt)
+	}
+	// omni wraps a parenthesized query that ORDER BY or a row limit follows,
+	// or a WITH clause precedes; the wrapper has no select list of its own.
+	if stmt.Larg != nil {
+		return q.extractOmniSelect(stmt.Larg)
 	}
 	if stmt.ModelClause != nil {
 		source, err := q.extractOmniModelSelect(stmt)
@@ -759,10 +870,10 @@ func (q *omniQuerySpanExtractor) extractOmniTableExpr(expr oracleast.TableExpr) 
 		if expr.Name == nil {
 			return nil, nil
 		}
-		dbLink := expr.Name.DBLink
-		if dbLink == "" {
-			dbLink = expr.Dblink
+		if isOmniDual(expr.Name) {
+			return aliasOmniTableSource(omniDualTable(), expr.Alias), nil
 		}
+		dbLink := omniTableLink(expr)
 		database := expr.Name.Schema
 		if database == "" && dbLink == "" {
 			database = q.defaultDatabase
@@ -817,6 +928,9 @@ func (q *omniQuerySpanExtractor) extractOmniTableExpr(expr oracleast.TableExpr) 
 	case *oracleast.ContainersExpr:
 		if expr.Name == nil {
 			return nil, nil
+		}
+		if isOmniDual(expr.Name) {
+			return aliasOmniTableSource(omniDualTable(), expr.Alias), nil
 		}
 		database := expr.Name.Schema
 		if database == "" {
@@ -1395,7 +1509,18 @@ func (q *omniQuerySpanExtractor) getOmniFieldColumnSource(schemaName, tableName,
 	return base.SourceColumnSet{}
 }
 
+// expandOmniAsterisk returns the columns * stands for. It leaves out invisible
+// columns, as Oracle does; including one would shift every result after it,
+// and the masking applied to each.
 func (q *omniQuerySpanExtractor) expandOmniAsterisk(schemaName, tableName string) ([]base.QuerySpanResult, error) {
+	results, err := q.expandOmniAsteriskWithInvisible(schemaName, tableName)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(results, func(result base.QuerySpanResult) bool { return result.Invisible }), nil
+}
+
+func (q *omniQuerySpanExtractor) expandOmniAsteriskWithInvisible(schemaName, tableName string) ([]base.QuerySpanResult, error) {
 	findInTableSource := func(tableSource base.TableSource) ([]base.QuerySpanResult, bool) {
 		if schemaName != "" && schemaName != tableSource.GetDatabaseName() {
 			return nil, false
@@ -1554,6 +1679,7 @@ func cloneQuerySpanResult(result base.QuerySpanResult) base.QuerySpanResult {
 		Name:          result.Name,
 		SourceColumns: cloneSourceColumnSet(result.SourceColumns),
 		IsPlainField:  result.IsPlainField,
+		Invisible:     result.Invisible,
 	}
 }
 

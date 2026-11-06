@@ -1,6 +1,8 @@
 import type { ReactElement } from "react";
 import { act } from "react";
+import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { createRoot } from "react-dom/client";
+import { advanceSeconds } from "@/test-utils/clock";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 (
@@ -9,11 +11,15 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   useTranslation: vi.fn(() => ({ t: (key: string) => key })),
-  getAccessGrantDisplayStatus: vi.fn(),
+  readStatus: vi.fn(),
   getAccessGrantDisplayStatusText: vi.fn(),
-  getAccessGrantExpirationText: vi.fn(),
-  getAccessGrantExpireTimeMs: vi.fn(),
   getAccessGrantStatusTagType: vi.fn(),
+  batchGetOrFetchDatabases: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/stores/app", () => ({
+  useAppStore: (selector: (state: unknown) => unknown) =>
+    selector({ batchGetOrFetchDatabases: mocks.batchGetOrFetchDatabases }),
 }));
 
 vi.mock("@/components/DatabaseTargetDisplay", () => ({
@@ -30,16 +36,24 @@ vi.mock("@/components/DatabaseTargetDisplay", () => ({
 }));
 
 vi.mock("react-i18next", () => ({
+  initReactI18next: { type: "3rdParty", init: () => {} },
   useTranslation: mocks.useTranslation,
 }));
 
-vi.mock("@/utils/accessGrant", () => ({
-  getAccessGrantDisplayStatus: mocks.getAccessGrantDisplayStatus,
-  getAccessGrantDisplayStatusText: mocks.getAccessGrantDisplayStatusText,
-  getAccessGrantExpirationText: mocks.getAccessGrantExpirationText,
-  getAccessGrantExpireTimeMs: mocks.getAccessGrantExpireTimeMs,
-  getAccessGrantStatusTagType: mocks.getAccessGrantStatusTagType,
-}));
+// The real module, with the status value and its labels stubbed per test; the
+// status boundary and the deadline stay real, so the clock wiring is exercised.
+vi.mock("@/utils/accessGrant", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/utils/accessGrant")>();
+  return {
+    ...actual,
+    accessGrantStatusReading: {
+      read: mocks.readStatus,
+      nextChangeAt: actual.accessGrantStatusReading.nextChangeAt,
+    },
+    getAccessGrantDisplayStatusText: mocks.getAccessGrantDisplayStatusText,
+    getAccessGrantStatusTagType: mocks.getAccessGrantStatusTagType,
+  };
+});
 
 // Stub Badge and Tooltip as simple pass-through
 vi.mock("@/components/ui/badge", () => ({
@@ -57,12 +71,37 @@ vi.mock("@/components/ui/badge", () => ({
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
-  Tooltip: ({ children }: { children: React.ReactNode }) => (
-    <span data-testid="tooltip">{children}</span>
+  // The real Tooltip renders nothing for a body that is falsy -- not merely
+  // absent -- so the stub answers the same question it does. A row that hides
+  // a reading has to offer it back.
+  Tooltip: ({
+    children,
+    content,
+    onOpenChange,
+  }: {
+    children: React.ReactNode;
+    content?: React.ReactNode;
+    onOpenChange?: (open: boolean) => void;
+  }) => (
+    <span data-testid="tooltip" data-has-content={Boolean(content)}>
+      {children}
+      {onOpenChange && (
+        <button data-open-tooltip onClick={() => onOpenChange(true)} />
+      )}
+    </span>
   ),
 }));
 
 vi.mock("@/components/ui/button", () => ({
+  buttonVariants: ({
+    appearance,
+    size,
+    className,
+  }: {
+    appearance?: string;
+    size?: string;
+    className?: string;
+  }) => `button-${appearance}-${size} ${className ?? ""}`,
   Button: ({
     children,
     onClick,
@@ -141,16 +180,16 @@ const renderIntoContainer = (element: ReactElement) => {
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.useTranslation.mockReturnValue({ t: (key: string) => key });
-  mocks.getAccessGrantDisplayStatus.mockReturnValue("ACTIVE");
+  mocks.readStatus.mockReturnValue("ACTIVE");
   mocks.getAccessGrantDisplayStatusText.mockReturnValue("Active");
-  mocks.getAccessGrantExpirationText.mockReturnValue({ type: "never" });
-  mocks.getAccessGrantExpireTimeMs.mockReturnValue(undefined);
   mocks.getAccessGrantStatusTagType.mockReturnValue("success");
+  mocks.batchGetOrFetchDatabases.mockResolvedValue([]);
 
   ({ AccessGrantItem } = await import("./AccessGrantItem"));
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.innerHTML = "";
 });
 
@@ -192,8 +231,69 @@ describe("AccessGrantItem", () => {
     unmount();
   });
 
+  test("hydrates remaining targets when their tooltip opens", () => {
+    const grant = makeGrant({
+      targets: [
+        "instances/inst1/databases/db1",
+        "instances/inst2/databases/db2",
+        "instances/inst3/databases/db3",
+      ],
+    });
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={grant as never}
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>("[data-open-tooltip]")?.click();
+    });
+
+    expect(mocks.batchGetOrFetchDatabases).toHaveBeenCalledWith(
+      ["instances/inst3/databases/db3"],
+      true
+    );
+    unmount();
+  });
+
+  test("retries remaining target hydration after a failed request", async () => {
+    mocks.batchGetOrFetchDatabases
+      .mockRejectedValueOnce(new Error("temporary failure"))
+      .mockResolvedValueOnce([]);
+    const grant = makeGrant({
+      targets: [
+        "instances/inst1/databases/db1",
+        "instances/inst2/databases/db2",
+        "instances/inst3/databases/db3",
+      ],
+    });
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={grant as never}
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    const tooltipTrigger = container.querySelector<HTMLButtonElement>(
+      "[data-open-tooltip]"
+    );
+    act(() => tooltipTrigger?.click());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    act(() => tooltipTrigger?.click());
+
+    expect(mocks.batchGetOrFetchDatabases).toHaveBeenCalledTimes(2);
+    unmount();
+  });
+
   test("renders status badge with correct label for ACTIVE status", () => {
-    mocks.getAccessGrantDisplayStatus.mockReturnValue("ACTIVE");
+    mocks.readStatus.mockReturnValue("ACTIVE");
     mocks.getAccessGrantDisplayStatusText.mockReturnValue("Active");
     mocks.getAccessGrantStatusTagType.mockReturnValue("success");
 
@@ -236,8 +336,90 @@ describe("AccessGrantItem", () => {
     unmount();
   });
 
+  test("expands and hides a visually clamped statement", () => {
+    mocks.useTranslation.mockReturnValue({
+      t: (key: string) =>
+        ({ "common.show-more": "Show more", "common.hide": "Hide" })[
+          key
+        ] ?? key,
+    });
+    const scrollHeight = vi
+      .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+      .mockReturnValue(48);
+    const clientHeight = vi
+      .spyOn(HTMLElement.prototype, "clientHeight", "get")
+      .mockReturnValue(32);
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={
+          makeGrant({
+            query: `SELECT /*\n${"x".repeat(200)}`,
+          }) as never
+        }
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    const statement = container.querySelector("p");
+    const toggle = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Show more"
+    );
+    expect(toggle).toBeDefined();
+    expect(statement?.className).toContain("line-clamp-2");
+
+    act(() => toggle?.click());
+    expect(toggle?.textContent).toBe("Hide");
+    expect(statement?.className).not.toContain("line-clamp-2");
+
+    act(() => toggle?.click());
+    expect(toggle?.textContent).toBe("Show more");
+    expect(statement?.className).toContain("line-clamp-2");
+    unmount();
+    scrollHeight.mockRestore();
+    clientHeight.mockRestore();
+  });
+
+  test("uses secondary button styling for View issue", () => {
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={makeGrant({ issue: "projects/proj1/issues/issue1" }) as never}
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    const issueLink = container.querySelector("a");
+    expect(issueLink?.className).toContain("button-secondary-xs");
+    unmount();
+  });
+
+  test("keeps action hover visible when the item is hovered", () => {
+    mocks.readStatus.mockReturnValue("REJECTED");
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem
+        grant={
+          makeGrant({ issue: "projects/proj1/issues/issue1" }) as never
+        }
+        onRun={vi.fn()}
+        onRequest={vi.fn()}
+      />
+    );
+    render();
+
+    expect(
+      container.querySelector("[data-re-request-btn]")?.className
+    ).toContain("hover:!bg-control-bg-hover");
+    expect(container.querySelector("a")?.className).toContain(
+      "hover:!bg-control-bg-hover"
+    );
+    unmount();
+  });
+
   test("Run button shows only for ACTIVE status", () => {
-    mocks.getAccessGrantDisplayStatus.mockReturnValue("ACTIVE");
+    mocks.readStatus.mockReturnValue("ACTIVE");
     const grant = makeGrant();
     const onRun = vi.fn();
     const onRequest = vi.fn();
@@ -257,7 +439,7 @@ describe("AccessGrantItem", () => {
   });
 
   test("Run button is absent for non-ACTIVE status", () => {
-    mocks.getAccessGrantDisplayStatus.mockReturnValue("PENDING");
+    mocks.readStatus.mockReturnValue("PENDING");
     const grant = makeGrant();
     const onRun = vi.fn();
     const onRequest = vi.fn();
@@ -277,7 +459,7 @@ describe("AccessGrantItem", () => {
   });
 
   test("Re-request button shows for REJECTED status", () => {
-    mocks.getAccessGrantDisplayStatus.mockReturnValue("REJECTED");
+    mocks.readStatus.mockReturnValue("REJECTED");
     mocks.getAccessGrantDisplayStatusText.mockReturnValue("Rejected");
     mocks.getAccessGrantStatusTagType.mockReturnValue("error");
 
@@ -300,7 +482,7 @@ describe("AccessGrantItem", () => {
   });
 
   test("Click Run → onRun(grant) called with the grant", async () => {
-    mocks.getAccessGrantDisplayStatus.mockReturnValue("ACTIVE");
+    mocks.readStatus.mockReturnValue("ACTIVE");
     const grant = makeGrant();
     const onRun = vi.fn();
     const onRequest = vi.fn();
@@ -323,6 +505,55 @@ describe("AccessGrantItem", () => {
 
     expect(onRun).toHaveBeenCalledTimes(1);
     expect(onRun).toHaveBeenCalledWith(grant);
+    unmount();
+  });
+
+  test("counts down while mounted, then turns expired at the deadline", async () => {
+    const actual = await vi.importActual<typeof import("@/utils/accessGrant")>(
+      "@/utils/accessGrant"
+    );
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-02T12:00:00Z"));
+    mocks.readStatus.mockImplementation(actual.accessGrantStatusReading.read);
+    mocks.useTranslation.mockReturnValue({
+      t: (key: string, options?: { time?: string }) =>
+        options?.time && key === "sql-editor.expire-in"
+          ? `${key}:${options.time}`
+          : key,
+    });
+    const deadlineMs = Date.now() + 3 * 60_000;
+    const grant = makeGrant({
+      expiration: {
+        case: "expireTime",
+        value: timestampFromMs(deadlineMs),
+      } as never,
+    });
+
+    const { container, render, unmount } = renderIntoContainer(
+      <AccessGrantItem grant={grant as never} onRun={vi.fn()} onRequest={vi.fn()} />
+    );
+    render();
+
+    expect(container.textContent).toContain("sql-editor.expire-in:3m");
+    // A countdown is the one form that hides the deadline, so the row has to
+    // offer it: a tooltip with nothing to say renders its children bare, and
+    // the trigger it wraps them in is what says the offer is there.
+    const countdownTooltip = Array.from(
+      container.querySelectorAll("[data-testid=tooltip]")
+    ).find((node) => node.textContent === "sql-editor.expire-in:3m");
+    expect(countdownTooltip?.getAttribute("data-has-content")).toBe("true");
+
+    advanceSeconds(1);
+    expect(container.textContent).toContain("sql-editor.expire-in:2m");
+    advanceSeconds(60);
+    expect(container.textContent).toContain("sql-editor.expire-in:1m");
+    advanceSeconds(60);
+    expect(container.textContent).toContain("sql-editor.expire-in:0m");
+    expect(container.querySelector("[data-run-btn]")).not.toBeNull();
+
+    advanceSeconds(60);
+    expect(container.textContent).toContain("issue.access-grant.expired-at");
+    expect(container.querySelector("[data-run-btn]")).toBeNull();
     unmount();
   });
 });

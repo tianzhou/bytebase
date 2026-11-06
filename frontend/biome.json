@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
     "ignoreUnknown": true,
@@ -302,6 +302,18 @@
         "!src/**/*.test.tsx"
       ],
       "plugins": ["./biome-plugins/cel-filter-literals.grit"]
+    },
+    {
+      "includes": [
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "!src/**/*.test.ts",
+        "!src/**/*.test.tsx",
+        "!src/utils/datetime.ts",
+        "!src/utils/accessGrant.ts",
+        "!src/hooks/useTimeReading.ts"
+      ],
+      "plugins": ["./biome-plugins/time-reading-through-hook.grit"]
     },
     {
       "includes": ["*.json", "**/*.json", "*.json5", "**/*.json5"],

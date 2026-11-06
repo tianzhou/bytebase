@@ -85,7 +85,8 @@ service SQLService {
   }
 
   // Exports query results to a file format.
-  // Permissions required: bb.databases.get
+  // Permissions required: bb.databases.get, and bb.sql.export on the data the statement reads.
+  // An active access grant with export=true for the statement satisfies bb.sql.export on its target databases.
   rpc Export(ExportRequest) returns (ExportResponse) {
     option (google.api.http) = {
       post: "/v1/{name=instances/*/databases/*}:export"
@@ -192,14 +193,11 @@ message QueryOption {
   reserved 2;
   reserved "mssql_explain_format";
 
-  // Which explain output the caller wants, for an explain request.
-  //
-  // Leave it unspecified for the engine's own default, which is the only
-  // output most engines have. Naming a format an engine cannot produce is
-  // INVALID_ARGUMENT rather than a silent fallback, as is any explain request
-  // against an engine that has no explain at all.
+  // The output format of a query plan.
   enum ExplainFormat {
-    // The engine's default: PostgreSQL EXPLAIN, SQL Server SHOWPLAN_ALL.
+    // The engine's default: PostgreSQL EXPLAIN, SQL Server SHOWPLAN_ALL. On a
+    // result, a default the server could not resolve, as when MySQL follows the
+    // session's explain_format; read such a plan as text.
     EXPLAIN_FORMAT_UNSPECIFIED = 0;
     // The human-readable plan. PostgreSQL: EXPLAIN (FORMAT TEXT). SQL Server:
     // SHOWPLAN_ALL.
@@ -209,7 +207,15 @@ message QueryOption {
     // The plan tree as XML. PostgreSQL: EXPLAIN (FORMAT XML). SQL Server:
     // SHOWPLAN_XML.
     XML = 3;
+    // The plan tree as YAML. PostgreSQL: EXPLAIN (FORMAT YAML).
+    YAML = 4;
   }
+  // Which explain output the caller wants, for an explain request.
+  //
+  // Leave it unspecified for the engine's own default, which is the only
+  // output most engines have. Naming a format an engine cannot produce is
+  // INVALID_ARGUMENT rather than a silent fallback, as is any explain request
+  // against an engine that has no explain at all.
   ExplainFormat explain_format = 3;
 }
 
@@ -312,6 +318,26 @@ message QueryResult {
 
   // Masking reasons for each column (empty for non-masked columns).
   repeated MaskingReason masked = 12;
+
+  // A query plan the result carries: in its rows, or beside them.
+  message QueryPlan {
+    QueryOption.ExplainFormat format = 1;
+
+    // Whether producing the plan executed the statement, as EXPLAIN ANALYZE
+    // does.
+    bool executed = 2;
+
+    // The plan itself, where the engine states it beside the result rather
+    // than in the result's rows. BigQuery reports the stages its job ran in
+    // the job's own statistics, so one result carries the query's data and
+    // the plan of the run that produced it. Empty when the plan is the rows,
+    // which is every other engine. Omitted from the audit log, as the rows
+    // are: the statement is what an audit reads.
+    string content = 3 [(bytebase.v1.audit_behavior) = OMIT];
+  }
+
+  // Set when the result is a query plan. Unset for any other result.
+  QueryPlan query_plan = 14;
 }
 
 message MaskingReason {
@@ -470,6 +496,10 @@ message ExportRequest {
   // Container is the container name to execute the query against, used for
   // CosmosDB only.
   optional string container = 9;
+
+  // Where the export goes. A destination the workspace query data policy
+  // does not allow is rejected with FAILED_PRECONDITION.
+  ExportDestination destination = 10;
 }
 
 message ExportResponse {
@@ -480,4 +510,9 @@ message ExportResponse {
   // Format: projects/{project}/accessGrants/{accessGrant}.
   // Empty when the user was authorized through normal ACL rather than a grant.
   string applied_access_grant = 2;
+
+  // Set when the export was sent to an export destination: the absolute
+  // location of the folder or key prefix created for this export, for example
+  // https://… for SharePoint or s3://bucket/prefix for S3. content is then empty.
+  string uri = 3;
 }

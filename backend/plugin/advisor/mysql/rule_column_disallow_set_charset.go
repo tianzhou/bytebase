@@ -6,10 +6,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -18,8 +18,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_COLUMN_DISALLOW_SET_CHARSET, &ColumnDisallowSetCharsetAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_COLUMN_DISALLOW_SET_CHARSET, &ColumnDisallowSetCharsetAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_COLUMN_DISALLOW_SET_CHARSET, &ColumnDisallowSetCharsetAdvisor{})
 }
 
 // ColumnDisallowSetCharsetAdvisor is the advisor checking for disallow set column charset.
@@ -75,7 +73,7 @@ func (r *columnDisallowSetCharsetOmniRule) checkCreateTable(n *ast.CreateTableSt
 				Code:          code.SetColumnCharset.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Disallow set column charset but \"%s\" does", r.QueryText()),
-				StartPosition: common.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
+				StartPosition: base.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
 			})
 		}
 	}
@@ -121,7 +119,7 @@ func (r *columnDisallowSetCharsetOmniRule) checkAlterTable(n *ast.AlterTableStmt
 					Code:          code.SetColumnCharset.Int32(),
 					Title:         r.Title,
 					Content:       fmt.Sprintf("Disallow set column charset but \"%s\" does", r.QueryText()),
-					StartPosition: common.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
+					StartPosition: base.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
 				})
 			}
 		}

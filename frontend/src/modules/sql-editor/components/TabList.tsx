@@ -30,15 +30,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { tabListEvents } from "@/modules/sql-editor/model/TabList/events";
-import { useSQLEditorStore } from "@/modules/sql-editor/store";
-import { useSQLEditorEditorState } from "@/modules/sql-editor/store/editor";
 import {
   getSQLEditorTabsState,
   useOpenTabList,
   useSQLEditorTabState,
 } from "@/modules/sql-editor/store/tab";
 import type { SQLEditorTab } from "@/types/sqlEditor/tab";
-import { canCreateSavedQueryInProject } from "@/utils";
 import { TabContextMenu, type TabContextMenuHandle } from "./TabContextMenu";
 import { TabItem } from "./TabItem/TabItem";
 
@@ -61,8 +58,6 @@ type PendingClose = {
  */
 export function TabList() {
   const { t } = useTranslation();
-  const createSavedQuery = useSQLEditorStore((s) => s.createSavedQuery);
-  const project = useSQLEditorEditorState((s) => s.project);
 
   // Zustand's selector subscribes to in-place tab mutations because
   // `updateTab` reassigns / triggers an immer produce on `tabsById`,
@@ -158,18 +153,12 @@ export function TabList() {
     [confirmCloseUnsaved, recalculateScrollState]
   );
 
-  const handleAddTab = async () => {
+  const handleAddTab = () => {
     if (loading) return;
     setLoading(true);
     try {
-      // A new tab is normally backed by a saved query straight away. Without
-      // the create permission that request would fail, so open a local draft
-      // instead -- the editor keeps working, nothing is persisted.
-      if (!canCreateSavedQueryInProject(project)) {
-        getSQLEditorTabsState().addTab();
-      } else {
-        await createSavedQuery({});
-      }
+      // A blank tab stays local until auto-save sees SQL content.
+      getSQLEditorTabsState().addTab();
       requestAnimationFrame(() => {
         const el = scrollRef.current;
         if (el) el.scrollTo(el.scrollWidth, 0);
@@ -286,7 +275,7 @@ export function TabList() {
             items={tabs.map((tab) => tab.id)}
             strategy={horizontalListSortingStrategy}
           >
-            <div className="relative flex flex-nowrap h-9 pt-0.5">
+            <div className="relative flex flex-nowrap pt-0.5">
               {tabs.map((tab, index) => (
                 <TabItem
                   key={tab.id}
@@ -298,18 +287,20 @@ export function TabList() {
                 />
               ))}
               <div className="shrink-0 sticky right-0 bg-background flex items-stretch justify-end">
-                <button
+                <Button
+                  appearance="secondary"
+                  size="md"
                   type="button"
                   className={cn(
-                    "bg-control-bg/20 hover:bg-accent/10 py-1 px-1.5",
+                    "bg-control-bg/20 hover:bg-accent/10",
                     "border-t border-x rounded-t-sm hover:border-accent disabled:opacity-50"
                   )}
                   disabled={loading}
                   onClick={handleAddTab}
                   aria-label={t("common.add")}
                 >
-                  <Plus className="size-5" strokeWidth={2.5} />
-                </button>
+                  <Plus className="size-4" strokeWidth={2.5} />
+                </Button>
               </div>
             </div>
           </SortableContext>

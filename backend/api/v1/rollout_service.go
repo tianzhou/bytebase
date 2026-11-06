@@ -285,7 +285,7 @@ func (s *RolloutService) CreateRollout(ctx context.Context, req *connect.Request
 	}
 
 	if !hasPermission {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied to create rollout"))
+		return nil, permissionDeniedError(ctx, errors.New("permission denied to create rollout"))
 	}
 
 	if err := rejectMCPOriginatedIssuelessRollout(ctx, project, issue, "create a rollout"); err != nil {
@@ -864,7 +864,7 @@ func (s *RolloutService) BatchRunTasks(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to check if the user can run tasks"))
 	}
 	if !ok {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("Not allowed to run tasks"))
+		return nil, permissionDeniedError(ctx, errors.New("Not allowed to run tasks"))
 	}
 
 	if err := rejectMCPOriginatedIssuelessRollout(ctx, project, issueN, "run tasks"); err != nil {
@@ -1026,7 +1026,7 @@ func (s *RolloutService) BatchSkipTasks(ctx context.Context, req *connect.Reques
 			return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to check if the user can skip tasks"))
 		}
 		if !ok {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.Errorf("not allowed to skip tasks in environment %q", environment))
+			return nil, permissionDeniedError(ctx, errors.Errorf("not allowed to skip tasks in environment %q", environment))
 		}
 	}
 
@@ -1140,7 +1140,7 @@ func (s *RolloutService) BatchCancelTaskRuns(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to check if the user can run tasks"))
 	}
 	if !ok {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("Not allowed to cancel tasks"))
+		return nil, permissionDeniedError(ctx, errors.New("Not allowed to cancel tasks"))
 	}
 
 	// Confine the lookup to the plan and environment just authorized: the stage in
@@ -1419,34 +1419,15 @@ func (s *RolloutService) canUserCancelEnvironmentTaskRun(ctx context.Context, us
 // to execution when the project requires issue approval and the plan carries no
 // linked issue.
 //
-// Both approval checks on this path are guarded on a linked issue existing, so
-// a plan created without one reaches task creation with no approval whatever
-// require_issue_approval says. That is not a defect for every caller — the
-// shipped GitOps Service Agent role holds no issue permission at all, so
-// issueless deployment is a supported product contract, and READ_WRITE
-// preserves supported contracts. It is a defect for an MCP session, because
-// without this rule the three FORBIDDEN approval methods are decorative in the
-// change lane: an agent that cannot clear the gate can skip it instead, which
-// is the same end state the self-approval guard exists to prevent. The rule is
-// the one rollout_service.proto states the gate PR owes.
-//
-// It cannot live in the ceiling gate. "The plan has no linked issue" is not a
-// field of either request, so the interceptor would have to read the store to
-// find out — a lookup it has no business doing and one that would race the
-// handler's own. The guard sits where the fact is already loaded.
-//
-// It must bite BEFORE the rollout exists: once an issueless rollout is created,
-// approval finding refuses outright ("rollout already started"), so a rule that
-// only covered BatchRunTasks would leave the change stranded rather than
-// gated. Hence both callers, CreateRollout first.
-//
-// Presence of the delegated grant is the MCP-origin marker, never a field value
-// (common.DelegatedGrant), so the console and the GitOps agent are untouched.
-// BOT-71 tracks whether the product should close this for every caller; if it
-// does, this guard becomes redundant rather than wrong.
+// Both approval checks on this path need a linked issue, so without this guard
+// a session could run a change this project requires approval for with no
+// approval at all. Other callers keep issueless deployment, which the GitOps
+// Service Agent role relies on; BOT-71 tracks whether to close it for everyone.
+// It must refuse before the rollout exists, because approval finding then
+// refuses outright and strands the change, so CreateRollout is guarded as well
+// as BatchRunTasks.
 func rejectMCPOriginatedIssuelessRollout(ctx context.Context, project *store.ProjectMessage, issue *store.IssueMessage, action string) error {
-	authCtx, ok := common.GetAuthContextFromContext(ctx)
-	if !ok || authCtx.DelegatedGrant == nil {
+	if !mcpSession(ctx) {
 		return nil
 	}
 	if !project.Setting.GetRequireIssueApproval() || issue != nil {
@@ -1454,7 +1435,7 @@ func rejectMCPOriginatedIssuelessRollout(ctx context.Context, project *store.Pro
 		// and it refuses an unapproved one.
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, errors.Errorf(
+	return permissionDeniedError(ctx, errors.Errorf(
 		"an MCP session may not %s for a plan with no issue: this project requires issue approval, and a "+
 			"rollout created without an issue never meets that gate. Create an issue for the plan and have it "+
 			"approved, or perform this action signed in to the Bytebase console instead", action))

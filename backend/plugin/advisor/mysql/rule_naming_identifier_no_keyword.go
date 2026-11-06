@@ -7,10 +7,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -76,9 +76,7 @@ func (r *namingIdentifierNoKeywordOmniRule) checkCreateTable(n *ast.CreateTableS
 		if constraint == nil {
 			continue
 		}
-		if constraint.Name != "" {
-			r.checkIdentifierAtLine(constraint.Name, r.LocToLine(constraint.Loc))
-		}
+		r.checkConstraintNames(constraint, r.LocToLine(constraint.Loc))
 	}
 }
 
@@ -105,8 +103,8 @@ func (r *namingIdentifierNoKeywordOmniRule) checkAlterTable(n *ast.AlterTableStm
 				r.checkIdentifierAtLine(cmd.Column.Name, r.LocToLine(n.Loc))
 			}
 		case ast.ATAddConstraint, ast.ATAddIndex:
-			if cmd.Constraint != nil && cmd.Constraint.Name != "" {
-				r.checkIdentifierAtLine(cmd.Constraint.Name, r.LocToLine(n.Loc))
+			if cmd.Constraint != nil {
+				r.checkConstraintNames(cmd.Constraint, r.LocToLine(n.Loc))
 			}
 		case ast.ATRenameIndex:
 			if cmd.NewName != "" {
@@ -123,6 +121,16 @@ func (r *namingIdentifierNoKeywordOmniRule) checkCreateIndex(n *ast.CreateIndexS
 	}
 }
 
+// checkConstraintNames checks the CONSTRAINT symbol and, for FOREIGN KEY, the
+// name written after FOREIGN KEY.
+func (r *namingIdentifierNoKeywordOmniRule) checkConstraintNames(c *ast.Constraint, lineNumber int32) {
+	for _, name := range []string{c.Name, c.IndexName} {
+		if name != "" {
+			r.checkIdentifierAtLine(name, lineNumber)
+		}
+	}
+}
+
 func (r *namingIdentifierNoKeywordOmniRule) checkIdentifierAtLine(identifier string, lineNumber int32) {
 	// Strip backticks if present.
 	identifier = strings.Trim(identifier, "`")
@@ -135,7 +143,7 @@ func (r *namingIdentifierNoKeywordOmniRule) checkIdentifierAtLine(identifier str
 		Code:          code.NameIsKeywordIdentifier.Int32(),
 		Title:         r.Title,
 		Content:       fmt.Sprintf("Identifier %q is a keyword and should be avoided", identifier),
-		StartPosition: common.ConvertANTLRLineToPosition(absoluteLine),
+		StartPosition: base.ConvertANTLRLineToPosition(absoluteLine),
 	})
 }
 

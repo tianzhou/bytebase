@@ -55,11 +55,16 @@ func MergeSourceColumnSet(m, n SourceColumnSet) (SourceColumnSet, bool) {
 // QuerySpan is the span for a query.
 type QuerySpan struct {
 	Type QueryType
+	// ExplainAnalyze marks a typed EXPLAIN ANALYZE: Type is the executed
+	// statement's, and the result is its plan, so the caller must hold the
+	// explain permission as well as Type's.
+	ExplainAnalyze bool
 	// Results are the result columns of a query span.
 	// Currently, SourceColumns in the QuerySpanResult are only for the fields in the Query.
 	Results []QuerySpanResult
 	// SourceColumns are the source columns contributing to the span.
 	// SourceColumns here are the source columns for the whole query span, containing fields, where conditions, join conditions, etc.
+	// A statement that is not a SELECT carries the tables it touches here, at the table level.
 	SourceColumns SourceColumnSet
 	// PredicateColumns are the source columns contributing to the span.
 	// PredicateColumns here are the source columns for the where conditions.
@@ -122,11 +127,20 @@ type QuerySpanResult struct {
 	SourceFieldPaths map[string][]*PathAST
 	// SelectAsterisk indicates whether the field is selected by asterisk, used by Cosmos DB.
 	SelectAsterisk bool
+	// Invisible marks a table column that SELECT * leaves out, such as an
+	// Oracle INVISIBLE column. A reference by name still resolves it.
+	Invisible bool
 }
 
 // ColumnResource is the resource key for a column.
 type ColumnResource struct {
-	// Server is the normalized server name, it's empty if the column comes from the connected server.
+	// Instance is the resource ID of the Bytebase instance that owns Database when the column
+	// was reached through an Oracle database link; empty means the connected instance. A column
+	// with Server set and Instance empty was reached through a remote reference Bytebase could
+	// not resolve.
+	Instance string `yaml:"instance,omitempty"`
+	// Server is the normalized server name as the statement wrote it (an MSSQL linked server or
+	// an Oracle database link); it's empty if the column comes from the connected server.
 	Server string
 	// Database is the normalized database name, it should not be empty.
 	Database string
@@ -268,6 +282,8 @@ type PhysicalTable struct {
 	Name string
 	// Columns are the columns of the table.
 	Columns []string
+	// InvisibleColumns are the Columns that SELECT * leaves out.
+	InvisibleColumns map[string]bool
 }
 
 func (p *PhysicalTable) GetTableName() string {
@@ -301,6 +317,7 @@ func (p *PhysicalTable) GetQuerySpanResult() []QuerySpanResult {
 			Name:          column,
 			SourceColumns: sourceColumnSet,
 			IsPlainField:  true,
+			Invisible:     p.InvisibleColumns[column],
 		})
 	}
 	return result
@@ -365,6 +382,9 @@ type GetQuerySpanContext struct {
 	// TempTables is the temporary tables created in the query span.
 	// It's used to store the temporary tables declared in one batch for SQL Server.
 	TempTables map[string]*PhysicalTable
+	// PlanOutput is the plan output a SQL Server batch has turned on, carried to
+	// its later statements like TempTables.
+	PlanOutput PlanOutput
 
 	// Adding the engine information here is a trade-off between the copy-pasted and shared code.
 	// For engines with more different, we implement the getQuerySpan separately.
@@ -375,7 +395,15 @@ type GetQuerySpanContext struct {
 	Engine storepb.Engine
 }
 
+// PlanOutput is the SQL Server plan options a batch has turned on, keyed by
+// option name as the parser writes it, such as "SHOWPLAN_XML" or "STATISTICS
+// XML". Each stays on until its own SET ... OFF.
+type PlanOutput map[string]bool
+
 // GetDatabaseMetadataFunc is the function to get database metadata.
+// It may return nil metadata and a nil error when Bytebase has not synced the
+// database's schema, as in the window after an instance is added; callers must
+// check for nil before use.
 type GetDatabaseMetadataFunc func(context.Context, string, string) (string, *model.DatabaseMetadata, error)
 
 // ListDatabaseNamesFunc is the function to list database names.

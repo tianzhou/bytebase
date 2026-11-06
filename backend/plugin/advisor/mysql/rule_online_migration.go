@@ -23,7 +23,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_ADVICE_ONLINE_MIGRATION, &OnlineMigrationAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_ADVICE_ONLINE_MIGRATION, &OnlineMigrationAdvisor{})
 }
 
 // OnlineMigrationAdvisor is the advisor checking for using gh-ost to migrate large tables.
@@ -166,8 +165,8 @@ func (r *onlineMigrationOmniRule) OnStatement(node ast.Node) {
 					Code:          code.AdviseOnlineMigrationForStatement.Int32(),
 					Title:         r.Title,
 					Content:       fmt.Sprintf("Estimated table row count of %q is %d exceeding the set value %d. Consider using online migration for this statement", fmt.Sprintf("%s.%s", resource.Database, resource.Table), tableRows, r.minRows),
-					StartPosition: common.ConvertANTLRLineToPosition(startLine),
-					EndPosition:   common.ConvertANTLRLineToPosition(endLine),
+					StartPosition: base.ConvertANTLRLineToPosition(startLine),
+					EndPosition:   base.ConvertANTLRLineToPosition(endLine),
 				})
 			}
 			break

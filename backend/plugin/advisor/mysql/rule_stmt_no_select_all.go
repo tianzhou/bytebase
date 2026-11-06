@@ -7,10 +7,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -19,8 +19,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_STATEMENT_SELECT_NO_SELECT_ALL, &NoSelectAllAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_STATEMENT_SELECT_NO_SELECT_ALL, &NoSelectAllAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_STATEMENT_SELECT_NO_SELECT_ALL, &NoSelectAllAdvisor{})
 }
 
 // NoSelectAllAdvisor is the advisor checking for no "select *".
@@ -70,7 +68,7 @@ func (r *noSelectAllOmniRule) OnStatement(node ast.Node) {
 					Code:          code.StatementSelectAll.Int32(),
 					Title:         r.Title,
 					Content:       fmt.Sprintf("\"%s\" uses SELECT all", text),
-					StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.findStarLine(target))),
+					StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.findStarLine(target))),
 				})
 			}
 		}

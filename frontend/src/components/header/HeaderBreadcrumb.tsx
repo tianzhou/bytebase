@@ -11,7 +11,7 @@ import {
   useNavigate,
   WORKSPACE_ROUTE_LANDING,
 } from "@/app/router";
-import { PROJECT_V1_ROUTE_ISSUES } from "@/app/router/handles";
+import { PROJECT_V1_ROUTE_DETAIL } from "@/app/router/handles";
 import { RouterLink } from "@/components/RouterLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -170,9 +170,11 @@ export function WorkspaceSegment({
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger
             render={
-              <button
+              <Button
                 type="button"
-                className="inline-flex items-center rounded-xs p-1 text-control-placeholder hover:bg-control-bg cursor-pointer"
+                appearance="secondary"
+                size="xs"
+                className="text-control-placeholder"
               />
             }
           >
@@ -188,11 +190,12 @@ export function WorkspaceSegment({
                 ? ws.name.slice(workspaceNamePrefix.length)
                 : ws.name;
               return (
-                <button
+                <Button
                   key={ws.name}
                   type="button"
+                  appearance="secondary"
                   className={cn(
-                    "w-full flex items-center justify-between rounded-xs px-3 py-1.5 text-sm cursor-pointer gap-x-2",
+                    "h-auto w-full flex items-center justify-between rounded-xs px-3 py-1.5 text-sm gap-x-2",
                     ws.name === currentWorkspaceName
                       ? "bg-control-bg font-medium text-accent"
                       : "text-control hover:bg-control-bg"
@@ -213,7 +216,7 @@ export function WorkspaceSegment({
                   {ws.name === currentWorkspaceName && (
                     <Check className="size-4 shrink-0" />
                   )}
-                </button>
+                </Button>
               );
             })}
           </PopoverContent>
@@ -274,12 +277,12 @@ export function ProjectSegment({
           ) : (
             <RouterLink
               to={{
-                name: PROJECT_V1_ROUTE_ISSUES,
+                name: PROJECT_V1_ROUTE_DETAIL,
                 params: { projectId },
               }}
               onClick={() => {
                 const resolvedRoute = navigate.resolve({
-                  name: PROJECT_V1_ROUTE_ISSUES,
+                  name: PROJECT_V1_ROUTE_DETAIL,
                   params: { projectId },
                 });
                 record(resolvedRoute.fullPath);
@@ -300,7 +303,7 @@ export function ProjectSegment({
                   appearance="secondary"
                   aria-label={t("project.select")}
                   size="xs"
-                  className="size-6 p-0 text-control-placeholder"
+                  className="text-control-placeholder"
                 />
               ) : (
                 <Button

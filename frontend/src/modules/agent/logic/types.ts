@@ -1,3 +1,5 @@
+import type { DeniedQueryRequestDraft } from "@/modules/sql-editor/model/accessGrantDraft";
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -20,9 +22,102 @@ export interface Message {
 
 export type AgentChatStatus = "idle" | "running" | "awaiting_user" | "error";
 
+export type AgentInterruptionReason = "user" | "unexpected";
+
+export type AgentRunMode = "default" | "read-only";
+
+export interface AgentModelCallUsage {
+  purpose: "agent" | "follow-up";
+  toolNames: string[];
+  totalTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+}
+
 export interface AgentChatSnapshot {
   path: string;
   title: string;
+}
+
+export type AgentEvidenceReference =
+  | {
+      kind: "issue";
+      name: string;
+      title: string;
+    }
+  | {
+      kind: "plan";
+      name: string;
+      title: string;
+    }
+  | {
+      kind: "database";
+      name: string;
+    };
+
+export interface AgentEvidence {
+  project?: string;
+  workspace?: string;
+  references: AgentEvidenceReference[];
+}
+
+export type AgentAnswerEvidence = AgentEvidence | AgentEvidence[];
+
+export type AgentHandoff =
+  | { kind: "open-global-masking" }
+  | { kind: "open-semantic-types" }
+  | { kind: "open-data-classification" }
+  | { kind: "open-project-masking-exemptions"; project: string }
+  | { kind: "open-database-catalog"; project: string; database: string }
+  | { kind: "review-workspace-issues"; workspace: string }
+  | {
+      kind:
+        | "review-project-issues"
+        | "review-database-changes"
+        | "open-project-instances"
+        | "transfer-project-databases"
+        | "connect-project-instance"
+        | "create-project-database";
+      project: string;
+    }
+  | { kind: "view-failed-tasks"; plan: string }
+  | { kind: "open-issue"; issue: string }
+  | { kind: "review-issue-plan"; plan: string }
+  | { kind: "view-failed-task"; task: string };
+
+export type AgentResponseAction =
+  | { kind: "open"; target: AgentHandoff }
+  | { kind: "draft-plan"; project: string; database: string }
+  | { kind: "draft-issue-comment"; issue: string; comment: string }
+  | { kind: "continue"; prompt: string };
+
+export interface AgentResourceReference {
+  kind: "project" | "database" | "issue" | "plan";
+  name: string;
+  project: string;
+  label: string;
+}
+
+export interface AgentMentionRange {
+  start: number;
+  end: number;
+}
+
+export interface AgentResourceMention {
+  resource: AgentResourceReference;
+  range: AgentMentionRange;
+}
+
+export interface AgentDraft {
+  text: string;
+  mentions?: AgentResourceMention[];
+  project?: {
+    name: string;
+    title: string;
+  };
+  resource?: AgentResourceReference;
+  mention?: AgentMentionRange;
 }
 
 export interface AgentMessageMetadata {
@@ -31,6 +126,13 @@ export interface AgentMessageMetadata {
   hidden?: boolean;
   error?: string;
   runId?: string;
+  interruptionReason?: AgentInterruptionReason;
+  evidence?: AgentAnswerEvidence;
+  handoff?: AgentHandoff;
+  actions?: AgentResponseAction[];
+  accessRequestDraft?: DeniedQueryRequestDraft;
+  resourceReference?: AgentResourceReference;
+  resourceReferences?: AgentResourceReference[];
 }
 
 export interface AgentMessage extends Message {
@@ -43,16 +145,25 @@ export interface AgentMessage extends Message {
 export interface AgentChat {
   id: string;
   title: string;
+  context?: string;
+  workspaceName?: string;
   createdTs: number;
   updatedTs: number;
   status: AgentChatStatus;
   totalTokensUsed: number;
+  lastRunUsage?: {
+    runId: string;
+    calls: AgentModelCallUsage[];
+  };
+  hasUnreportedUsage?: boolean;
   page?: AgentChatSnapshot;
   archived: boolean;
   lastError?: string | null;
   requiresAIConfiguration?: boolean;
   interrupted?: boolean;
+  interruptionReason?: AgentInterruptionReason;
   runId?: string | null;
+  runMode?: AgentRunMode;
 }
 
 export type AgentAskUserKind = "input" | "confirm" | "choose";
@@ -67,6 +178,10 @@ export interface AgentPendingAsk {
   toolCallId: string;
   prompt: string;
   kind: AgentAskUserKind;
+  apiPermission?: {
+    actionId: string;
+    operationId: string;
+  };
   defaultValue?: string;
   confirmLabel?: string;
   cancelLabel?: string;
@@ -98,6 +213,8 @@ export type ToolExecutionResult =
       kind: "done";
       text: string;
       success: boolean;
+      handoff?: AgentHandoff;
+      actions?: AgentResponseAction[];
     }
   | {
       kind: "ask_user";
@@ -113,6 +230,8 @@ export type AgentLoopOutcome =
       kind: "completed";
       text: string;
       success: boolean;
+      handoff?: AgentHandoff;
+      actions?: AgentResponseAction[];
     } & AgentLoopUsage)
   | ({
       kind: "awaiting_user";

@@ -10,8 +10,7 @@ import (
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	advisorcode "github.com/bytebase/bytebase/backend/plugin/advisor/code"
-
-	"github.com/bytebase/bytebase/backend/common"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 const (
@@ -23,7 +22,6 @@ var _ advisor.Advisor = (*UseInnoDBAdvisor)(nil)
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_ENGINE_MYSQL_USE_INNODB, &UseInnoDBAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_ENGINE_MYSQL_USE_INNODB, &UseInnoDBAdvisor{})
 }
 
 // UseInnoDBAdvisor is the advisor checking for using InnoDB engine.
@@ -126,6 +124,6 @@ func (r *useInnoDBOmniRule) addAdvice(content string, lineNumber int32) {
 		Code:          advisorcode.NotInnoDBEngine.Int32(),
 		Title:         r.Title,
 		Content:       fmt.Sprintf("\"%s;\" doesn't use InnoDB engine", content),
-		StartPosition: common.ConvertANTLRLineToPosition(absoluteLine),
+		StartPosition: base.ConvertANTLRLineToPosition(absoluteLine),
 	})
 }

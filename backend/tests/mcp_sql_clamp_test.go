@@ -30,8 +30,12 @@ type queryToolResult struct {
 // QueryToolOutput mirrors the tool's structured output. Only the fields these
 // tests assert on are named.
 type QueryToolOutput struct {
-	Rows     [][]any `json:"rows"`
-	RowCount int     `json:"rowCount"`
+	Rows          [][]any `json:"rows"`
+	RowCount      int     `json:"rowCount"`
+	MaskedColumns []struct {
+		Column string `json:"column"`
+	} `json:"maskedColumns"`
+	AppliedAccessGrant string `json:"appliedAccessGrant"`
 }
 
 // queryDatabaseOnSession runs the query_database tool the way a client would.
@@ -206,7 +210,7 @@ func TestMCPReadOnlyCeilingRefusesAWrite(t *testing.T) {
 	// same human working in the console.
 	// Query is a database-scoped method, so its rows are parented to the
 	// project rather than to the workspace.
-	rows := deniedMCPRows(f.ctx, t, f.ctl, f.ctl.project.Name, "/bytebase.v1.SQLService/Query")
+	rows := mcpAuditRows(f.ctx, t, f.ctl, f.ctl.project.Name, "/bytebase.v1.SQLService/Query")
 	a.NotEmpty(rows, "a clamp denial must be visible to an operator with MCP provenance")
 	var denied *v1pb.AuditLog
 	for _, row := range rows {
@@ -217,6 +221,12 @@ func TestMCPReadOnlyCeilingRefusesAWrite(t *testing.T) {
 	}
 	a.NotNil(denied, "the denied query must have produced a row of its own")
 	a.Contains(denied.Status.Message, "READ_ONLY")
+	a.Equal(v1pb.AuditLog_WARNING, denied.Severity, "the clamp marks its refusal")
+	for _, row := range rows {
+		if row.Status == nil {
+			a.Equal(v1pb.AuditLog_INFO, row.Severity, "a served query is not marked")
+		}
+	}
 
 	// The control. Same principal, same credential, same statement; only the
 	// ceiling changed, and the INSERT now lands. It runs on a session opened
@@ -569,9 +579,8 @@ func TestMCPReadOnlyRoleDowngradeBitesTheNextRequest(t *testing.T) {
 	defer session.Close()
 
 	// call_api rather than query_database, so the only thing under test is the
-	// permission on the query itself: query_database resolves the database by
-	// listing workspace-wide first, and a listing denial would refuse this for
-	// a reason that is not the one this test is about.
+	// permission on the query itself: once the role is gone, query_database's
+	// lookup finds no database before the query runs.
 	query := map[string]any{"name": f.database, "statement": "SELECT id FROM employee"}
 	served := callAPIOnSession(f.ctx, t, session, "SQLService/Query", query)
 	a.Equal(http.StatusOK, served.Status, "the reader starts able to read: %s", served.Error)

@@ -1,10 +1,10 @@
 // The header's read-only "Plan status" control, shown when the current user does
 // not own the next action (observer, not-your-turn) or the plan is in a pre-deploy
 // blocker state. The trigger names the blocker; clicking opens a details panel
-// styled after GitHub's merge box — two collapsible gate rows (Review, Plan
-// checks), each a status icon + headline + subtext. The detail is ours: Review
-// expands to the (compact) approval flow; Plan checks expands to a severity
-// breakdown with a "View Details" link into the existing plan-check drawer. The
+// styled after GitHub's merge box — gate rows, each a status icon + headline +
+// subtext: Review, then Plan checks, or under SQL Review V2 the same gates the
+// Deploy waiting list shows (Automated review, Discussion). Review expands to
+// the (compact) approval flow; the other rows link to their details. The
 // footer shows at most one state-dependent action: re-request review when
 // rejected (mirroring the section's rejection banner), otherwise the demoted
 // bypass-and-deploy override (BYT-9722).
@@ -12,32 +12,43 @@ import { create } from "@bufbuild/protobuf";
 import {
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   CircleCheck,
   CircleX,
   Clock3,
   Loader2,
+  MessagesSquare,
+  TriangleAlert,
 } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { issueServiceClientConnect } from "@/api";
 import { PlanCheckResultsDrawer } from "@/components/plan-check/PlanCheckSection";
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useCurrentUser } from "@/hooks/useAppState";
+import { principalLabel, usePrincipal } from "@/hooks/usePrincipal";
 import { displayRoleTitleFromList } from "@/lib/role";
 import { cn } from "@/lib/utils";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { userNamePrefix } from "@/stores/modules/v1/common";
-import { unknownUser } from "@/types";
 import { ApprovalStatus } from "@/types/proto-es/v1/common_pb";
 import type { Issue } from "@/types/proto-es/v1/issue_service_pb";
 import { RequestIssueRequestSchema } from "@/types/proto-es/v1/issue_service_pb";
+import {
+  type PlanReviewState,
+  usePlanReviewState,
+} from "../../hooks/usePlanReviewState";
+import { focusPlanPhase } from "../../shell/focusPhase";
 import { usePlanDetailContext } from "../../shell/PlanDetailContext";
 import type { PlanCheckSummary } from "../../utils/phaseSummary";
+import { rowNeedsAttention } from "../../utils/planGates";
+import { reviewerLabel, reviewGateLabel } from "../../utils/reviewLabels";
 import { BypassAndDeploySheet, useBypassDeploy } from "../review/bypassDeploy";
 import { deriveSteps, ReviewApprovalFlow } from "../review/ReviewApprovalFlow";
 import type { PlanStatusReason } from "./planLifecycleHeaderState";
@@ -60,6 +71,7 @@ export function PlanStatusAction({
   const [open, setOpen] = useState(false);
   const [checksDrawerOpen, setChecksDrawerOpen] = useState(false);
   const bypass = useBypassDeploy(issue, page.plan);
+  const reviewState = usePlanReviewState();
   const tone = getPlanStatusTone(reason);
   // Only the Review gate expands (to the approval flow); Checks is a static row
   // with a View Details link. Open Review by default when it is the active gate.
@@ -80,6 +92,22 @@ export function PlanStatusAction({
         return t("plan.lifecycle.rejected");
       case "checks-failing":
         return t("plan.lifecycle.checks-failing");
+      case "threads-open": {
+        // Name what holds the rollout, from the same gates Deploy lists.
+        const gate = reviewState?.gates.find(
+          (candidate) =>
+            candidate.kind === "review" || candidate.kind === "discussion"
+        );
+        if (gate?.kind === "review") return reviewGateLabel(t, gate.row);
+        if (gate?.kind === "discussion") {
+          return t("plan.deploy-waiting.open-discussions", {
+            count: gate.open,
+          });
+        }
+        return t("plan.summary.n-unresolved-threads", {
+          count: bypass.unresolvedThreads,
+        });
+      }
     }
   })();
 
@@ -88,9 +116,11 @@ export function PlanStatusAction({
       <Popover onOpenChange={setOpen} open={open}>
         <PopoverTrigger
           render={
-            <button
+            <Button
+              appearance="secondary"
+              size="md"
               className={cn(
-                "inline-flex h-9 shrink-0 items-center gap-x-1 rounded-full border px-3 text-sm hover:bg-control-bg/40",
+                "inline-flex shrink-0 items-center gap-x-1 rounded-full border text-sm hover:bg-control-bg/40",
                 TONE_TRIGGER[tone]
               )}
               type="button"
@@ -110,13 +140,26 @@ export function PlanStatusAction({
               onToggle={() => setReviewOpen((v) => !v)}
               open={reviewOpen}
             />
-            <ChecksGateRow
-              onViewDetails={() => {
-                setOpen(false);
-                setChecksDrawerOpen(true);
-              }}
-              summary={bypass.planCheckSummary}
-            />
+            {reviewState ? (
+              <>
+                <AutomatedReviewGateRow
+                  onViewDetails={() => {
+                    setOpen(false);
+                    focusPlanPhase("review", page.expandPhase);
+                  }}
+                  state={reviewState}
+                />
+                <DiscussionGateRow count={reviewState.openDiscussions} />
+              </>
+            ) : (
+              <ChecksGateRow
+                onViewDetails={() => {
+                  setOpen(false);
+                  setChecksDrawerOpen(true);
+                }}
+                summary={bypass.planCheckSummary}
+              />
+            )}
           </div>
           <PlanStatusFooter
             bypass={bypass}
@@ -148,7 +191,7 @@ export function PlanStatusAction({
 function GateLabel({ title, subtitle }: { title: string; subtitle: string }) {
   return (
     <span className="min-w-0 flex-1">
-      <span className="block text-sm font-medium leading-tight text-main">
+      <span className="block break-words text-sm font-medium leading-tight text-main">
         {title}
       </span>
       {subtitle && (
@@ -177,8 +220,10 @@ function GateRow({
 }) {
   return (
     <div>
-      <button
-        className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-control-bg/40"
+      <Button
+        appearance="secondary"
+        size="md"
+        className="h-auto w-full items-center justify-start gap-3 px-4 py-3 text-left whitespace-normal hover:bg-control-bg/40"
         onClick={onToggle}
         type="button"
       >
@@ -190,7 +235,7 @@ function GateRow({
             open && "rotate-180"
           )}
         />
-      </button>
+      </Button>
       {open && <div className="border-t bg-control-bg/20">{children}</div>}
     </div>
   );
@@ -212,11 +257,7 @@ function ReviewGateRow({
   const steps = useMemo(() => deriveSteps(issue), [issue]);
   const rejectedStep = steps.find((step) => step.status === "rejected");
   const currentStep = steps.find((step) => step.status === "current");
-  const rejecter = useAppStore((state) =>
-    rejectedStep?.approver
-      ? state.getUserByIdentifier(rejectedStep.approver)
-      : undefined
-  );
+  const rejecter = usePrincipal(rejectedStep?.approver);
   const approvedCount = steps.filter(
     (step) => step.status === "approved"
   ).length;
@@ -228,7 +269,7 @@ function ReviewGateRow({
     icon = <CircleX className="size-5 shrink-0 text-error" />;
     title = t("plan.lifecycle.gate-review-rejected");
     subtitle = t("plan.review.approval-flow.rejected-by", {
-      user: (rejecter ?? unknownUser(rejectedStep?.approver ?? "")).title,
+      user: principalLabel(rejecter),
     });
   } else if (issue.approvalStatus === ApprovalStatus.APPROVED) {
     icon = <CircleCheck className="size-5 shrink-0 text-success" />;
@@ -312,14 +353,16 @@ function ChecksGateRow({
       {icon}
       <GateLabel subtitle={subtitle} title={title} />
       {summary.total > 0 && (
-        <button
+        <Button
+          appearance="secondary"
+          size="xs"
           className="inline-flex shrink-0 items-center gap-1 text-xs text-accent hover:underline"
           onClick={onViewDetails}
           type="button"
         >
           {t("common.view-details")}
           <ChevronRight className="size-3.5" />
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -399,14 +442,16 @@ function ReRequestGuidance({ issue }: { issue: Issue }) {
     <span className="text-xs leading-relaxed text-control-light">
       {t("plan.review.rejection.guidance-prefix")}{" "}
       {canReRequest ? (
-        <button
+        <Button
+          appearance="secondary"
+          size="xs"
           className="font-medium text-accent hover:underline disabled:opacity-60"
           disabled={reRequesting}
           onClick={() => void handleReRequest()}
           type="button"
         >
           {t("plan.review.rejection.re-request-review")}
-        </button>
+        </Button>
       ) : (
         <span>{t("plan.review.rejection.re-request-review")}</span>
       )}{" "}
@@ -426,7 +471,9 @@ function BypassAction({
 }) {
   const { t } = useTranslation();
   return (
-    <button
+    <Button
+      appearance="secondary"
+      size="xs"
       className="inline-flex shrink-0 items-center gap-x-1 text-xs text-control-placeholder underline hover:text-control disabled:opacity-60"
       disabled={bypass.creating}
       onClick={onClick}
@@ -434,6 +481,106 @@ function BypassAction({
     >
       {bypass.creating && <Loader2 className="size-3 animate-spin" />}
       {t("plan.review.footer.bypass-and-deploy")}
-    </button>
+    </Button>
+  );
+}
+
+/* ---------------------- SQL Review V2 gates (ours) ---------------------- */
+
+// The machine reviewers as one gate: what holds the rollout, or that they
+// passed. Details leads to the Automated review rows.
+function AutomatedReviewGateRow({
+  state,
+  onViewDetails,
+}: {
+  state: PlanReviewState;
+  onViewDetails: () => void;
+}) {
+  const { t } = useTranslation();
+  const held = state.rows.filter((row) => row.holdsRollout);
+  const overridden = state.rows.find((row) => row.findings.overridden > 0);
+  const attention = state.rows.filter(rowNeedsAttention).length;
+  let icon: ReactNode;
+  if (held.some((row) => row.conclusion === "failed")) {
+    icon = <CircleX className="size-5 shrink-0 text-error" />;
+  } else if (held.some((row) => row.findings.p0 > 0)) {
+    icon = <CircleAlert className="size-5 shrink-0 text-error" />;
+  } else if (
+    held.length > 0 &&
+    held.every((row) => row.conclusion === "running")
+  ) {
+    icon = (
+      <Loader2 className="size-5 shrink-0 animate-spin text-control-light" />
+    );
+  } else if (held.length > 0) {
+    icon = <CircleAlert className="size-5 shrink-0 text-warning" />;
+  } else if (overridden) {
+    icon = <TriangleAlert className="size-5 shrink-0 text-warning" />;
+  } else {
+    icon = <CircleCheck className="size-5 shrink-0 text-success" />;
+  }
+  let title: string;
+  if (held.length > 0) {
+    title = reviewGateLabel(t, held[0]);
+  } else if (overridden) {
+    title = t("plan.deploy-waiting.overridden", {
+      count: overridden.findings.overridden,
+      reviewer: reviewerLabel(t, overridden.reviewer),
+    });
+  } else {
+    title = t("plan.lifecycle.gate-automated-review-passed");
+  }
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      {icon}
+      <GateLabel
+        subtitle={
+          held.length > 0 && overridden
+            ? t("plan.deploy-waiting.overridden", {
+                count: overridden.findings.overridden,
+                reviewer: reviewerLabel(t, overridden.reviewer),
+              })
+            : attention > 0
+              ? t("plan.automated-review.needs-attention", {
+                  count: attention,
+                  total: state.rows.length,
+                })
+              : ""
+        }
+        title={title}
+      />
+      <Button
+        appearance="secondary"
+        size="xs"
+        className="inline-flex shrink-0 items-center gap-1 text-xs text-accent hover:underline"
+        onClick={onViewDetails}
+        type="button"
+      >
+        {t("common.view-details")}
+        <ChevronRight className="size-3.5" />
+      </Button>
+    </div>
+  );
+}
+
+// Open threads people started; each holds the rollout.
+function DiscussionGateRow({ count }: { count: number }) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      {count > 0 ? (
+        <MessagesSquare className="size-5 shrink-0 text-warning" />
+      ) : (
+        <CircleCheck className="size-5 shrink-0 text-success" />
+      )}
+      <GateLabel
+        subtitle={count > 0 ? t("plan.lifecycle.gate-threads-open-sub") : ""}
+        title={
+          count > 0
+            ? t("plan.deploy-waiting.open-discussions", { count })
+            : t("plan.lifecycle.gate-no-open-discussions")
+        }
+      />
+    </div>
   );
 }

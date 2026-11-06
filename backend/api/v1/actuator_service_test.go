@@ -21,11 +21,10 @@ func (r mcpSettingRead) GetMCPSettingsUncached(context.Context, string) (*storep
 	return r.setting, r.err
 }
 
-// TestActuatorMCPSetting pins the three decisions in what actuator info
-// discloses about the MCP policy: the masking toggle travels with the ceiling,
-// an unreadable row leaves the setting absent instead of failing the shared
-// bootstrap response, and the resolution the gate already made for this
-// request wins over a second read.
+// TestActuatorMCPSetting pins the two decisions in what actuator info
+// discloses about the MCP policy: an unreadable row leaves the setting absent
+// instead of failing the shared bootstrap response, and the resolution the gate
+// already made for this request wins over a second read.
 func TestActuatorMCPSetting(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -35,12 +34,10 @@ func TestActuatorMCPSetting(t *testing.T) {
 		want *v1pb.MCPSetting
 	}{
 		{
-			// Every masking state is written in terms of this, so withholding it
-			// leaves the table unusable.
-			name: "the toggle reaches the response",
-			read: mcpSettingRead{setting: &storepb.MCPSetting{Capability: storepb.MCPSetting_READ_ONLY, IgnoreMaskingExemptions: true}},
+			name: "the stored ceiling reaches the response",
+			read: mcpSettingRead{setting: &storepb.MCPSetting{Capability: storepb.MCPSetting_READ_ONLY}},
 			ctx:  ctx,
-			want: &v1pb.MCPSetting{Capability: v1pb.MCPSetting_READ_ONLY, IgnoreMaskingExemptions: true},
+			want: &v1pb.MCPSetting{Capability: v1pb.MCPSetting_READ_ONLY},
 		},
 		{
 			// Actuator info is a shared bootstrap response, so it remains
@@ -57,8 +54,8 @@ func TestActuatorMCPSetting(t *testing.T) {
 			// the request was not admitted under.
 			name: "the gate's resolution wins over a second read",
 			read: mcpSettingRead{setting: &storepb.MCPSetting{Capability: storepb.MCPSetting_DISABLED}},
-			ctx:  withMCPSettings(ctx, &storepb.MCPSetting{Capability: storepb.MCPSetting_READ_ONLY, IgnoreMaskingExemptions: true}),
-			want: &v1pb.MCPSetting{Capability: v1pb.MCPSetting_READ_ONLY, IgnoreMaskingExemptions: true},
+			ctx:  withMCPSettings(ctx, &storepb.MCPSetting{Capability: storepb.MCPSetting_READ_ONLY}),
+			want: &v1pb.MCPSetting{Capability: v1pb.MCPSetting_READ_ONLY},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,7 +65,42 @@ func TestActuatorMCPSetting(t *testing.T) {
 				return
 			}
 			require.Equal(t, tc.want.Capability, got.GetCapability())
-			require.Equal(t, tc.want.IgnoreMaskingExemptions, got.GetIgnoreMaskingExemptions())
+		})
+	}
+}
+
+func TestActuatorAIEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setting *storepb.AISetting
+		err     error
+		want    bool
+	}{
+		{name: "absent setting"},
+		{name: "disabled setting", setting: &storepb.AISetting{}},
+		{name: "enabled setting", setting: &storepb.AISetting{Enabled: true}, want: true},
+		{name: "unreadable setting", setting: &storepb.AISetting{Enabled: true}, err: errors.New("read failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, actuatorAIEnabled(tc.setting, tc.err))
+		})
+	}
+}
+
+func TestActuatorAISQLReviewEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setting *storepb.AISetting
+		err     error
+		want    bool
+	}{
+		{name: "absent setting"},
+		{name: "AI on without the review", setting: &storepb.AISetting{Enabled: true}},
+		{name: "the review switched on", setting: &storepb.AISetting{Enabled: true, SqlReviewEnabled: true}, want: true},
+		{name: "unreadable setting", setting: &storepb.AISetting{SqlReviewEnabled: true}, err: errors.New("read failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, actuatorAISQLReviewEnabled(tc.setting, tc.err))
 		})
 	}
 }

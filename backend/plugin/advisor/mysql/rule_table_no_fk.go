@@ -6,10 +6,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -18,8 +18,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_TABLE_NO_FOREIGN_KEY, &TableNoFKAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_TABLE_NO_FOREIGN_KEY, &TableNoFKAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_TABLE_NO_FOREIGN_KEY, &TableNoFKAdvisor{})
 }
 
 // TableNoFKAdvisor is the advisor checking table disallow foreign key.
@@ -73,7 +71,7 @@ func (r *tableNoFKOmniRule) checkCreateTable(n *ast.CreateTableStmt) {
 				Code:          code.TableHasFK.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Foreign key is not allowed in the table `%s`", tableName),
-				StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(constraint.Loc))),
+				StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(constraint.Loc))),
 			})
 		}
 	}
@@ -94,7 +92,7 @@ func (r *tableNoFKOmniRule) checkAlterTable(n *ast.AlterTableStmt) {
 				Code:          code.TableHasFK.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Foreign key is not allowed in the table `%s`", tableName),
-				StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(cmd.Constraint.Loc))),
+				StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(cmd.Constraint.Loc))),
 			})
 		}
 	}

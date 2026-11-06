@@ -6,10 +6,10 @@ import (
 
 	"github.com/bytebase/omni/mysql/ast"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	advisorcode "github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -18,8 +18,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_TABLE_DISALLOW_PARTITION, &TableDisallowPartitionAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_TABLE_DISALLOW_PARTITION, &TableDisallowPartitionAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_TABLE_DISALLOW_PARTITION, &TableDisallowPartitionAdvisor{})
 }
 
 // TableDisallowPartitionAdvisor is the advisor checking for disallow table partition.
@@ -68,7 +66,7 @@ func (r *tableDisallowPartitionOmniRule) checkCreateTable(n *ast.CreateTableStmt
 			Code:          advisorcode.CreateTablePartition.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("Table partition is forbidden, but \"%s\" creates", r.QueryText()),
-			StartPosition: common.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
+			StartPosition: base.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
 		})
 	}
 }
@@ -84,7 +82,7 @@ func (r *tableDisallowPartitionOmniRule) checkAlterTable(n *ast.AlterTableStmt) 
 				Code:          advisorcode.CreateTablePartition.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Table partition is forbidden, but \"%s\" creates", r.QueryText()),
-				StartPosition: common.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
+				StartPosition: base.ConvertANTLRLineToPosition(int(r.ContentStartLine())),
 			})
 			return
 		}

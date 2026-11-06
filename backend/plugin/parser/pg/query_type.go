@@ -155,19 +155,20 @@ func UnwrapExplainAnalyze(node ast.Node, text string) (ast.Node, string) {
 	if !ok || !isExplainAnalyzeOmni(explain) {
 		return node, text
 	}
-	// The statement runs from its WITH clause, which the location of a SELECT leaves out, to the end
-	// of the EXPLAIN, which its location can also leave out, as for ORDER BY.
-	start := ast.NodeLoc(explain.Query).Start
-	if with := getWithClause(explain.Query); with != nil && with.Loc.Start >= 0 && with.Loc.Start < start {
-		start = with.Loc.Start
-	}
-	if start < 0 || start >= explain.Loc.End || explain.Loc.End > len(text) {
+	inner, ok := explainedText(explain, text)
+	if !ok {
 		return explain.Query, text
 	}
-	return explain.Query, text[start:explain.Loc.End]
+	return explain.Query, inner
 }
 
-// classifyExplainedQuery returns the QueryType for the query inside EXPLAIN ANALYZE.
+// classifyExplainedQuery returns the QueryType for the query inside EXPLAIN
+// ANALYZE, which actually runs it — so unlike classifyQueryType's own default,
+// an unrecognized node type here must fail closed rather than pass as Select.
+// The cases below are exhaustive over what PostgreSQL actually accepts as an
+// EXPLAIN target (CALL, TRUNCATE, COPY, DDL like DROP/ALTER do not parse
+// there), matching classifyQueryType's DML/DDL classification for the same
+// node types; the default exists only for a future grammar addition.
 func classifyExplainedQuery(query ast.Node) base.QueryType {
 	if query == nil {
 		return base.Select
@@ -192,6 +193,6 @@ func classifyExplainedQuery(query ast.Node) base.QueryType {
 	case *ast.ExecuteStmt:
 		return base.Select
 	default:
-		return base.Select
+		return base.QueryTypeUnknown
 	}
 }

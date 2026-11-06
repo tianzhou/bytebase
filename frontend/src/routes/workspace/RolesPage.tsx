@@ -87,7 +87,10 @@ function PermissionTransfer({
   const { t } = useTranslation();
   const [sourceFilter, setSourceFilter] = useState("");
 
-  const allPermissions = useMemo(() => [...PERMISSIONS].sort(), []);
+  const allPermissions = useMemo(
+    () => [...PERMISSIONS].sort((a, b) => a.localeCompare(b)),
+    []
+  );
 
   const valueSet = useMemo(() => new Set(value), [value]);
 
@@ -126,14 +129,16 @@ function PermissionTransfer({
       {/* Source */}
       <div className="flex-1 flex flex-col border-r min-w-0">
         <div className="flex items-center gap-x-2 px-3 py-2 border-b">
-          <button
+          <Button
+            appearance="secondary"
+            size="md"
             type="button"
-            className="text-sm text-main hover:text-accent disabled:opacity-50"
+            className="h-auto px-1.5 py-0.5 text-sm text-main hover:text-accent disabled:opacity-50"
             disabled={disabled || sourceItems.length === 0}
             onClick={selectAll}
           >
             {t("common.select-all")}
-          </button>
+          </Button>
           <span className="text-xs text-control-light">
             {t("common.total-n-items", { n: totalSourceCount })}
           </span>
@@ -152,7 +157,7 @@ function PermissionTransfer({
           {sourceItems.map((p) => (
             <div
               key={p}
-              className={`group flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+              className={`group flex items-center justify-between px-3 py-1.5 text-sm hover:bg-control-bg/50 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
               onClick={() => selectItem(p)}
             >
               <span className="truncate">{p}</span>
@@ -167,31 +172,35 @@ function PermissionTransfer({
       {/* Target */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center gap-x-2 px-3 py-2 border-b">
-          <button
+          <Button
+            appearance="secondary"
+            size="md"
             type="button"
-            className="text-sm text-main hover:text-accent disabled:opacity-50"
+            className="h-auto px-1.5 py-0.5 text-sm text-main hover:text-accent disabled:opacity-50"
             disabled={disabled || value.length === 0}
             onClick={clearAll}
           >
             {t("common.clear")}
-          </button>
+          </Button>
           <span className="text-xs text-control-light">
             {t("common.n-items-selected", { n: value.length })}
           </span>
         </div>
         <div className="flex-1 overflow-auto">
-          {[...value].sort().map((p) => (
-            <div
-              key={p}
-              className={`group flex items-center justify-between px-3 py-1.5 text-sm hover:bg-gray-50 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-              onClick={() => removeItem(p)}
-            >
-              <span className="truncate">{p}</span>
-              {!disabled && (
-                <X className="h-3.5 w-3.5 shrink-0 text-control-light opacity-0 group-hover:opacity-100 group-hover:text-error" />
-              )}
-            </div>
-          ))}
+          {[...value]
+            .sort((a, b) => a.localeCompare(b))
+            .map((p) => (
+              <div
+                key={p}
+                className={`group flex items-center justify-between px-3 py-1.5 text-sm hover:bg-control-bg/50 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                onClick={() => removeItem(p)}
+              >
+                <span className="truncate">{p}</span>
+                {!disabled && (
+                  <X className="h-3.5 w-3.5 shrink-0 text-control-light opacity-0 group-hover:opacity-100 group-hover:text-error" />
+                )}
+              </div>
+            ))}
         </div>
       </div>
     </div>
@@ -783,10 +792,7 @@ export function RolesPage() {
         description={
           <>
             {t("role.setting.description")}{" "}
-            <LearnMoreLink
-              href="https://docs.bytebase.com/administration/roles?source=console"
-              className="text-accent"
-            />
+            <LearnMoreLink href="https://docs.bytebase.com/administration/roles?source=console" />
           </>
         }
       />
@@ -797,7 +803,7 @@ export function RolesPage() {
             <FeatureBadge
               feature={PlanFeature.FEATURE_CUSTOM_ROLES}
               clickable={false}
-              className="mr-1 text-white inline-flex"
+              className="mr-1 inline-flex text-accent-text"
               fallback={<Plus className="h-4 w-4 mr-1" />}
             />
             {t("common.create")}

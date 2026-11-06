@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"connectrpc.com/connect"
 	"github.com/pkg/errors"
 	"google.golang.org/genproto/googleapis/type/expr"
 
@@ -170,21 +171,64 @@ func convertToV1PBQueryDataPolicy(payloadStr string) (*v1pb.Policy_QueryDataPoli
 	}
 	return &v1pb.Policy_QueryDataPolicy{
 		QueryDataPolicy: &v1pb.QueryDataPolicy{
-			DisableExport:        payload.DisableExport,
 			MaximumResultRows:    payload.MaximumResultRows,
 			DisableCopyData:      payload.DisableCopyData,
 			AllowAdminDataSource: payload.AllowAdminDataSource,
+			DisableDownload:      payload.DisableDownload,
 		},
 	}, nil
 }
 
-func convertToQueryDataPolicyPayload(policy *v1pb.QueryDataPolicy) *storepb.QueryDataPolicy {
-	return &storepb.QueryDataPolicy{
-		DisableExport:        policy.DisableExport,
-		MaximumResultRows:    policy.MaximumResultRows,
-		DisableCopyData:      policy.DisableCopyData,
-		AllowAdminDataSource: policy.AllowAdminDataSource,
+// convertToQueryDataPolicyPayload rejects disable_export=true so stale configs learn the
+// setting is gone; false is accepted and dropped.
+func convertToQueryDataPolicyPayload(policy *v1pb.QueryDataPolicy) (*storepb.QueryDataPolicy, error) {
+	if policy.GetDisableExport() { //nolint:staticcheck // The deprecated field is read only to reject it.
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("disable_export is removed. Export requires the bb.sql.export permission; to require approval for export, assign roles without it.")) //nolint:revive // The message is an API contract.
 	}
+	return &storepb.QueryDataPolicy{
+		MaximumResultRows:    policy.GetMaximumResultRows(),
+		DisableCopyData:      policy.GetDisableCopyData(),
+		AllowAdminDataSource: policy.GetAllowAdminDataSource(),
+		DisableDownload:      policy.GetDisableDownload(),
+	}, nil
+}
+
+func convertToV1PBReviewRulePolicy(payloadStr string) (*v1pb.Policy_ReviewRulePolicy, error) {
+	payload := &storepb.ReviewRulePolicy{}
+	if err := common.ProtojsonUnmarshaler.Unmarshal([]byte(payloadStr), payload); err != nil {
+		return nil, errors.Wrapf(err, "failed to unmarshal review rule policy payload")
+	}
+	rules := make([]v1pb.ReviewRuleType, 0, len(payload.Rules))
+	for _, rule := range payload.Rules {
+		rules = append(rules, v1pb.ReviewRuleType(rule))
+	}
+	return &v1pb.Policy_ReviewRulePolicy{
+		ReviewRulePolicy: &v1pb.ReviewRulePolicy{Rules: rules},
+	}, nil
+}
+
+// convertToStorePBReviewRulePolicy casts each rule across the two mirrored
+// enums; TestReviewRuleTypeEnumsMirror holds their numbering together.
+func convertToStorePBReviewRulePolicy(policy *v1pb.ReviewRulePolicy) *storepb.ReviewRulePolicy {
+	rules := make([]storepb.ReviewRuleType, 0, len(policy.GetRules()))
+	for _, rule := range policy.GetRules() {
+		rules = append(rules, storepb.ReviewRuleType(rule))
+	}
+	return &storepb.ReviewRulePolicy{Rules: rules}
+}
+
+func convertToV1PBReviewAIPolicy(payloadStr string) (*v1pb.Policy_ReviewAiPolicy, error) {
+	payload := &storepb.ReviewAIPolicy{}
+	if err := common.ProtojsonUnmarshaler.Unmarshal([]byte(payloadStr), payload); err != nil {
+		return nil, errors.Wrapf(err, "failed to unmarshal AI review policy payload")
+	}
+	return &v1pb.Policy_ReviewAiPolicy{
+		ReviewAiPolicy: &v1pb.ReviewAIPolicy{Content: payload.Content},
+	}, nil
+}
+
+func convertToStorePBReviewAIPolicy(policy *v1pb.ReviewAIPolicy) *storepb.ReviewAIPolicy {
+	return &storepb.ReviewAIPolicy{Content: policy.GetContent()}
 }
 
 func convertToStorePBMskingRulePolicy(policy *v1pb.MaskingRulePolicy) *storepb.MaskingRulePolicy {
@@ -298,6 +342,10 @@ func convertV1PBToStorePBPolicyType(pType v1pb.PolicyType) (storepb.Policy_Type,
 		return storepb.Policy_MASKING_EXEMPTION, nil
 	case v1pb.PolicyType_DATA_QUERY:
 		return storepb.Policy_QUERY_DATA, nil
+	case v1pb.PolicyType_REVIEW_RULE:
+		return storepb.Policy_REVIEW_RULE, nil
+	case v1pb.PolicyType_REVIEW_AI:
+		return storepb.Policy_REVIEW_AI, nil
 	default:
 	}
 	return storepb.Policy_TYPE_UNSPECIFIED, errors.Errorf("invalid policy type %v", pType)
@@ -315,6 +363,10 @@ func convertStorePBToV1PBPolicyType(pType storepb.Policy_Type) v1pb.PolicyType {
 		return v1pb.PolicyType_MASKING_EXEMPTION
 	case storepb.Policy_QUERY_DATA:
 		return v1pb.PolicyType_DATA_QUERY
+	case storepb.Policy_REVIEW_RULE:
+		return v1pb.PolicyType_REVIEW_RULE
+	case storepb.Policy_REVIEW_AI:
+		return v1pb.PolicyType_REVIEW_AI
 	default:
 	}
 	return v1pb.PolicyType_POLICY_TYPE_UNSPECIFIED

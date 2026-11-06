@@ -2,6 +2,8 @@ import { Filter, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HighlightLabelText } from "@/components/HighlightLabelText";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { LAYER_SURFACE_CLASS } from "@/components/ui/layer";
 import { cn } from "@/lib/utils";
 import { DEBOUNCE_SEARCH_DELAY } from "@/types/common";
@@ -39,7 +41,7 @@ export interface ScopeOption {
   options?: ValueOption[];
   allowMultiple?: boolean;
   /** Server-side search callback. When provided, options are fetched dynamically instead of filtered client-side. */
-  onSearch?: (keyword: string) => Promise<ValueOption[]>;
+  onSearch?: (keyword: string, signal?: AbortSignal) => Promise<ValueOption[]>;
 }
 
 export function emptySearchParams(): SearchParams {
@@ -289,32 +291,47 @@ export function AdvancedSearch({
     }
 
     const requestID = asyncRequestRef.current;
+    const controller = new AbortController();
     setAsyncLoading(true);
     asyncSearchRef.current = setTimeout(() => {
       const fn = onSearchRef.current;
       if (!fn) {
-        if (asyncRequestRef.current !== requestID) return;
+        if (controller.signal.aborted || asyncRequestRef.current !== requestID)
+          return;
         setAsyncOptions([]);
         setAsyncLoading(false);
         return;
       }
-      fn(currentValueForScope)
+      fn(currentValueForScope, controller.signal)
         .then((results) => {
-          if (asyncRequestRef.current !== requestID) return;
+          if (
+            controller.signal.aborted ||
+            asyncRequestRef.current !== requestID
+          )
+            return;
           setAsyncOptions(results);
           setMenuIndex(0);
         })
         .catch(() => {
-          if (asyncRequestRef.current !== requestID) return;
+          if (
+            controller.signal.aborted ||
+            asyncRequestRef.current !== requestID
+          )
+            return;
           setAsyncOptions([]);
         })
         .finally(() => {
-          if (asyncRequestRef.current !== requestID) return;
+          if (
+            controller.signal.aborted ||
+            asyncRequestRef.current !== requestID
+          )
+            return;
           setAsyncLoading(false);
         });
     }, DEBOUNCE_SEARCH_DELAY);
     return () => {
       clearTimeout(asyncSearchRef.current);
+      controller.abort();
     };
   }, [currentScope, currentValueForScope]);
 
@@ -664,7 +681,7 @@ export function AdvancedSearch({
     <div ref={containerRef} className="w-full min-w-0 relative">
       {/* Input container */}
       <div
-        className="flex min-w-0 items-center h-9 overflow-hidden border border-control-border rounded-xs bg-background transition-colors dark:bg-dark-bg dark:border-zinc-700"
+        className="flex min-w-0 items-center h-9 overflow-hidden border border-control-border rounded-xs bg-background transition-colors"
         onClick={() => inputRef.current?.focus()}
       >
         {/*
@@ -695,7 +712,7 @@ export function AdvancedSearch({
                   data-search-scope-id={scope.id}
                   data-search-scope-index={originalIndex}
                   className={cn(
-                    "inline-flex h-6 max-w-[16rem] min-w-0 shrink-0 items-center gap-1 rounded-xs bg-control-bg px-1.5 text-xs whitespace-nowrap dark:bg-zinc-700 dark:text-gray-100",
+                    "inline-flex h-6 max-w-[16rem] min-w-0 shrink-0 items-center gap-1 rounded-xs bg-control-bg px-1.5 text-xs whitespace-nowrap",
                     focusedTagIndex === originalIndex && "ring-1 ring-accent"
                   )}
                   onClick={(e) => {
@@ -713,15 +730,18 @@ export function AdvancedSearch({
                   >
                     {renderTagValue(scope)}
                   </span>
-                  <button
-                    className="ml-0.5 inline-flex size-4 shrink-0 items-center justify-center hover:text-error"
+                  <Button
+                    type="button"
+                    appearance="secondary"
+                    size="xs"
+                    className="ml-0.5 shrink-0 hover:text-error"
                     onClick={(e) => {
                       e.stopPropagation();
                       removeScope(originalIndex);
                     }}
                   >
                     <X className="h-3 w-3" />
-                  </button>
+                  </Button>
                 </span>
               ))}
             </div>
@@ -752,12 +772,14 @@ export function AdvancedSearch({
          *     space, which is what made scope tags clip in panels like
          *     AccessPane.
          */}
-        <input
+        <Input
+          size="xs"
           ref={inputRef}
           className={cn(
-            "flex-1 bg-transparent border-none px-2 text-sm text-main placeholder:text-control-placeholder focus:outline-none focus:border-none focus:ring-0 focus:shadow-none dark:text-gray-100 dark:placeholder:text-gray-500",
+            "flex-1 bg-transparent border-none px-2 text-sm text-main placeholder:text-control-placeholder focus:outline-none focus:border-none focus:ring-0 focus:shadow-none",
             visibleTags.length > 0 ? "min-w-[40px]" : "min-w-[120px]"
           )}
+          autoComplete="off"
           value={inputText}
           placeholder={
             visibleTags.length > 0 ? "" : (placeholder ?? t("common.filter"))
@@ -769,15 +791,18 @@ export function AdvancedSearch({
 
         {/* Clear button */}
         {clearable && (
-          <button
-            className="p-1.5 mr-1 hover:bg-control-bg rounded-full shrink-0"
+          <Button
+            type="button"
+            appearance="secondary"
+            size="xs"
+            className="mr-1 shrink-0 rounded-full hover:bg-control-bg"
             onClick={(e) => {
               e.stopPropagation();
               handleClear();
             }}
           >
             <X className="h-3 w-3 text-control-placeholder" />
-          </button>
+          </Button>
         )}
       </div>
 

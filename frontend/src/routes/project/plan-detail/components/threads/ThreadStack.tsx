@@ -1,16 +1,17 @@
-import { ChevronDown, CircleCheck, MessageSquare } from "lucide-react";
+import { ChevronDown, MessageSquare } from "lucide-react";
 import { type ReactNode, type Ref, type SetStateAction, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HumanizeTs } from "@/components/HumanizeTs";
-import { UserAvatar } from "@/components/UserAvatar";
-import { Badge } from "@/components/ui/badge";
+import { markdownSummary } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
-import { useUserByIdentifier } from "@/hooks/useAppState";
 import { cn } from "@/lib/utils";
-import { getTimeForPbTimestampProtoEs, unknownUser } from "@/types";
-import type { IssueComment } from "@/types/proto-es/v1/issue_service_pb";
+import { getTimeForPbTimestampProtoEs } from "@/types";
+import type { Issue, IssueComment } from "@/types/proto-es/v1/issue_service_pb";
+import type { Plan_Spec } from "@/types/proto-es/v1/plan_service_pb";
 import type { Project } from "@/types/proto-es/v1/project_service_pb";
 import { CommentThreadCard } from "./CommentThreadCard";
+import { ReviewPriorityBadge, useCommentAuthor } from "./ReviewResult";
+import { ThreadStateBadge } from "./ThreadStateBadge";
 import {
   compareByCreateTime,
   type EditorThread,
@@ -54,12 +55,14 @@ export function ThreadStack({
   expandedThreadRef,
   flashRoot,
   onFlashEnd,
-  issueName,
+  issue,
   onCollapse,
   onExpand,
   replyDrafts,
   onReplyDraftChange,
   project,
+  revealRoot,
+  spec,
   threads,
 }: {
   expandedRoots: ReadonlySet<string>;
@@ -67,12 +70,15 @@ export function ThreadStack({
   // The thread the walker just landed on; its card flashes once.
   flashRoot?: string;
   onFlashEnd?: () => void;
-  issueName: string;
+  issue: Issue;
   onCollapse: (rootName: string) => void;
   onExpand: (rootName: string) => void;
   replyDrafts: Readonly<Record<string, string>>;
   onReplyDraftChange: (rootName: string, draft: SetStateAction<string>) => void;
   project: Project | undefined;
+  revealRoot?: string;
+  // The spec whose statement the stack sits on.
+  spec: Plan_Spec;
   threads: EditorThread[];
 }) {
   const { t } = useTranslation();
@@ -92,19 +98,6 @@ export function ThreadStack({
   const open = currentEntries(nextGroups.open);
   const resolved = currentEntries(nextGroups.resolved);
   const ordered = [...open, ...resolved];
-  const handleStateChanged = (name: string, resolved: boolean) => {
-    if (!expandedRoots.has(name)) return;
-    if (!resolved) {
-      onExpand(name);
-      return;
-    }
-    const index = ordered.findIndex((entry) => entry.thread.root.name === name);
-    const next = [...ordered.slice(index + 1), ...ordered.slice(0, index)].find(
-      (entry) => entry.thread.root.name !== name && !entry.thread.resolved
-    );
-    if (next) onExpand(next.thread.root.name);
-    else onCollapse(name);
-  };
   // Threads ending on the same line may cover different ranges; label each
   // with its range only when they differ.
   const showRanges =
@@ -130,6 +123,7 @@ export function ThreadStack({
             flashRoot === entry.thread.root.name ? onFlashEnd : undefined
           }
           ref={
+            revealRoot === entry.thread.root.name &&
             expandedRoots.has(entry.thread.root.name)
               ? expandedThreadRef
               : undefined
@@ -139,17 +133,15 @@ export function ThreadStack({
             <CommentThreadCard
               className="shadow-sm"
               collapsible={false}
-              issueName={issueName}
+              issue={issue}
               label={rangeLabel(entry)}
               onClose={() => onCollapse(entry.thread.root.name)}
-              onThreadStateChanged={(resolved) =>
-                handleStateChanged(entry.thread.root.name, resolved)
-              }
               replyDraft={replyDrafts[entry.thread.root.name] ?? ""}
               onReplyDraftChange={(draft) =>
                 onReplyDraftChange(entry.thread.root.name, draft)
               }
               project={project}
+              spec={spec}
               thread={entry.thread}
             />
           ) : (
@@ -181,9 +173,10 @@ function CollapsedThreadRow({
   resolved: boolean;
 }) {
   const { t } = useTranslation();
-  const creator =
-    useUserByIdentifier(comment.creator) ?? unknownUser(comment.creator);
-  const firstLine = comment.comment.split("\n")[0] ?? "";
+  const author = useCommentAuthor(comment);
+  const review = comment.reviewMetadata;
+  // An AI result is summarized by its title, any other comment by its text.
+  const summary = markdownSummary(review?.title || comment.comment);
   return (
     <Button
       appearance="secondary"
@@ -194,19 +187,16 @@ function CollapsedThreadRow({
       onClick={onSelect}
       size="md"
     >
-      <UserAvatar
-        colorSeed={creator.email}
-        size="xs"
-        title={creator.title || creator.email}
-      />
+      {author.avatar}
       <span
         className="max-w-24 truncate font-medium text-main"
-        title={creator.title || creator.email}
+        title={author.name}
       >
-        {creator.title || creator.email}
+        {author.name}
       </span>
-      <span className="min-w-0 flex-1 truncate text-control" title={firstLine}>
-        {firstLine}
+      {review && <ReviewPriorityBadge priority={review.priority} />}
+      <span className="min-w-0 flex-1 truncate text-control" title={summary}>
+        {summary}
       </span>
       {label}
       {replyCount > 0 && (
@@ -221,18 +211,11 @@ function CollapsedThreadRow({
           </span>
         </span>
       )}
-      {comment.createTime && (
-        <HumanizeTs
-          className="hidden shrink-0 text-xs text-control-light @xl:inline"
-          ts={getTimeForPbTimestampProtoEs(comment.createTime, 0) / 1000}
-        />
-      )}
-      {resolved && (
-        <Badge className="shrink-0 gap-x-1 px-2 text-xs" variant="success">
-          <CircleCheck className="size-3" />
-          {t("plan.review.thread.resolved")}
-        </Badge>
-      )}
+      <HumanizeTs
+        className="hidden shrink-0 text-xs text-control-light @xl:inline"
+        tsMs={getTimeForPbTimestampProtoEs(comment.createTime)}
+      />
+      {resolved && <ThreadStateBadge />}
       <ChevronDown className="size-4 shrink-0 text-control-light" />
     </Button>
   );

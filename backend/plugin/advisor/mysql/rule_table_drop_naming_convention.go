@@ -8,10 +8,10 @@ import (
 	"github.com/bytebase/omni/mysql/ast"
 	"github.com/pkg/errors"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -20,8 +20,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_TABLE_DROP_NAMING_CONVENTION, &TableDropNamingConventionAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_TABLE_DROP_NAMING_CONVENTION, &TableDropNamingConventionAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_TABLE_DROP_NAMING_CONVENTION, &TableDropNamingConventionAdvisor{})
 }
 
 // TableDropNamingConventionAdvisor is the advisor checking the MySQLTableDropNamingConvention rule.
@@ -77,7 +75,7 @@ func (r *tableDropNamingConventionOmniRule) OnStatement(node ast.Node) {
 				Code:          code.TableDropNamingConventionMismatch.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("`%s` mismatches drop table naming convention, naming format should be %q", tbl.Name, r.format),
-				StartPosition: common.ConvertANTLRLineToPosition(absoluteLine),
+				StartPosition: base.ConvertANTLRLineToPosition(absoluteLine),
 			})
 		}
 	}

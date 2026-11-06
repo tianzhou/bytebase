@@ -115,11 +115,13 @@ import {
   getInstanceResource,
   hasProjectPermissionV2,
 } from "@/utils";
+import { sqlReviewV2Enabled } from "@/utils/featureGates";
 import { getStatementSize } from "@/utils/sheet";
 import { extractDatabaseGroupName } from "@/utils/v1/databaseGroup";
 import { sheetNameOfSpec } from "@/utils/v1/issue/plan";
 import { extractSheetUID, getSheetStatement } from "@/utils/v1/sheet";
 import { usePlanChangeReferenceData } from "../hooks/usePlanChangeReferenceData";
+import { usePlanDetailStore } from "../shared/stores/usePlanDetailStore";
 import { usePlanDetailContext } from "../shell/PlanDetailContext";
 import { derivePlanChangeReference } from "../utils/changeReference";
 import {
@@ -160,12 +162,6 @@ import { usePlacedUnresolvedThreadCounts } from "./threads/useUnresolvedThreadCo
 const DEFAULT_VISIBLE_TARGETS = 20;
 const DATABASE_GROUP_VISIBLE_DATABASES = 3;
 const EMPTY_SELECT_VALUE = "__empty__";
-
-// Shared hover/focus recipe for the square icon buttons on the tab strip
-// (the per-tab actions menu and the add-change button). Callers append their
-// own size and corner radius.
-const ICON_ACTION_CLASS =
-  "inline-flex cursor-pointer items-center justify-center text-control-light outline-hidden transition-colors hover:bg-control-bg hover:text-control focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 const pushSpecDetailRoute = (
   projectId: string,
@@ -213,7 +209,8 @@ export function PlanDetailChangesBranch({
   const currentUser = useCurrentUser();
   const unresolvedThreadsBySpec = usePlacedUnresolvedThreadCounts(
     page.issue?.name,
-    page.plan.specs
+    page.plan.specs,
+    `projects/${page.projectId}`
   );
   // subscribe to re-render on project cache change
   const projectsByName = useAppStore((s) => s.projectsByName);
@@ -265,6 +262,12 @@ export function PlanDetailChangesBranch({
     }
     return getSelectedSpec({ selectedSpecId, specs });
   }, [pendingNewSpec, isPendingSelected, selectedSpecId, specs]);
+  const setDisplayedSpecId = usePlanDetailStore((s) => s.setDisplayedSpecId);
+  const displayedSpecId = selectedSpec?.id;
+  useEffect(() => {
+    setDisplayedSpecId(displayedSpecId);
+    return () => setDisplayedSpecId(undefined);
+  }, [displayedSpecId, setDisplayedSpecId]);
   const canModifySpecs = useMemo(() => {
     if (page.plan.state === State.DELETED) return false;
     if (page.readonly) return false;
@@ -315,6 +318,10 @@ export function PlanDetailChangesBranch({
 
   const selectSpec = useCallback(
     (specId: string) => {
+      if (specId === pendingNewSpec?.id) {
+        setIsPendingSelected(true);
+        return;
+      }
       if (page.isCreating) {
         // No URL drives the selection during plan creation.
         onSelectedSpecIdChange(specId);
@@ -325,7 +332,13 @@ export function PlanDetailChangesBranch({
       // confirm dialog when the navigation is cancelled.
       void pushSpecDetailRoute(page.projectId, page.planId, specId);
     },
-    [onSelectedSpecIdChange, page.isCreating, page.planId, page.projectId]
+    [
+      onSelectedSpecIdChange,
+      page.isCreating,
+      page.planId,
+      page.projectId,
+      pendingNewSpec?.id,
+    ]
   );
 
   const handleSpecCreate = async (targets: string[]) => {
@@ -559,7 +572,7 @@ export function PlanDetailChangesBranch({
 
   if (!selectedSpec) {
     return (
-      <div className="rounded-sm border bg-white px-4 py-3 text-sm text-control-light">
+      <div className="rounded-sm border bg-background px-4 py-3 text-sm text-control-light">
         {t("common.no-data")}
       </div>
     );
@@ -587,10 +600,7 @@ export function PlanDetailChangesBranch({
             >
               <Button
                 aria-label={t("plan.add-spec")}
-                className={cn(
-                  ICON_ACTION_CLASS,
-                  "size-7 rounded-xs p-0 [touch-action:manipulation]"
-                )}
+                className="text-control-light hover:text-control [touch-action:manipulation]"
                 disabled={Boolean(pendingNewSpec)}
                 onClick={() => setShowAddSpecSheet(true)}
                 size="sm"
@@ -621,9 +631,7 @@ export function PlanDetailChangesBranch({
               action={
                 canModifySpecs && visibleSpecs.length > 1 ? (
                   <DropdownMenu>
-                    <DropdownMenuTrigger
-                      className={cn(ICON_ACTION_CLASS, "size-6 rounded-xs")}
-                    >
+                    <DropdownMenuTrigger className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-xs text-control-light outline-hidden transition-colors hover:bg-control-bg hover:text-control focus-visible:ring-2 focus-visible:ring-accent">
                       <EllipsisVertical className="size-3.5" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent>
@@ -646,26 +654,12 @@ export function PlanDetailChangesBranch({
                   </DropdownMenu>
                 ) : undefined
               }
-              onSelect={() => {
-                if (isPending) {
-                  // Draft has no backend URL — only update local selection.
-                  setIsPendingSelected(true);
-                  return;
-                }
-                // Don't clear isPendingSelected here — if a leave-confirm
-                // dialog intercepts the navigation, we want the draft to
-                // stay visible behind the dialog. The URL-sync effect
-                // below clears it once selectedSpecId actually changes.
-                selectSpec(spec.id);
-              }}
+              onSelect={() => selectSpec(spec.id)}
               selected={isSelected}
             >
               <PlanChangeReference
                 ariaHidden
-                className={cn(
-                  "text-sm font-medium transition-colors",
-                  isSelected ? "" : "text-control-light hover:text-control"
-                )}
+                className={isSelected ? undefined : "text-control-light"}
                 density="tab"
                 reference={reference}
               />
@@ -729,7 +723,10 @@ export function PlanDetailChangesBranch({
         </div>
       </div>
 
-      {!page.isCreating && !specHasRelease && <PlanDetailAggregateChecks />}
+      {/* Under SQL Review V2 the checks are reviewers in the Review section. */}
+      {!page.isCreating && !specHasRelease && !sqlReviewV2Enabled() && (
+        <PlanDetailAggregateChecks />
+      )}
 
       <TargetSelectorSheet
         currentTargets={currentTargets}
@@ -1695,7 +1692,9 @@ function DatabaseAndGroupSelector({
   return (
     <div className="flex flex-col gap-y-3">
       <div className="flex border-b border-control-border">
-        <button
+        <Button
+          appearance="secondary"
+          size="md"
           type="button"
           className={cn(
             "border-b-2 -mb-px px-4 py-2 text-sm font-medium transition-colors",
@@ -1709,8 +1708,10 @@ function DatabaseAndGroupSelector({
             <DatabaseIcon className="size-4" />
             {t("common.databases")}
           </span>
-        </button>
-        <button
+        </Button>
+        <Button
+          appearance="secondary"
+          size="md"
           type="button"
           className={cn(
             "border-b-2 -mb-px px-4 py-2 text-sm font-medium transition-colors",
@@ -1724,7 +1725,7 @@ function DatabaseAndGroupSelector({
             <FolderTree className="size-4" />
             {t("common.database-group")}
           </span>
-        </button>
+        </Button>
       </div>
 
       {changeSource === "DATABASE" ? (
@@ -2086,7 +2087,7 @@ export function DatabaseGroupTarget({
           {inlineDatabases.map((database) => (
             <div
               key={database.name}
-              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border bg-gray-50 px-2 py-1 transition-all"
+              className="inline-flex max-w-full min-w-0 cursor-default items-center gap-x-1 rounded-sm border bg-control-bg/50 px-2 py-1 transition-all"
             >
               <PlanTargetDisplay showEnvironment target={database.name} />
             </div>
@@ -2096,7 +2097,7 @@ export function DatabaseGroupTarget({
               <PopoverTrigger
                 render={
                   <Button
-                    className="h-6 px-1.5 text-xs text-accent hover:bg-accent/10 hover:text-accent"
+                    className="text-accent hover:bg-accent/10 hover:text-accent"
                     size="xs"
                     type="button"
                     appearance="secondary"

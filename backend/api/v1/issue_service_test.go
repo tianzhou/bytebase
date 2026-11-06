@@ -12,6 +12,7 @@ import (
 
 	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/component/bus"
+	"github.com/bytebase/bytebase/backend/component/config"
 	"github.com/bytebase/bytebase/backend/component/iam"
 	"github.com/bytebase/bytebase/backend/component/review"
 	"github.com/bytebase/bytebase/backend/component/webhook"
@@ -123,7 +124,12 @@ func TestLinkedIssueForCreate(t *testing.T) {
 	}
 }
 
-func TestApproveIssueFailsClosedWhenIAMLookupFails(t *testing.T) {
+// TestApproveIssueRefusesWhenIAMLookupFails pins the fail-closed property
+// itself: no approval is recorded when the server cannot read the IAM policy.
+// The refusal is Internal rather than PermissionDenied, because an unreadable
+// policy is an outage, not a verdict about the caller — and since BYT-10124 a
+// permission verdict also files a WARNING denial in the audit log.
+func TestApproveIssueRefusesWhenIAMLookupFails(t *testing.T) {
 	t.Parallel()
 	ctx := issueServiceTestContext()
 	stores := setupIssueServiceTestStore(ctx, t)
@@ -145,7 +151,14 @@ func TestApproveIssueFailsClosedWhenIAMLookupFails(t *testing.T) {
 	_, err = service.ApproveIssue(reviewerCtx, connect.NewRequest(&v1pb.ApproveIssueRequest{
 		Name: common.FormatIssue(issue.ProjectID, issue.UID),
 	}))
-	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	require.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+
+	after, err := stores.GetIssue(ctx, &store.FindIssueMessage{
+		ProjectIDs: []string{issue.ProjectID},
+		UID:        &issue.UID,
+	})
+	require.NoError(t, err)
+	require.Empty(t, after.Payload.GetApproval().GetApprovers(), "no approval may be recorded")
 }
 
 func TestCreateRolloutAndPendingTasksAllowsUnapprovedIssueWhenApprovalNotRequired(t *testing.T) {
@@ -323,7 +336,7 @@ func newIssueServiceForTest(t *testing.T, stores *store.Store) *IssueService {
 	require.NoError(t, err)
 	iamManager, err := iam.NewManager(stores, nil, false)
 	require.NoError(t, err)
-	return NewIssueService(stores, webhook.NewManager(stores, nil), b, nil, iamManager)
+	return NewIssueService(stores, webhook.NewManager(stores, nil), b, nil, iamManager, &config.Profile{SQLReviewV2: true})
 }
 
 func createIssueServiceApprovalIssue(ctx context.Context, t *testing.T, stores *store.Store) (*store.PlanMessage, *store.IssueMessage) {

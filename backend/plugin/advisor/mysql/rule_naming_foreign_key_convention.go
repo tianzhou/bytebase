@@ -8,10 +8,10 @@ import (
 	"github.com/bytebase/omni/mysql/ast"
 	"github.com/pkg/errors"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -20,8 +20,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_NAMING_INDEX_FK, &NamingFKConventionAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_NAMING_INDEX_FK, &NamingFKConventionAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_NAMING_INDEX_FK, &NamingFKConventionAdvisor{})
 }
 
 // NamingFKConventionAdvisor is the advisor checking for foreign key naming convention.
@@ -150,7 +148,7 @@ func (r *namingFKOmniRule) handleIndexList(indexDataList []*fkIndexMetaData) {
 				Code:          code.NamingFKConventionMismatch.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Foreign key in table `%s` mismatches the naming convention, expect %q but found `%s`", indexData.tableName, regex, indexData.indexName),
-				StartPosition: common.ConvertANTLRLineToPosition(indexData.line),
+				StartPosition: base.ConvertANTLRLineToPosition(indexData.line),
 			})
 		}
 		if r.maxLength > 0 && len(indexData.indexName) > r.maxLength {
@@ -159,7 +157,7 @@ func (r *namingFKOmniRule) handleIndexList(indexDataList []*fkIndexMetaData) {
 				Code:          code.NamingFKConventionMismatch.Int32(),
 				Title:         r.Title,
 				Content:       fmt.Sprintf("Foreign key `%s` in table `%s` mismatches the naming convention, its length should be within %d characters", indexData.indexName, indexData.tableName, r.maxLength),
-				StartPosition: common.ConvertANTLRLineToPosition(indexData.line),
+				StartPosition: base.ConvertANTLRLineToPosition(indexData.line),
 			})
 		}
 	}
@@ -171,7 +169,7 @@ func (*namingFKOmniRule) handleConstraint(tableName string, constraint *ast.Cons
 		return nil
 	}
 
-	indexName := constraint.Name
+	indexName := omniConstraintName(constraint)
 
 	referencingColumnList := constraint.Columns
 	referencedTable := ""

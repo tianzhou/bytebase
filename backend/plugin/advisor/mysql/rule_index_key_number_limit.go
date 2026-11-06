@@ -7,10 +7,10 @@ import (
 	"github.com/bytebase/omni/mysql/ast"
 	"github.com/pkg/errors"
 
-	"github.com/bytebase/bytebase/backend/common"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 )
 
 var (
@@ -19,8 +19,6 @@ var (
 
 func init() {
 	advisor.Register(storepb.Engine_MYSQL, storepb.SQLReviewRule_INDEX_KEY_NUMBER_LIMIT, &IndexKeyNumberLimitAdvisor{})
-	advisor.Register(storepb.Engine_MARIADB, storepb.SQLReviewRule_INDEX_KEY_NUMBER_LIMIT, &IndexKeyNumberLimitAdvisor{})
-	advisor.Register(storepb.Engine_OCEANBASE, storepb.SQLReviewRule_INDEX_KEY_NUMBER_LIMIT, &IndexKeyNumberLimitAdvisor{})
 }
 
 // IndexKeyNumberLimitAdvisor is the advisor checking for index key number limit.
@@ -113,7 +111,7 @@ func (r *indexKeyNumberLimitOmniRule) handleConstraint(tableName string, constra
 		return
 	}
 
-	indexName := constraint.Name
+	indexName := omniConstraintName(constraint)
 	if indexName == "" && constraint.Type == ast.ConstrPrimaryKey {
 		indexName = extractPKNameFromText(r.StmtText)
 	}
@@ -123,7 +121,7 @@ func (r *indexKeyNumberLimitOmniRule) handleConstraint(tableName string, constra
 			Code:          code.IndexKeyNumberExceedsLimit.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("The number of index `%s` in table `%s` should be not greater than %d", indexName, tableName, r.max),
-			StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(line)),
+			StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(line)),
 		})
 	}
 }
@@ -145,7 +143,7 @@ func (r *indexKeyNumberLimitOmniRule) checkCreateIndex(n *ast.CreateIndexStmt) {
 			Code:          code.IndexKeyNumberExceedsLimit.Int32(),
 			Title:         r.Title,
 			Content:       fmt.Sprintf("The number of index `%s` in table `%s` should be not greater than %d", indexName, tableName, r.max),
-			StartPosition: common.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(n.Loc))),
+			StartPosition: base.ConvertANTLRLineToPosition(r.BaseLine + int(r.LocToLine(n.Loc))),
 		})
 	}
 }

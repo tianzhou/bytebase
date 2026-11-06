@@ -26,6 +26,7 @@ import {
   WORKSPACE_ROUTE_AUDIT_LOG,
   WORKSPACE_ROUTE_CUSTOM_APPROVAL,
   WORKSPACE_ROUTE_DATA_CLASSIFICATION,
+  WORKSPACE_ROUTE_EXPORT_DESTINATIONS,
   WORKSPACE_ROUTE_GLOBAL_MASKING,
   WORKSPACE_ROUTE_GROUPS,
   WORKSPACE_ROUTE_IDENTITY_PROVIDERS,
@@ -227,6 +228,11 @@ function useSidebarItems(): SidebarItem[] {
             name: WORKSPACE_ROUTE_MCP,
             type: "route",
           },
+          {
+            title: t("settings.sidebar.export-destinations"),
+            name: WORKSPACE_ROUTE_EXPORT_DESTINATIONS,
+            type: "route",
+          },
         ],
       },
       {
@@ -275,9 +281,9 @@ function filterSidebarList(items: SidebarItem[]): SidebarItem[] {
 // ---------------------------------------------------------------------------
 
 const parentRouteClass =
-  "group flex items-center px-2 py-1.5 leading-normal font-medium rounded-xs text-gray-700 outline-item whitespace-nowrap text-sm!";
+  "group flex w-full items-center px-4 py-1.5 leading-normal font-medium rounded-xs text-main outline-item whitespace-nowrap text-sm!";
 const childRouteClass =
-  "group w-full flex items-center pl-9 pr-2 py-1 outline-item mb-0.5 rounded-xs whitespace-nowrap";
+  "group flex w-full items-center pl-11 pr-4 py-1 outline-item mb-0.5 rounded-xs whitespace-nowrap";
 
 export function DashboardSidebar() {
   const rawItems = useSidebarItems();
@@ -404,7 +410,7 @@ export function DashboardSidebar() {
       return (
         <div
           key={index}
-          className="border-t border-gray-300 my-2.5 mr-4 ml-2"
+          className="mx-4 my-2.5 border-t border-control-border"
         />
       );
     }
@@ -420,7 +426,7 @@ export function DashboardSidebar() {
           }}
           className={`${parentRouteClass} cursor-pointer no-underline text-inherit ${classes.join(" ")}`}
         >
-          {Icon && <Icon className="mr-2 w-5 h-5 text-gray-500" />}
+          {Icon && <Icon className="mr-2 w-5 h-5 text-control-light" />}
           {item.title}
         </RouterLink>
       );
@@ -437,10 +443,10 @@ export function DashboardSidebar() {
             className={`${parentRouteClass} cursor-pointer ${classes.join(" ")}`}
             onClick={() => onGroupClick(item, key)}
           >
-            {Icon && <Icon className="mr-2 w-5 h-5 text-gray-500" />}
+            {Icon && <Icon className="mr-2 w-5 h-5 text-control-light" />}
             {item.title}
             {hasChildren && (
-              <div className="ml-auto text-gray-500">
+              <div className="ml-auto text-control-light">
                 {isExpanded ? (
                   <ChevronDown className="w-4 h-4" />
                 ) : (
@@ -460,7 +466,7 @@ export function DashboardSidebar() {
   return (
     <nav className="flex-1 flex flex-col overflow-y-hidden border-r border-block-border">
       <MobileSidebarSwitchers />
-      <div className="flex-1 overflow-y-auto px-2.5 pt-3 pb-4 flex flex-col gap-y-1">
+      <div className="flex flex-1 flex-col gap-y-1 overflow-y-auto pt-3 pb-4">
         {filteredItems.map((item, i) => renderItem(item, i))}
       </div>
     </nav>

@@ -1,4 +1,5 @@
 import { create } from "@bufbuild/protobuf";
+import { ConnectError } from "@connectrpc/connect";
 import { cloneDeep, isEqual } from "lodash-es";
 import { ShieldCheck, TriangleAlert, X } from "lucide-react";
 import {
@@ -23,6 +24,7 @@ import { PermissionGuard } from "@/components/PermissionGuard";
 import { ResourceIdField } from "@/components/ResourceIdField";
 import { RouterLink } from "@/components/RouterLink";
 import { Button } from "@/components/ui/button";
+import { ColorSwatchInput } from "@/components/ui/color-input";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
   FormControlRow,
@@ -36,6 +38,7 @@ import { StickyActionFooter } from "@/components/ui/sticky-action-footer";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useProjectByName } from "@/hooks/useProjectByName";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { projectNamePrefix } from "@/stores/modules/v1/common";
@@ -53,6 +56,7 @@ import type { Label } from "@/types/proto-es/v1/project_service_pb";
 import {
   LabelSchema,
   Project_ExecutionRetryPolicySchema,
+  Project_ExportSettingSchema,
 } from "@/types/proto-es/v1/project_service_pb";
 import { WorkspaceApprovalSetting_Rule_Source } from "@/types/proto-es/v1/setting_service_pb";
 import { PlanFeature } from "@/types/proto-es/v1/subscription_service_pb";
@@ -66,6 +70,8 @@ import {
   hexToColor,
   sqlReviewPolicySlug,
 } from "@/utils";
+import { sqlReviewV2Enabled } from "@/utils/featureGates";
+import { ProjectExportDestinationField } from "./ProjectExportDestinationField";
 
 // ---------------------------------------------------------------------------
 // ApprovalFlowIndicator
@@ -146,6 +152,8 @@ export function ProjectSettingsPage() {
   void projectsByName;
   const project = useProjectByName(projectName);
   const isDefault = isDefaultProject(projectName);
+  // The v1 review policy settings go away with SQL Review V2.
+  const sqlReviewV2 = sqlReviewV2Enabled();
 
   const hasPermission = useCallback(
     (permission: Permission) =>
@@ -207,6 +215,23 @@ export function ProjectSettingsPage() {
   const hasQueryPolicyFeature = useAppStore((s) =>
     s.hasInstanceFeature(PlanFeature.FEATURE_QUERY_POLICY)
   );
+  const hasSharePointExportFeature = useAppStore((s) =>
+    s.hasFeature(PlanFeature.FEATURE_SHAREPOINT_EXPORT)
+  );
+
+  // -----------------------------------------------------------------------
+  // Export destination state
+  // -----------------------------------------------------------------------
+  const savedExportDestinationUrl =
+    project?.exportSetting?.sharepoint?.url ?? "";
+  const [exportDestinationUrl, setExportDestinationUrl] = useState(
+    savedExportDestinationUrl
+  );
+  const [exportDestinationError, setExportDestinationError] = useState("");
+  const handleExportDestinationChange = useCallback((value: string) => {
+    setExportDestinationUrl(value);
+    setExportDestinationError("");
+  }, []);
 
   // -----------------------------------------------------------------------
   // Issue-related state
@@ -265,7 +290,9 @@ export function ProjectSettingsPage() {
   useEffect(() => {
     if (lastFetchedProject.current === projectName) return;
     lastFetchedProject.current = projectName;
-    useSQLReviewStore.getState().fetchReviewPolicyList();
+    if (!sqlReviewV2Enabled()) {
+      useSQLReviewStore.getState().fetchReviewPolicyList();
+    }
     useAppStore.getState().getOrFetchPolicyByParentAndType({
       parentPath: projectName,
       policyType: PolicyType.DATA_QUERY,
@@ -328,6 +355,7 @@ export function ProjectSettingsPage() {
       (parallelTasksPerRollout ?? 0) !== (project.parallelTasksPerRollout ?? 0)
     )
       return true;
+    if (exportDestinationUrl.trim() !== savedExportDestinationUrl) return true;
     return false;
   }, [
     project,
@@ -352,28 +380,11 @@ export function ProjectSettingsPage() {
     maxRetries,
     ciSamplingSize,
     parallelTasksPerRollout,
+    exportDestinationUrl,
+    savedExportDestinationUrl,
   ]);
 
-  // Unsaved-changes protection: browser close + in-app navigation
-  useEffect(() => {
-    if (!isDirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.returnValue = t("common.leave-without-saving");
-      e.preventDefault();
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    const removeGuard = router.beforeEach((_to, _from, next) => {
-      if (window.confirm(t("common.leave-without-saving"))) {
-        next();
-      } else {
-        next(false);
-      }
-    });
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-      removeGuard();
-    };
-  }, [isDirty, t]);
+  useUnsavedChangesGuard(isDirty);
 
   // -----------------------------------------------------------------------
   // Revert
@@ -399,7 +410,14 @@ export function ProjectSettingsPage() {
     setMaxRetries(project.executionRetryPolicy?.maximumRetries ?? 0);
     setCiSamplingSize(project.ciSamplingSize);
     setParallelTasksPerRollout(project.parallelTasksPerRollout);
-  }, [project, currentReviewPolicy, getInitialMaxRows]);
+    setExportDestinationUrl(savedExportDestinationUrl);
+    setExportDestinationError("");
+  }, [
+    project,
+    currentReviewPolicy,
+    getInitialMaxRows,
+    savedExportDestinationUrl,
+  ]);
 
   // -----------------------------------------------------------------------
   // Save
@@ -543,6 +561,40 @@ export function ProjectSettingsPage() {
         }
       }
 
+      // Saved on its own so a URL that does not resolve is reported beside the
+      // field without discarding the other changes.
+      const nextExportDestinationUrl = exportDestinationUrl.trim();
+      if (nextExportDestinationUrl !== savedExportDestinationUrl) {
+        try {
+          const destinationPatch = cloneDeep(project);
+          // An unset sharepoint clears the destination.
+          destinationPatch.exportSetting = create(
+            Project_ExportSettingSchema,
+            nextExportDestinationUrl
+              ? { sharepoint: { url: nextExportDestinationUrl } }
+              : {}
+          );
+          const updatedProject = await useAppStore
+            .getState()
+            .updateProject(destinationPatch, ["export_setting"], {
+              byCaller: true,
+            });
+          setExportDestinationUrl(
+            updatedProject.exportSetting?.sharepoint?.url ?? ""
+          );
+        } catch (error) {
+          setExportDestinationError(
+            error instanceof ConnectError ? error.rawMessage : String(error)
+          );
+          pushNotification({
+            module: "bytebase",
+            style: "WARN",
+            title: t("project.settings.export-destination.update-failed"),
+          });
+          return;
+        }
+      }
+
       pushNotification({
         module: "bytebase",
         style: "SUCCESS",
@@ -583,6 +635,8 @@ export function ProjectSettingsPage() {
     maxRetries,
     ciSamplingSize,
     parallelTasksPerRollout,
+    exportDestinationUrl,
+    savedExportDestinationUrl,
     t,
   ]);
 
@@ -736,62 +790,63 @@ export function ProjectSettingsPage() {
             {canGetPolicies && (
               <>
                 {/* SQL Review */}
-                {hasWorkspacePermissionV2("bb.reviewConfigs.get") && (
-                  <FormField title={t("sql-review.title")}>
-                    <div>
-                      {pendingReviewPolicy ? (
-                        <FormControlRow>
-                          <Switch
-                            checked={enforceReview}
-                            onCheckedChange={setEnforceReview}
-                            disabled={
-                              !hasWorkspacePermissionV2(
-                                "bb.reviewConfigs.update"
-                              )
-                            }
-                          />
-                          <span
-                            className="text-sm font-medium text-accent cursor-pointer hover:underline"
-                            onClick={() =>
-                              router.push({
-                                name: WORKSPACE_ROUTE_SQL_REVIEW_DETAIL,
-                                params: {
-                                  sqlReviewPolicySlug:
-                                    sqlReviewPolicySlug(pendingReviewPolicy),
-                                },
-                              })
-                            }
-                          >
-                            {pendingReviewPolicy.name}
-                          </span>
-                          {canUpdatePolicies && (
-                            <Button
-                              appearance="secondary"
-                              size="sm"
-                              onClick={() => {
-                                setPendingReviewPolicy(undefined);
-                                setEnforceReview(false);
-                              }}
+                {!sqlReviewV2 &&
+                  hasWorkspacePermissionV2("bb.reviewConfigs.get") && (
+                    <FormField title={t("sql-review.title")}>
+                      <div>
+                        {pendingReviewPolicy ? (
+                          <FormControlRow>
+                            <Switch
+                              checked={enforceReview}
+                              onCheckedChange={setEnforceReview}
+                              disabled={
+                                !hasWorkspacePermissionV2(
+                                  "bb.reviewConfigs.update"
+                                )
+                              }
+                            />
+                            <span
+                              className="text-sm font-medium text-accent cursor-pointer hover:underline"
+                              onClick={() =>
+                                router.push({
+                                  name: WORKSPACE_ROUTE_SQL_REVIEW_DETAIL,
+                                  params: {
+                                    sqlReviewPolicySlug:
+                                      sqlReviewPolicySlug(pendingReviewPolicy),
+                                  },
+                                })
+                              }
                             >
-                              <X className="size-4" />
-                            </Button>
-                          )}
-                        </FormControlRow>
-                      ) : (
-                        <Button
-                          appearance="outline"
-                          disabled={
-                            !canUpdatePolicies ||
-                            !hasWorkspacePermissionV2("bb.reviewConfigs.list")
-                          }
-                          onClick={() => setShowReviewDialog(true)}
-                        >
-                          {t("sql-review.configure-policy")}
-                        </Button>
-                      )}
-                    </div>
-                  </FormField>
-                )}
+                              {pendingReviewPolicy.name}
+                            </span>
+                            {canUpdatePolicies && (
+                              <Button
+                                appearance="secondary"
+                                size="sm"
+                                onClick={() => {
+                                  setPendingReviewPolicy(undefined);
+                                  setEnforceReview(false);
+                                }}
+                              >
+                                <X className="size-4" />
+                              </Button>
+                            )}
+                          </FormControlRow>
+                        ) : (
+                          <Button
+                            appearance="outline"
+                            disabled={
+                              !canUpdatePolicies ||
+                              !hasWorkspacePermissionV2("bb.reviewConfigs.list")
+                            }
+                            onClick={() => setShowReviewDialog(true)}
+                          >
+                            {t("sql-review.configure-policy")}
+                          </Button>
+                        )}
+                      </div>
+                    </FormField>
+                  )}
 
                 {/* Maximum SQL Result Rows */}
                 <FormField
@@ -835,6 +890,14 @@ export function ProjectSettingsPage() {
                 </FormField>
               </>
             )}
+
+            <ProjectExportDestinationField
+              value={exportDestinationUrl}
+              onChange={handleExportDestinationChange}
+              disabled={!canUpdateProject || !hasSharePointExportFeature}
+              canClear={canUpdateProject}
+              error={exportDestinationError}
+            />
 
             {/* Allow Request Role */}
             <ToggleRow
@@ -895,24 +958,23 @@ export function ProjectSettingsPage() {
                     key={index}
                     className="inline-flex h-9 items-center gap-x-2 border border-control-border rounded-sm px-1 py-1"
                   >
-                    <input
-                      type="color"
+                    <ColorSwatchInput
                       value={label.color ? colorToHex(label.color) : "#4f46e5"}
-                      onChange={(e) =>
-                        updateIssueLabelColor(index, e.target.value)
-                      }
+                      onChange={(value) => updateIssueLabelColor(index, value)}
                       disabled={!canUpdateProject}
-                      className="w-5 h-6 rounded-sm cursor-pointer border-0 p-0"
+                      className="h-6 w-5 rounded-sm border-0"
                     />
                     <span className="text-sm">{label.value}</span>
                     {canUpdateProject && (
-                      <button
+                      <Button
+                        appearance="secondary"
+                        size="xs"
                         type="button"
                         className="text-control-light hover:text-main"
                         onClick={() => removeIssueLabel(index)}
                       >
                         <X className="size-3" />
-                      </button>
+                      </Button>
                     )}
                   </span>
                 ))}
@@ -975,17 +1037,19 @@ export function ProjectSettingsPage() {
                 "project.settings.issue-related.enforce-issue-title.description"
               )}
             />
-            <ToggleRow
-              checked={enforceSqlReview}
-              onCheckedChange={setEnforceSqlReview}
-              disabled={!canUpdateProject}
-              label={t(
-                "project.settings.issue-related.enforce-sql-review.self"
-              )}
-              description={t(
-                "project.settings.issue-related.enforce-sql-review.description"
-              )}
-            />
+            {!sqlReviewV2 && (
+              <ToggleRow
+                checked={enforceSqlReview}
+                onCheckedChange={setEnforceSqlReview}
+                disabled={!canUpdateProject}
+                label={t(
+                  "project.settings.issue-related.enforce-sql-review.self"
+                )}
+                description={t(
+                  "project.settings.issue-related.enforce-sql-review.description"
+                )}
+              />
+            )}
             <FormField
               title={t(
                 "project.settings.issue-related.approval-permissions.self"
@@ -1208,26 +1272,30 @@ export function ProjectSettingsPage() {
               </div>
             ) : (
               reviewPolicyList.map((policy) => (
-                <button
+                <Button
+                  appearance="secondary"
+                  size="md"
                   key={policy.id}
                   type="button"
-                  className="w-full text-left px-4 py-3 border border-control-border rounded-sm hover:bg-control-bg transition-colors"
+                  className="h-auto w-full flex-col items-start rounded-sm border border-control-border px-4 py-3 text-left whitespace-normal transition-colors hover:bg-control-bg"
                   onClick={() => {
                     setPendingReviewPolicy(policy);
                     setEnforceReview(true);
                     setShowReviewDialog(false);
                   }}
                 >
-                  <div className="font-medium">{policy.name}</div>
+                  <div className="w-full min-w-0 break-words font-medium">
+                    {policy.name}
+                  </div>
                   {policy.resources.length > 0 && (
-                    <div className="text-xs text-control-light mt-1">
+                    <div className="mt-1 w-full min-w-0 break-words text-xs text-control-light">
                       {policy.resources.length}{" "}
                       {t("common.resource", {
                         count: policy.resources.length,
                       })}
                     </div>
                   )}
-                </button>
+                </Button>
               ))
             )}
           </div>

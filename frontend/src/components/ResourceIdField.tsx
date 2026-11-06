@@ -1,4 +1,5 @@
 import {
+  type ComponentProps,
   forwardRef,
   useCallback,
   useEffect,
@@ -7,6 +8,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Input } from "@/components/ui/input";
 import type { ValidatedMessage } from "@/types";
@@ -28,8 +30,12 @@ interface ResourceIdFieldProps {
   // messages — NOT the user-entered title/name of the resource.
   resourceName: string;
   resourceTitle?: string;
+  autoComplete?: ComponentProps<"input">["autoComplete"];
   suffix?: boolean;
   readonly?: boolean;
+  // Keep the value the field is mounted with until the title changes, for a
+  // caller that mounts it again with an ID the user has already settled on.
+  keepInitialValue?: boolean;
   validate?: (resourceId: string) => Promise<ValidatedMessage[]>;
   onChange?: (value: string) => void;
   onValidationChange?: (isValid: boolean) => void;
@@ -64,8 +70,10 @@ export const ResourceIdField = forwardRef<
     value,
     resourceName,
     resourceTitle,
+    autoComplete,
     suffix = false,
     readonly = false,
+    keepInitialValue = false,
     validate,
     onChange,
     onValidationChange,
@@ -77,6 +85,9 @@ export const ResourceIdField = forwardRef<
   const [messages, setMessages] = useState<ValidatedMessage[]>([]);
   const randomSuffixRef = useRef(randomString(4).toLowerCase());
   const initializedRef = useRef(false);
+  const keptRef = useRef(
+    keepInitialValue && value ? { value, title: resourceTitle } : undefined
+  );
   // Use refs for callbacks to avoid re-triggering the auto-generate effect
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -132,6 +143,12 @@ export const ResourceIdField = forwardRef<
   // Auto-generate from title
   useEffect(() => {
     if (readonly || manualEdit) return;
+    if (keptRef.current && keptRef.current.title === resourceTitle) {
+      validateId(keptRef.current.value).then(updateMessages);
+      initializedRef.current = true;
+      return;
+    }
+    keptRef.current = undefined;
 
     const parts: string[] = [];
     if (resourceTitle) {
@@ -196,7 +213,7 @@ export const ResourceIdField = forwardRef<
           <div className="flex items-center gap-x-1">
             {t("resource-id.self", { resource: resourceName })}:
             {value ? (
-              <span className="text-gray-600 font-medium mr-1 inline-flex items-center gap-x-1">
+              <span className="text-control font-medium mr-1 inline-flex items-center gap-x-1">
                 {value}
                 {readonly && <CopyButton content={value} />}
               </span>
@@ -207,13 +224,15 @@ export const ResourceIdField = forwardRef<
           {!readonly && (
             <div>
               <span>{t("resource-id.cannot-be-changed-later")}</span>
-              <button
+              <Button
                 type="button"
-                className="text-accent font-medium cursor-pointer hover:opacity-80 ml-1"
+                appearance="link"
+                size="md"
+                className="ml-1 h-auto p-0 font-medium hover:opacity-80"
                 onClick={() => setManualEdit(true)}
               >
                 {t("common.edit")}
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -228,6 +247,7 @@ export const ResourceIdField = forwardRef<
           </p>
           <Input
             value={value}
+            autoComplete={autoComplete}
             onChange={(e) => handleManualInput(e.target.value)}
             placeholder={t("resource-id.self", { resource: resourceName })}
             className={
@@ -242,7 +262,7 @@ export const ResourceIdField = forwardRef<
             <li
               key={msg.message}
               className={`break-words w-full text-xs ${
-                msg.type === "warning" ? "text-yellow-600" : "text-red-600"
+                msg.type === "warning" ? "text-warning" : "text-error"
               }`}
             >
               {msg.message}

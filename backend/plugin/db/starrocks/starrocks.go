@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	mysqlomni "github.com/bytebase/omni/mysql/parser"
+	starrocksomni "github.com/bytebase/omni/starrocks/parser"
 	"github.com/go-sql-driver/mysql"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
@@ -24,8 +24,12 @@ import (
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/transaction"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+
+	// Register how StarRocks plans a statement, for base.ExplainStatement below.
+	_ "github.com/bytebase/bytebase/backend/plugin/parser/starrocks"
 )
 
 var (
@@ -38,10 +42,9 @@ var (
 
 func init() {
 	db.Register(storepb.Engine_STARROCKS, newDriver)
-	db.Register(storepb.Engine_DORIS, newDriver)
 }
 
-// Driver is the MySQL driver.
+// Driver is the StarRocks driver.
 type Driver struct {
 	dbType       storepb.Engine
 	db           *sql.DB
@@ -56,7 +59,7 @@ func newDriver() db.Driver {
 	return &Driver{}
 }
 
-// Open opens a MySQL driver.
+// Open opens a StarRocks driver.
 func (d *Driver) Open(_ context.Context, dbType storepb.Engine, connCfg db.ConnectionConfig) (db.Driver, error) {
 	defer func() {
 		for _, f := range d.openCleanUp {
@@ -68,10 +71,7 @@ func (d *Driver) Open(_ context.Context, dbType storepb.Engine, connCfg db.Conne
 	if strings.HasPrefix(connCfg.DataSource.Host, "/") {
 		protocol = "unix"
 	}
-	params := []string{"multiStatements=true", "maxAllowedPacket=0"}
-	if dbType == storepb.Engine_DORIS || dbType == storepb.Engine_STARROCKS {
-		params = append(params, "interpolateParams=true")
-	}
+	params := []string{"multiStatements=true", "maxAllowedPacket=0", "interpolateParams=true"}
 	if connCfg.DataSource.GetSshHost() != "" {
 		sshClient, err := util.GetSSHClient(connCfg.DataSource)
 		if err != nil {
@@ -164,14 +164,14 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	transactionMode := config.Mode
 
 	// Apply default when transaction mode is not specified
-	if transactionMode == common.TransactionModeUnspecified {
-		transactionMode = common.GetDefaultTransactionMode()
+	if transactionMode == transaction.ModeUnspecified {
+		transactionMode = transaction.DefaultMode()
 	}
 
 	// Only preprocess when DELIMITER directives are present; normal
 	// StarRocks SQL passes through unchanged.
 	if containsDelimiterDirective(statement) {
-		segments := mysqlomni.Split(statement)
+		segments := starrocksomni.Split(statement)
 		var buf strings.Builder
 		for i, seg := range segments {
 			if i > 0 {
@@ -185,7 +185,7 @@ func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteO
 	// Note: StarRocks is an OLAP database with limited transaction support.
 	// For DDL operations, transactions are not supported. For DML operations,
 	// StarRocks supports transactions within certain limitations.
-	if transactionMode == common.TransactionModeOff || opts.CreateDatabase {
+	if transactionMode == transaction.ModeOff || opts.CreateDatabase {
 		return d.executeInAutoCommitMode(ctx, statement)
 	}
 	return d.executeInTransactionMode(ctx, statement, opts)
@@ -304,9 +304,13 @@ func (d *Driver) QueryConn(ctx context.Context, conn *sql.Conn, statement string
 	for _, singleSQL := range singleSQLs {
 		statement := singleSQL.Text
 		if queryContext.Explain {
-			statement = fmt.Sprintf("EXPLAIN %s", statement)
+			explained, err := base.ExplainStatement(d.dbType, statement, db.ExplainFormat(queryContext.Option.GetExplainFormat()))
+			if err != nil {
+				return nil, err
+			}
+			statement = explained
 		} else if queryContext.Limit > 0 {
-			statement = getStatementWithResultLimit(statement, queryContext.Limit)
+			statement = base.StatementWithResultLimit(d.dbType, statement, queryContext.Limit, "")
 		}
 		sqlWithBytebaseAppComment := util.MySQLPrependBytebaseAppComment(statement)
 
