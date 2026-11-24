@@ -4,6 +4,7 @@ import { TimestampSchema } from "@bufbuild/protobuf/wkt";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { silentContextKey } from "@/api/context-key";
+import type { AgentPreferences } from "@/modules/agent/store/preferences";
 import type { Permission } from "@/types/iam";
 import { ApprovalStatus, Engine, IssueStatus, State } from "@/types/proto-es/v1/common_pb";
 import { DatabaseSchema$ } from "@/types/proto-es/v1/database_service_pb";
@@ -110,8 +111,8 @@ vi.mock("@/components/RouterLink", () => ({
 }));
 vi.mock("@/modules/agent/store/agent", () => ({
   useAgentStore: Object.assign(
-    (selector: (state: { chats: []; queuedUserMessage: null }) => unknown) =>
-      selector({ chats: [], queuedUserMessage: null }),
+    (selector: (state: { chats: []; queuedUserMessage: null; preferences: AgentPreferences }) => unknown) =>
+      selector({ chats: [], queuedUserMessage: null, preferences: { sendWithEnter: true, tokenLimitPerRun: 60000, openingBehavior: "landing" } }),
     {
       getState: () => ({
         open: mocks.open,
@@ -119,6 +120,7 @@ vi.mock("@/modules/agent/store/agent", () => ({
         queueUserMessage: mocks.queueUserMessage,
         chats: [],
         queuedUserMessage: null,
+        preferences: { sendWithEnter: true, tokenLimitPerRun: 60000, openingBehavior: "landing" },
       }),
     }
   ),
@@ -394,16 +396,14 @@ describe("ProjectHomePage", () => {
     expect(mocks.probedPermissions).not.toContain("bb.plans.list");
   });
 
-  test("offers database change creation without database-list permission", async () => {
+  test("does not infer database readiness without database-list permission", async () => {
     mocks.missedPermissions = ["bb.databases.list"];
     render(<ProjectHomePage projectId="orders" />);
 
     const next = await screen.findByRole("region", { name: "project.home.next-step" });
-    expect(await within(next).findByRole("link", { name: "project.home.change-database" })).toBeTruthy();
+    expect(within(next).queryByRole("link", { name: "project.home.change-database" })).toBeNull();
     expect(within(next).queryByRole("link", { name: "project.home.query-database" })).toBeNull();
-    expect(mocks.state.fetchDatabases).toHaveBeenCalledWith(
-      expect.objectContaining({ parent: "projects/orders" })
-    );
+    expect(mocks.state.fetchDatabases).not.toHaveBeenCalled();
   });
 
   test("keeps project starter prompts visible while composing a message", async () => {
@@ -1213,11 +1213,11 @@ describe("ProjectHomePage", () => {
     expect(screen.getByText("project.home.databases-unavailable")).toBeTruthy();
   });
 
-  test("previews readable databases even when the full list route is unavailable", async () => {
+  test("does not query the database preview without list permission", async () => {
     mocks.missedPermissions = ["bb.databases.list"];
     render(<ProjectHomePage projectId="orders" />);
-    await waitFor(() => expect(mocks.state.fetchDatabases).toHaveBeenCalled());
-    expect(screen.getByText("default")).toBeTruthy();
+    expect(mocks.state.fetchDatabases).not.toHaveBeenCalled();
+    expect(screen.getByText("project.home.databases-unavailable")).toBeTruthy();
     expect(
       within(screen.getByRole("region", { name: "project.home.databases" })).queryByRole("link", { name: "project.home.view-all" })
     ).toBeNull();

@@ -48,7 +48,16 @@ describe("StepIndicator", () => {
     expect(labels[1].className).toContain("text-accent");
     expect(labels[2].className).toContain("text-control-light");
     expect(container.querySelector("svg")).toBeTruthy();
+    // A completed step shows a check, which carries the number it replaced.
     expect(container.textContent).not.toContain("1");
+    expect(container.querySelector("svg")?.getAttribute("aria-label")).toBe(
+      "1"
+    );
+    expect(
+      [...container.querySelectorAll("li")].map((item) =>
+        item.getAttribute("aria-current")
+      )
+    ).toEqual([null, "step", null]);
     expect(container.textContent).toContain("2");
     expect(container.textContent).toContain("3");
     expect(container.querySelectorAll(".bg-control-border")).toHaveLength(2);
@@ -134,5 +143,71 @@ describe("StepIndicator", () => {
         unmount();
       });
     });
+  });
+
+  describe("vertical", () => {
+    test("shows each description and marks finished steps as success", () => {
+      const { container, unmount } = renderIntoContainer(
+        <StepIndicator
+          orientation="vertical"
+          currentIndex={1}
+          steps={[
+            { title: "First", description: "Pick one" },
+            { title: "Second", description: "Fill in" },
+          ]}
+        />
+      );
+
+      const items = container.querySelectorAll("li");
+      expect(items[0].textContent).toContain("Pick one");
+      expect(items[1].textContent).toContain("Fill in");
+      expect(items[0].querySelector(".bg-success")).toBeTruthy();
+      expect(items[1].querySelector('[aria-current="step"]')).toBeTruthy();
+      unmount();
+    });
+  });
+
+  test("rail row shows only the current title and marks finished steps", () => {
+    const { container, unmount } = renderIntoContainer(
+      <StepIndicator
+        variant="rail"
+        currentIndex={1}
+        steps={[{ title: "First" }, { title: "Second" }, { title: "Third" }]}
+      />
+    );
+
+    const titles = Array.from(container.querySelectorAll("li span")).map(
+      (span) => ({
+        text: span.textContent,
+        shown: !span.classList.contains("sr-only"),
+      })
+    );
+    expect(titles).toEqual([
+      { text: "First", shown: false },
+      { text: "Second", shown: true },
+      { text: "Third", shown: false },
+    ]);
+    expect(
+      container.querySelectorAll("li")[0].querySelector(".bg-success")
+    ).toBeTruthy();
+    unmount();
+  });
+
+  test("moves to a step when it is clicked", () => {
+    const onStepClick = vi.fn();
+    const { container, unmount } = renderIntoContainer(
+      <StepIndicator
+        orientation="vertical"
+        currentIndex={0}
+        onStepClick={onStepClick}
+        steps={[{ title: "First" }, { title: "Second" }]}
+      />
+    );
+
+    act(() => {
+      container.querySelectorAll("button")[1].click();
+    });
+    expect(onStepClick).toHaveBeenCalledWith(1);
+    unmount();
   });
 });

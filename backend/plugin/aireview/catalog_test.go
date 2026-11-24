@@ -580,7 +580,7 @@ func TestCatalogMarksACommentThatRepeatsAName(t *testing.T) {
 		want   []string
 	}{
 		{engine: storepb.Engine_POSTGRES, object: "orders", want: []string{`COMMENT ON TABLE "public"."orders" IS 'orders';`, `COMMENT ON INDEX "public"."idx_orders" IS 'id';`}},
-		{engine: storepb.Engine_MYSQL, object: "orders", want: []string{"COMMENT='orders'", "COMMENT ON INDEX idx_orders: id"}},
+		{engine: storepb.Engine_MYSQL, object: "orders", want: []string{"COMMENT='orders'", "COMMENT 'id'"}},
 		{engine: storepb.Engine_SNOWFLAKE, object: "orders", want: []string{"COMMENT: orders", "COMMENT ON INDEX idx_orders: id"}},
 		{engine: storepb.Engine_POSTGRES, object: "block_drop", want: []string{"COMMENT: sql_drop"}},
 	}
@@ -1363,14 +1363,15 @@ func TestCatalogReadsTheFactsARendererLeavesOut(t *testing.T) {
 	require.Contains(t, mssql, "CREATE TABLE", "rendered by the SQL Server renderer")
 	require.Equal(t, 1, strings.Count(mssql, "DF_orders_status"), mssql)
 
-	// ClickHouse's renderer leaves data-skipping indexes out, and they come back with their granularity.
+	// ClickHouse's renderer emits data-skipping indexes with their granularity natively.
 	clickhouse := read(storepb.Engine_CLICKHOUSE, &metadatapb.SchemaMetadata{Tables: []*metadatapb.TableMetadata{{
 		Name:    "events",
 		Columns: []*metadatapb.ColumnMetadata{{Name: "url", Type: "String"}},
 		Indexes: []*metadatapb.IndexMetadata{{Name: "url_bloom", Expressions: []string{"url"}, Type: "bloom_filter", Granularity: 4}},
 	}}}, "events")
 	require.Contains(t, clickhouse, "CREATE TABLE", "rendered by the ClickHouse renderer")
-	require.Contains(t, clickhouse, "INDEX url_bloom USING bloom_filter (url) GRANULARITY 4")
+	require.Contains(t, clickhouse, "INDEX `url_bloom` url TYPE bloom_filter GRANULARITY 4")
+	require.NotContains(t, clickhouse, "USING bloom_filter")
 }
 
 func TestCatalogStopsWhenTheReviewEnds(t *testing.T) {

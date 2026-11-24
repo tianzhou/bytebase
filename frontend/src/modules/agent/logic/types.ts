@@ -1,4 +1,7 @@
+import type { JsonObject } from "@bufbuild/protobuf";
 import type { DeniedQueryRequestDraft } from "@/modules/sql-editor/model/accessGrantDraft";
+import type { AgentMaskingPageResource } from "./chatContext";
+import type { MaskingSkillSection } from "./skills";
 
 export interface ToolDefinition {
   name: string;
@@ -11,6 +14,7 @@ export interface ToolCall {
   name: string;
   arguments: string; // JSON-encoded
   metadata?: string; // Opaque provider-specific data (e.g., Gemini thought_signature)
+  origin?: "runtime";
 }
 
 export interface Message {
@@ -20,19 +24,84 @@ export interface Message {
   toolCallId?: string;
 }
 
-export type AgentChatStatus = "idle" | "running" | "awaiting_user" | "error";
+export type AgentChatStatus =
+  | "idle"
+  | "running"
+  | "awaiting_user"
+  | "paused"
+  | "error";
 
 export type AgentInterruptionReason = "user" | "unexpected";
 
 export type AgentRunMode = "default" | "read-only";
 
 export interface AgentModelCallUsage {
+  attemptId?: string;
   purpose: "agent" | "follow-up";
   toolNames: string[];
   totalTokens?: number;
   inputTokens?: number;
   outputTokens?: number;
   cachedInputTokens?: number;
+}
+
+export interface AgentRunBudget {
+  version: 1;
+  runId: string;
+  limit: number;
+  totalTokensUsed: number;
+  hasUnreportedUsage: boolean;
+  providerAttemptCount: number;
+  revision: number;
+}
+
+export interface AgentRunBindings {
+  page: AgentChatSnapshot;
+  pageToolPath?: string;
+  context?: string;
+  references: AgentResourceReference[];
+  runMode: AgentRunMode;
+  capability?: AgentDiagnosticCapability;
+  instanceName?: string;
+  maskingPage?: AgentMaskingPageResource;
+}
+
+export interface AgentRunCheckpoint {
+  version: 1;
+  runId: string;
+  suspension: "token-limit" | "awaiting-user" | "interrupted";
+  rootUserMessageId: string;
+  throughMessageId: string;
+  bindings: AgentRunBindings;
+  pageToolPath?: string;
+  maskingSections: MaskingSkillSection[];
+  phase: "working" | "finalizing";
+  startupComplete?: boolean;
+  referencePreflightPending?: boolean;
+  finalizationText?: string;
+}
+
+export interface AgentModelAttempt {
+  attemptId: string;
+  runId: string;
+  ordinal: number;
+  outcome: "response" | "error" | "aborted";
+  usage?: AgentModelCallUsage;
+}
+
+export type AgentAttemptReservation =
+  | { kind: "allowed"; attemptId: string; ordinal: number }
+  | { kind: "token-limit" }
+  | { kind: "attempt-limit" }
+  | { kind: "superseded" }
+  | { kind: "storage-unavailable" };
+
+export interface AgentStoragePressure {
+  reason: "budget" | "quota" | "unavailable";
+  phase: "admission" | "saving";
+  bytes: number;
+  limitBytes: number;
+  otherScopeBytes?: number;
 }
 
 export interface AgentChatSnapshot {
@@ -90,6 +159,10 @@ export type AgentResponseAction =
   | { kind: "open"; target: AgentHandoff }
   | { kind: "draft-plan"; project: string; database: string }
   | { kind: "draft-issue-comment"; issue: string; comment: string }
+  | { kind: "draft-masking-rule"; draftId: string }
+  | { kind: "draft-masking-exemption"; draftId: string }
+  | { kind: "draft-semantic-type"; draftId: string }
+  | { kind: "review-sql-fix"; draftId: string }
   | { kind: "continue"; prompt: string };
 
 export interface AgentResourceReference {
@@ -98,6 +171,17 @@ export interface AgentResourceReference {
   project: string;
   label: string;
 }
+
+// This snapshot permits a suggestion, not configuration; clicked workflows recheck access.
+export interface AgentQueryMaskingEligibility {
+  database: string;
+  allowed: boolean;
+}
+
+export type AgentDiagnosticCapability = {
+  kind: "diagnostic";
+  resource: AgentResourceReference;
+};
 
 export interface AgentMentionRange {
   start: number;
@@ -111,6 +195,7 @@ export interface AgentResourceMention {
 
 export interface AgentDraft {
   text: string;
+  followUpSourceId?: string;
   mentions?: AgentResourceMention[];
   project?: {
     name: string;
@@ -120,7 +205,67 @@ export interface AgentDraft {
   mention?: AgentMentionRange;
 }
 
+export interface AgentSubmittedAccessGrant {
+  grant: JsonObject;
+  submittedAt: number;
+}
+
+export type AgentActionStatus =
+  | "SAVED"
+  | "MATCHING"
+  | "CHANGED"
+  | "NOT_FOUND"
+  | "UNAVAILABLE"
+  | "PENDING"
+  | "ACTIVE"
+  | "EXPIRED"
+  | "REVOKED"
+  | "REJECTED"
+  | "CANCELED"
+  | "UNKNOWN";
+
+export interface AgentActionObservation {
+  status: AgentActionStatus;
+  observedAt: number;
+  revision?: number;
+  grant?: JsonObject;
+  issue?: JsonObject;
+}
+
+interface AgentActionReceiptBase {
+  savedAt: number;
+  observation?: AgentActionObservation;
+}
+
+export type AgentActionReceipt = AgentActionReceiptBase &
+  (
+    | { kind: "access-grant"; grant: JsonObject }
+    | {
+        kind: "masking-rule";
+        draftId: string;
+        policy: string;
+        rule: JsonObject;
+      }
+    | {
+        kind: "masking-exemption";
+        draftId: string;
+        saveId?: string;
+        policy: string;
+        exemption: JsonObject;
+      }
+  );
+
+export interface AgentActionOrigin {
+  workspaceName: string;
+  userEmail: string;
+}
+
 export interface AgentMessageMetadata {
+  apiAttemptId?: string;
+  // Lookup provenance only; the source answer grants no authority for this turn.
+  followUpSourceId?: string;
+  queryResultRetention?: { version: 1; level: "omitted" };
+  runPreflight?: true;
   route?: string;
   pending?: boolean;
   hidden?: boolean;
@@ -130,7 +275,24 @@ export interface AgentMessageMetadata {
   evidence?: AgentAnswerEvidence;
   handoff?: AgentHandoff;
   actions?: AgentResponseAction[];
+  queryMaskingEligibility?: AgentQueryMaskingEligibility;
+  maskingRuleDraftHandoff?: {
+    draftId: string;
+    outcome: "opened" | "applied";
+  };
+  maskingExemptionDraftHandoff?: {
+    draftId: string;
+    outcome: "opened" | "applied";
+    created?: true;
+  };
   accessRequestDraft?: DeniedQueryRequestDraft;
+  submittedAccessGrants?: AgentSubmittedAccessGrant[];
+  actionReceipts?: AgentActionReceipt[];
+  semanticTypeDraftHandoff?: {
+    draftId: string;
+    outcome: "opened";
+    created?: true;
+  };
   resourceReference?: AgentResourceReference;
   resourceReferences?: AgentResourceReference[];
 }
@@ -143,6 +305,7 @@ export interface AgentMessage extends Message {
 }
 
 export interface AgentChat {
+  apiAttempts?: import("./apiAttempt").AgentApiAttempt[];
   id: string;
   title: string;
   context?: string;
@@ -151,6 +314,10 @@ export interface AgentChat {
   updatedTs: number;
   status: AgentChatStatus;
   totalTokensUsed: number;
+  runBudget?: AgentRunBudget;
+  runCheckpoint?: AgentRunCheckpoint;
+  modelAttempts?: AgentModelAttempt[];
+  legacyUsage?: { totalTokensUsed: number; hasUnreportedUsage: boolean };
   lastRunUsage?: {
     runId: string;
     calls: AgentModelCallUsage[];
@@ -164,6 +331,7 @@ export interface AgentChat {
   interruptionReason?: AgentInterruptionReason;
   runId?: string | null;
   runMode?: AgentRunMode;
+  capability?: AgentDiagnosticCapability;
 }
 
 export type AgentAskUserKind = "input" | "confirm" | "choose";
@@ -172,17 +340,22 @@ export interface AgentAskUserOption {
   label: string;
   value: string;
   description?: string;
+  kind?: "custom-input";
+  placeholder?: string;
 }
 
 export interface AgentPendingAsk {
   toolCallId: string;
   prompt: string;
   kind: AgentAskUserKind;
+  resourceProject?: string;
   apiPermission?: {
     actionId: string;
     operationId: string;
+    expiresAt?: number;
   };
   defaultValue?: string;
+  defaultResource?: AgentResourceReference;
   confirmLabel?: string;
   cancelLabel?: string;
   options?: AgentAskUserOption[];
@@ -202,6 +375,7 @@ export type AgentAskUserResponse =
       kind: "choose";
       answer: string;
       value: string;
+      input?: string;
     };
 
 export type ToolExecutionResult =
@@ -226,6 +400,16 @@ interface AgentLoopUsage {
 }
 
 export type AgentLoopOutcome =
+  | ({
+      kind: "stopped";
+      reason: "provider-attempt-limit";
+    } & AgentLoopUsage)
+  | ({
+      kind: "paused";
+      reason: "token-limit";
+      phase: "working" | "finalizing";
+      finalizationText?: string;
+    } & AgentLoopUsage)
   | ({
       kind: "completed";
       text: string;

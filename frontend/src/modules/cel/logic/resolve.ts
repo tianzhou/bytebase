@@ -55,8 +55,13 @@ export const constantStringOf = (
     ? expr.exprKind.value.constantKind.value
     : undefined;
 
-const getConstantStringValue = (expr: CELExpr): string =>
-  constantStringOf(expr) ?? "";
+const getConstantStringValue = (expr: CELExpr): string => {
+  const value = constantStringOf(expr);
+  if (value === undefined) {
+    throw new Error("Expected a constant string");
+  }
+  return value;
+};
 
 const getConstantBoolValue = (expr: CELExpr): boolean => {
   if (
@@ -83,7 +88,7 @@ export const wrapAsGroup = (
 
 // Convert common expr to simple expr
 export const resolveCELExpr = (expr: CELExpr): SimpleExpr => {
-  const dfs = (expr: CELExpr, negative: boolean = false): SimpleExpr => {
+  const dfs = (expr: CELExpr): SimpleExpr => {
     if (expr.exprKind?.case !== "callExpr") {
       // If no callExpr, we treat it as a raw string.
       return resolveRawStringExpr(expr);
@@ -100,24 +105,36 @@ export const resolveCELExpr = (expr: CELExpr): SimpleExpr => {
           args: [],
         };
         const [left, right] = args;
-        const sub = (subTree: CELExpr, expand: boolean) => {
+        const sub = (subTree: CELExpr) => {
           const subExpr = dfs(subTree);
-          if (
-            expand &&
-            isConditionGroupExpr(subExpr) &&
-            subExpr.operator === operator
-          ) {
+          if (isConditionGroupExpr(subExpr) && subExpr.operator === operator) {
             group.args.push(...subExpr.args);
           } else {
             group.args.push(subExpr);
           }
         };
-        sub(left, true);
-        sub(right, false);
+        sub(left);
+        sub(right);
         return group;
       }
       if (isNegativeOperator(operator)) {
-        return dfs(args[0], true);
+        const operand = args[0];
+        const operandCall =
+          operand?.exprKind.case === "callExpr"
+            ? operand.exprKind.value
+            : undefined;
+        if (operandCall?.function === "contains") {
+          return resolveStringExpr(operand, true);
+        }
+        if (
+          operandCall &&
+          isCollectionOperator(operandCall.function as Operator)
+        ) {
+          return isListMembershipCall(operand)
+            ? resolveListMembershipExpr(operand, true)
+            : resolveCollectionExpr(operand, true);
+        }
+        return resolveRawStringExpr(expr);
       }
       if (isEqualityOperator(operator)) {
         return resolveEqualityExpr(expr);
@@ -126,13 +143,13 @@ export const resolveCELExpr = (expr: CELExpr): SimpleExpr => {
         return resolveCompareExpr(expr);
       }
       if (isStringOperator(operator)) {
-        return resolveStringExpr(expr, negative);
+        return resolveStringExpr(expr);
       }
       if (isCollectionOperator(operator)) {
         if (isListMembershipCall(expr)) {
-          return resolveListMembershipExpr(expr, negative);
+          return resolveListMembershipExpr(expr);
         }
-        return resolveCollectionExpr(expr, negative);
+        return resolveCollectionExpr(expr);
       }
       throw new Error(`unsupported expr "${JSON.stringify(expr)}"`);
     } catch {

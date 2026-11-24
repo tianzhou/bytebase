@@ -8,7 +8,7 @@ import { ApprovalStatus } from "@/types/proto-es/v1/common_pb";
 import type { Issue } from "@/types/proto-es/v1/issue_service_pb";
 import { IssueSchema } from "@/types/proto-es/v1/issue_service_pb";
 import { useApprovalCandidates } from "../../../useApprovalCandidates";
-import { useSqlReviewV2, withRuleReview } from "../../hooks/useSqlReviewV2";
+import { useReviewHold, withReviewRun } from "../../hooks/useSqlReviewV2";
 import type { PlanDetailPageState } from "../../shell/hooks/types";
 import { getPlanCheckSummary } from "../../utils/phaseSummary";
 import { isReleaseBackedPlan } from "../../utils/spec";
@@ -46,11 +46,11 @@ export function usePlanLifecycleHeader(
     () => isReleaseBackedPlan(page.plan.specs),
     [page.plan.specs]
   );
-  const sqlReview = useSqlReviewV2();
-  const ruleReviewRun = sqlReview?.ruleReview?.run;
+  const sqlReview = useReviewHold();
+  const reviewRun = sqlReview?.review?.run;
   const checks = useMemo(
-    () => withRuleReview(getPlanCheckSummary(page.plan), ruleReviewRun),
-    [page.plan, ruleReviewRun]
+    () => withReviewRun(getPlanCheckSummary(page.plan), reviewRun),
+    [page.plan, reviewRun]
   );
   const unresolvedThreads = sqlReview?.unresolvedThreads ?? 0;
 

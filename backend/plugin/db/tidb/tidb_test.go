@@ -2,23 +2,72 @@ package tidb
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
+	"errors"
 	"testing"
+	"time"
 
+	omnidriver "github.com/bytebase/omni/driver"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bytebase/bytebase/backend/common"
-	"github.com/bytebase/bytebase/backend/common/testcontainer"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
-func TestGetTiDBConnectionUsesExtraConnectionParameters(t *testing.T) {
-	d := &Driver{}
-	dsn, err := d.getTiDBConnection(db.ConnectionConfig{
+type stubTiDBDriver struct {
+	sessionOpens int
+	sessions     []*stubTiDBSession
+
+	execScript string
+	execOpts   omnidriver.ExecuteOptions
+	execFn     func(context.Context, string, omnidriver.ExecuteOptions) (int64, error)
+}
+
+func (*stubTiDBDriver) Ping(context.Context) error { return nil }
+func (*stubTiDBDriver) Close() error               { return nil }
+
+func (d *stubTiDBDriver) Session(context.Context) (omnidriver.Session, error) {
+	d.sessionOpens++
+	if len(d.sessions) > 0 {
+		s := d.sessions[0]
+		d.sessions = d.sessions[1:]
+		return s, nil
+	}
+	return &stubTiDBSession{}, nil
+}
+
+func (d *stubTiDBDriver) Execute(ctx context.Context, script string, opts omnidriver.ExecuteOptions) (int64, error) {
+	d.execScript = script
+	d.execOpts = opts
+	if d.execFn != nil {
+		return d.execFn(ctx, script, opts)
+	}
+	return 0, nil
+}
+
+type stubTiDBSession struct {
+	queryFn func(context.Context, string, omnidriver.QueryOptions) ([]*omnidriver.Result, error)
+	closed  bool
+}
+
+func (s *stubTiDBSession) Query(ctx context.Context, statement string, opts omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+	if s.queryFn != nil {
+		return s.queryFn(ctx, statement, opts)
+	}
+	return []*omnidriver.Result{{Statement: statement}}, nil
+}
+
+func (s *stubTiDBSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+// TestBuildConfigMapsExtraConnectionParameters pins the connection parameters a
+// data source carries reaching the contract's Params, where the omni driver
+// appends them to the DSN beside multiStatements and maxAllowedPacket.
+func TestBuildConfigMapsExtraConnectionParameters(t *testing.T) {
+	config, err := buildConfig(db.ConnectionConfig{
 		DataSource: &storepb.DataSource{
 			Host:     "127.0.0.1",
 			Port:     "4000",
@@ -30,17 +79,23 @@ func TestGetTiDBConnectionUsesExtraConnectionParameters(t *testing.T) {
 		},
 		Password: "secret",
 		ConnectionContext: db.ConnectionContext{
-			DatabaseName: "test",
+			DatabaseName:  "test",
+			EngineVersion: "8.0.11-TiDB-v8.5.5",
 		},
-	})
+	}, &util.OmniAdapter{})
 	require.NoError(t, err)
-	require.Contains(t, dsn, "readTimeout=30s")
-	require.Contains(t, dsn, "writeTimeout=45s")
+	require.Equal(t, map[string]string{"readTimeout": "30s", "writeTimeout": "45s"}, config.Params)
+	require.Equal(t, "test", config.Database)
+	require.Equal(t, "secret", config.Password)
+	require.Equal(t, "8.0.11-TiDB-v8.5.5", config.EngineVersion)
+	require.Equal(t, "bytebase", config.ApplicationName)
 }
 
-func TestGetTiDBConnectionRejectsAllowAllFiles(t *testing.T) {
-	d := &Driver{}
-	_, err := d.getTiDBConnection(db.ConnectionConfig{
+// TestOpenRejectsAllowAllFiles keeps the refusal the old driver made before it
+// built a DSN.
+func TestOpenRejectsAllowAllFiles(t *testing.T) {
+	driver := newDriver()
+	_, err := driver.Open(context.Background(), storepb.Engine_TIDB, db.ConnectionConfig{
 		DataSource: &storepb.DataSource{
 			Host:     "127.0.0.1",
 			Port:     "4000",
@@ -58,176 +113,185 @@ func TestGetTiDBConnectionRejectsAllowAllFiles(t *testing.T) {
 	require.Contains(t, err.Error(), "allowAllFiles")
 }
 
-func TestBuildExecuteCommandsNormalizesDelimiter(t *testing.T) {
-	statement := "DELIMITER //\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND//\nDELIMITER ;\n"
-
-	commands, err := buildExecuteCommands(statement)
-	require.NoError(t, err)
-	require.Len(t, commands, 1)
-	require.NotContains(t, commands[0].Text, "DELIMITER")
-	require.Contains(t, commands[0].Text, "CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND")
+// TestOpenRequiresAUser pins that Open refuses a connection with no login.
+func TestOpenRequiresAUser(t *testing.T) {
+	driver := newDriver()
+	_, err := driver.Open(context.Background(), storepb.Engine_TIDB, db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			Host: "127.0.0.1",
+			Port: "4000",
+		},
+		ConnectionContext: db.ConnectionContext{DatabaseName: "test"},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "user must be set")
 }
 
-func TestBuildExecuteCommandsDoesNotNormalizeDelimiterForTooManyCommands(t *testing.T) {
-	var statement strings.Builder
-	statement.WriteString("DELIMITER //\n")
-	statement.WriteString("CREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND//\n")
-	statement.WriteString("DELIMITER ;\n")
-	statement.WriteString("/*!50003 SET @OLD_SQL_MODE=@@SQL_MODE */;\n")
-	for i := 0; i < common.MaximumCommands; i++ {
-		statement.WriteString("SELECT 1;\n")
+// TestExecuteHonoursTheTransactionDirective pins that Execute strips Bytebase's
+// transaction directive, translates it to omnidriver.TransactionMode, and
+// forwards execution callbacks into task run logs.
+func TestExecuteHonoursTheTransactionDirective(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		script       string
+		wantMode     omnidriver.TransactionMode
+		wantCleaned  string
+		wantLogTypes []storepb.TaskRunLog_Type
+	}{
+		{
+			name:        "default transactional",
+			script:      "INSERT INTO t VALUES (1);",
+			wantMode:    omnidriver.Transactional,
+			wantCleaned: "INSERT INTO t VALUES (1);",
+			wantLogTypes: []storepb.TaskRunLog_Type{
+				storepb.TaskRunLog_TRANSACTION_CONTROL,
+				storepb.TaskRunLog_COMMAND_EXECUTE,
+				storepb.TaskRunLog_COMMAND_RESPONSE,
+				storepb.TaskRunLog_TRANSACTION_CONTROL,
+			},
+		},
+		{
+			name:        "txn-mode off switches to auto-commit",
+			script:      "-- txn-mode = off\nINSERT INTO t VALUES (1);",
+			wantMode:    omnidriver.AutoCommit,
+			wantCleaned: "INSERT INTO t VALUES (1);",
+			wantLogTypes: []storepb.TaskRunLog_Type{
+				storepb.TaskRunLog_COMMAND_EXECUTE,
+				storepb.TaskRunLog_COMMAND_RESPONSE,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubTiDBDriver{
+				execFn: func(_ context.Context, script string, opts omnidriver.ExecuteOptions) (int64, error) {
+					if opts.Transaction == omnidriver.Transactional {
+						opts.Log.TransactionControl(omnidriver.Begin, nil)
+					}
+					opts.Log.CommandExecute(omnidriver.Command{Text: script, ByteStart: 0, ByteEnd: len(script)})
+					opts.Log.CommandResponse(1, []int64{1}, nil)
+					if opts.Transaction == omnidriver.Transactional {
+						opts.Log.TransactionControl(omnidriver.Commit, nil)
+					}
+					return 1, nil
+				},
+			}
+			driver := &Driver{OmniAdapter: util.OmniAdapter{Driver: stub}}
+
+			var logs []*storepb.TaskRunLog
+			affected, err := driver.Execute(context.Background(), tc.script, db.ExecuteOptions{
+				MaximumRetries: 3,
+				CreateTaskRunLog: func(_ time.Time, entry *storepb.TaskRunLog) error {
+					logs = append(logs, entry)
+					return nil
+				},
+			})
+			require.NoError(t, err)
+			require.Equal(t, int64(1), affected)
+			require.Equal(t, tc.wantMode, stub.execOpts.Transaction)
+			require.Equal(t, 3, stub.execOpts.MaxRetries)
+			require.Equal(t, tc.wantCleaned, stub.execScript)
+
+			gotTypes := make([]storepb.TaskRunLog_Type, len(logs))
+			for i, entry := range logs {
+				gotTypes[i] = entry.Type
+			}
+			require.Equal(t, tc.wantLogTypes, gotTypes)
+		})
 	}
-
-	commands, err := buildExecuteCommands(statement.String())
-	require.NoError(t, err)
-	require.Len(t, commands, 1)
-	require.Equal(t, statement.String(), commands[0].Text)
 }
 
-func TestBuildExecuteCommandsDoesNotNormalizeDelimiterForLargeSheet(t *testing.T) {
-	statement := "DELIMITER //\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 1;\nEND//\nDELIMITER ;\n" +
-		strings.Repeat(" ", common.MaxSheetCheckSize)
-
-	commands, err := buildExecuteCommands(statement)
-	require.NoError(t, err)
-	require.Len(t, commands, 1)
-	require.Equal(t, statement, commands[0].Text)
+// TestQueryConnRefusesAZeroResultCap states the adapter's guard: the product
+// reads MaximumSQLResultSize 0 as "no rows" and the contract reads it as "no
+// cap", so the adapter refuses rather than read an unbounded result.
+func TestQueryConnRefusesAZeroResultCap(t *testing.T) {
+	driver := &Driver{}
+	_, err := driver.QueryConn(context.Background(), "SELECT 1", db.QueryContext{})
+	require.EqualError(t, err, "maximum SQL result size must be positive")
 }
 
-func TestExecuteCreateIndexInTransaction(t *testing.T) {
-	t.Parallel()
+// TestQueryConnAdapterSeam pins QueryConn's held session lifecycle, option
+// forwarding, explain plan conversion, and error passthrough.
+func TestQueryConnAdapterSeam(t *testing.T) {
 	ctx := context.Background()
-	container, database := testcontainer.NewTiDBDatabase(t)
 
-	tidbDriver := openTestDriver(ctx, t, container)
-	defer func() {
-		require.NoError(t, tidbDriver.Close(ctx))
-	}()
+	t.Run("reuses one session and discards it on canceled context", func(t *testing.T) {
+		var seenOpts []omnidriver.QueryOptions
+		sess1 := &stubTiDBSession{
+			queryFn: func(ctx context.Context, statement string, opts omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				seenOpts = append(seenOpts, opts)
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				return []*omnidriver.Result{{
+					Statement: statement,
+					Columns:   []omnidriver.Column{{Name: "v", TypeName: "BIGINT"}},
+					Rows:      [][]omnidriver.Value{{{Kind: omnidriver.Int64, Int64: 42}}},
+				}}, nil
+			},
+		}
+		stub := &stubTiDBDriver{sessions: []*stubTiDBSession{sess1}}
+		driver := &Driver{OmniAdapter: util.OmniAdapter{Driver: stub}}
+		qctx := db.QueryContext{Limit: 100, MaximumSQLResultSize: 1 << 20}
 
-	_, err := tidbDriver.Execute(ctx, fmt.Sprintf(`
-		USE %[1]s;
-		CREATE TABLE %[1]s.execute_create_index_in_transaction (id INT);
-		BEGIN;
-		CREATE INDEX idx_execute_create_index_in_transaction ON %[1]s.execute_create_index_in_transaction(id);
-		COMMIT;
-	`, database), db.ExecuteOptions{})
-	require.NoError(t, err)
+		_, err := driver.QueryConn(ctx, "SET @p = 42", qctx)
+		require.NoError(t, err)
+		res, err := driver.QueryConn(ctx, "SELECT @p", qctx)
+		require.NoError(t, err)
+		require.Equal(t, 1, stub.sessionOpens)
+		require.Same(t, sess1, driver.Session())
+		require.Equal(t, int64(42), res[0].GetRows()[0].GetValues()[0].GetInt64Value())
 
-	var count int
-	query := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM information_schema.tidb_indexes
-		WHERE table_schema = '%s'
-			AND table_name = 'execute_create_index_in_transaction'
-			AND key_name = 'idx_execute_create_index_in_transaction'
-	`, database)
-	err = tidbDriver.db.QueryRowContext(ctx, query).Scan(&count)
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-}
+		canceledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err = driver.QueryConn(canceledCtx, "SELECT 1", qctx)
+		require.ErrorIs(t, err, context.Canceled)
+		require.True(t, sess1.closed)
+		require.Nil(t, driver.Session())
+	})
 
-func TestExecutePreparedStatementFlowWithCreateIndexString(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	container, database := testcontainer.NewTiDBDatabase(t)
+	t.Run("maps explain format and suppresses typed plan on explain requests", func(t *testing.T) {
+		var gotOpts omnidriver.QueryOptions
+		sess := &stubTiDBSession{
+			queryFn: func(_ context.Context, statement string, opts omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				gotOpts = opts
+				return []*omnidriver.Result{{
+					Statement: statement,
+					Plan:      &omnidriver.Plan{Format: "JSON", Executed: false},
+				}}, nil
+			},
+		}
+		driver := &Driver{OmniAdapter: util.OmniAdapter{Driver: &stubTiDBDriver{sessions: []*stubTiDBSession{sess}}}}
 
-	tidbDriver := openTestDriver(ctx, t, container)
-	defer func() {
-		require.NoError(t, tidbDriver.Close(ctx))
-	}()
-
-	statement := fmt.Sprintf(`
-		USE %[1]s;
-		CREATE TABLE %[1]s.prepare_statement_flow (id INT);
-		SET @sql := 'CREATE INDEX idx_prepare_statement_flow ON %[1]s.prepare_statement_flow(id)';
-		PREPARE stmt FROM @sql;
-		EXECUTE stmt;
-		DEALLOCATE PREPARE stmt;
-	`, database)
-	_, err := tidbDriver.Execute(ctx, statement, db.ExecuteOptions{})
-	require.NoError(t, err)
-
-	var count int
-	query := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM information_schema.tidb_indexes
-		WHERE table_schema = '%s'
-			AND table_name = 'prepare_statement_flow'
-			AND key_name = 'idx_prepare_statement_flow'
-	`, database)
-	err = tidbDriver.db.QueryRowContext(ctx, query).Scan(&count)
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-}
-
-// TestQueryConnExplainJSON pins the structured plan the query-plan viewer draws.
-// TiDB spells it FORMAT=tidb_json and rejects a quoted format in the statement
-// Bytebase validates, so what the driver builds has to parse here as well.
-func TestQueryConnExplainJSON(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	container, database := testcontainer.NewTiDBDatabase(t)
-	driver := openTestDriver(ctx, t, container)
-	defer func() { require.NoError(t, driver.Close(ctx)) }()
-
-	_, err := driver.db.ExecContext(ctx, fmt.Sprintf("CREATE TABLE %s.plan_target (id INT PRIMARY KEY, note VARCHAR(64))", database))
-	require.NoError(t, err)
-
-	conn, err := driver.GetDB().Conn(ctx)
-	require.NoError(t, err)
-	defer conn.Close()
-
-	statement := fmt.Sprintf("SELECT note FROM %s.plan_target WHERE id > 100", database)
-	explain := func(s string, option *v1pb.QueryOption, asExplain bool) *v1pb.QueryResult {
-		results, err := driver.QueryConn(ctx, conn, s, db.QueryContext{
-			Explain:              asExplain,
-			Limit:                5000,
-			MaximumSQLResultSize: 1 << 30,
-			Option:               option,
+		explainRes, err := driver.QueryConn(ctx, "SELECT 1", db.QueryContext{
+			Explain:              true,
+			MaximumSQLResultSize: 1 << 20,
+			Option:               &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_JSON},
 		})
 		require.NoError(t, err)
-		require.Len(t, results, 1)
-		require.Empty(t, results[0].GetError())
-		return results[0]
-	}
-	// The root operator's id, which every node of a tidb_json plan carries.
-	rootOperator := func(result *v1pb.QueryResult) string {
-		t.Helper()
-		require.Len(t, result.GetColumnNames(), 1)
-		require.Len(t, result.GetRows(), 1)
-		var plan []struct {
-			ID string `json:"id"`
+		require.Equal(t, "JSON", gotOpts.ExplainFormat)
+		require.True(t, gotOpts.Explain)
+		require.Nil(t, explainRes[0].GetQueryPlan(), "explain requests omit typed QueryPlan")
+
+		ranRes, err := driver.QueryConn(ctx, "EXPLAIN FORMAT=tidb_json SELECT 1", db.QueryContext{
+			Explain:              false,
+			MaximumSQLResultSize: 1 << 20,
+		})
+		require.NoError(t, err)
+		require.Equal(t, "TEXT", gotOpts.ExplainFormat)
+		require.Equal(t, v1pb.QueryOption_JSON, ranRes[0].GetQueryPlan().GetFormat())
+		require.False(t, ranRes[0].GetQueryPlan().GetExecuted())
+	})
+
+	t.Run("passes parser error through unchanged", func(t *testing.T) {
+		parseErr := errors.New(`syntax error at or near "FROM" (line 1, column 8)`)
+		sess := &stubTiDBSession{
+			queryFn: func(context.Context, string, omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				return nil, parseErr
+			},
 		}
-		require.NoError(t, json.Unmarshal([]byte(result.GetRows()[0].GetValues()[0].GetStringValue()), &plan))
-		require.NotEmpty(t, plan)
-		return plan[0].ID
-	}
+		driver := &Driver{OmniAdapter: util.OmniAdapter{Driver: &stubTiDBDriver{sessions: []*stubTiDBSession{sess}}}}
 
-	jsonOption := &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_JSON}
-	plan := explain(statement, jsonOption, true)
-	require.Equal(t, "EXPLAIN FORMAT=tidb_json "+statement, plan.GetStatement())
-	require.NotEmpty(t, rootOperator(plan))
-
-	// The default plan stays the table TiDB has always returned.
-	text := explain(statement, nil, true)
-	require.Equal(t, "EXPLAIN "+statement, text.GetStatement())
-	require.Greater(t, len(text.GetColumnNames()), 1)
-
-	// A caller's own EXPLAIN is replanned in the format asked for rather than
-	// wrapped in a second one.
-	typed := explain("EXPLAIN FORMAT=brief "+statement, jsonOption, true)
-	require.Equal(t, "EXPLAIN FORMAT=tidb_json "+statement, typed.GetStatement())
-	require.NotEmpty(t, rootOperator(typed))
-
-	// Run on that statement reports the plan it returned, so the viewer draws it
-	// without explaining a second time.
-	ran := explain("EXPLAIN FORMAT=tidb_json "+statement, nil, false)
-	require.Equal(t, v1pb.QueryOption_JSON, ran.GetQueryPlan().GetFormat())
-	require.False(t, ran.GetQueryPlan().GetExecuted())
-	require.NotEmpty(t, rootOperator(ran))
-
-	// TiDB has no session setting that changes what a plain EXPLAIN returns, so
-	// its format is known to be text.
-	ranText := explain("EXPLAIN "+statement, nil, false)
-	require.Equal(t, v1pb.QueryOption_TEXT, ranText.GetQueryPlan().GetFormat())
+		_, err := driver.QueryConn(ctx, "SELECT FROM WHERE", db.QueryContext{MaximumSQLResultSize: 1 << 20})
+		require.ErrorIs(t, err, parseErr)
+	})
 }

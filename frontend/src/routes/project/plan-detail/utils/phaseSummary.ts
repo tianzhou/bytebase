@@ -1,3 +1,4 @@
+import { levelPriority } from "@/components/sql-review/LevelPriorityBadge";
 import {
   getPlanCheckSummaryWithFallback,
   type PlanCheckSummary,
@@ -12,13 +13,13 @@ import type { Plan } from "@/types/proto-es/v1/plan_service_pb";
 import type { Rollout } from "@/types/proto-es/v1/rollout_service_pb";
 import { Task_Status } from "@/types/proto-es/v1/rollout_service_pb";
 import type { AutomatedReviewRow } from "./planGates";
-import { reviewSummaryPart } from "./reviewLabels";
+import { type ReviewSummaryPart, reviewSummaryPart } from "./reviewLabels";
 
 export type { PlanCheckSummary } from "@/lib/plan/check";
 
 type T = (key: string, options?: Record<string, unknown>) => string;
 
-const isDatabaseGroupName = (name: string): boolean =>
+export const isDatabaseGroupName = (name: string): boolean =>
   name.includes("/databaseGroups/");
 
 // Mirrors the eligibility gates that can permanently prevent RolloutCreator
@@ -78,8 +79,33 @@ const extractPrincipalEmail = (principal: string): string =>
 export const buildChangesSummary = (
   plan: Plan,
   t: T,
-  { includeChecks = true }: { includeChecks?: boolean } = {}
+  {
+    includeChecks = true,
+    stageTitle = (stage) => stage.split("/").at(-1) ?? stage,
+  }: {
+    includeChecks?: boolean;
+    // A stage's environment title, as the Progress row shows it.
+    stageTitle?: (stage: string) => string;
+  } = {}
 ): string => {
+  // A release plan's facts live in the details block; once its rollout exists
+  // the collapsed line names only the targets per stage (D10).
+  const isRelease = plan.specs.some(
+    (spec) =>
+      spec.config?.case === "changeDatabaseConfig" && spec.config.value.release
+  );
+  if (isRelease && plan.rolloutStageSummaries.length > 0) {
+    return plan.rolloutStageSummaries
+      .map((summary) => {
+        const count = summary.taskStatusCounts.reduce(
+          (sum, item) => sum + item.count,
+          0
+        );
+        return `${stageTitle(summary.stage)}: ${t("plan.summary.n-databases", { n: count })}`;
+      })
+      .join(" → ");
+  }
+
   const parts: string[] = [];
 
   parts.push(t("plan.summary.n-changes", { n: plan.specs.length }));
@@ -106,11 +132,22 @@ export const buildChangesSummary = (
     if (checks.success > 0) {
       checkParts.push(t("plan.summary.n-passed", { n: checks.success }));
     }
-    if (checks.warning > 0) {
-      checkParts.push(t("plan.summary.n-warning", { n: checks.warning }));
-    }
+    // Errors and warnings read as the review priorities they show as.
     if (checks.error > 0) {
-      checkParts.push(t("plan.summary.n-error", { n: checks.error }));
+      checkParts.push(
+        t("plan.findings.n-priority", {
+          count: checks.error,
+          priority: levelPriority("error"),
+        })
+      );
+    }
+    if (checks.warning > 0) {
+      checkParts.push(
+        t("plan.findings.n-priority", {
+          count: checks.warning,
+          priority: levelPriority("warning"),
+        })
+      );
     }
     if (checkParts.length > 0) {
       parts.push(checkParts.join(", "));
@@ -162,9 +199,9 @@ export const buildReviewSummaryV2 = (
   t: T,
   rows: readonly AutomatedReviewRow[],
   openDiscussions: number
-): string => {
-  if (!issue) return "";
-  const parts: string[] = [];
+): ReviewSummaryPart[] => {
+  if (!issue) return [];
+  const parts: ReviewSummaryPart[] = [];
   const roles = issue.approvalTemplate?.flow?.roles ?? [];
   if (!issue.draft) {
     if (
@@ -196,7 +233,7 @@ export const buildReviewSummaryV2 = (
       t("plan.deploy-waiting.open-discussions", { count: openDiscussions })
     );
   }
-  return parts.join(" · ");
+  return parts;
 };
 
 export const buildDeploySummary = (

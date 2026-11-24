@@ -1,278 +1,95 @@
+// Package databricks is Bytebase's Databricks driver, adapting
+// github.com/bytebase/omni/databricks/driver to Bytebase's db.Driver interface.
+//
+// Constraints:
+//   - Personal access token comes from DataSource.AuthenticationPrivateKey,
+//     falling back to Config.Password; warehouse ID is passed as ParamWarehouseID.
+//   - TLS, Dial, and extra connection parameters are unused (SDK owns transport).
+//   - Execute strips transaction directives without setting transaction mode.
 package databricks
 
 import (
 	"context"
-	"database/sql"
-	"strconv"
-	"time"
 
-	"github.com/databricks/databricks-sdk-go"
-	"github.com/databricks/databricks-sdk-go/service/workspace"
-	"github.com/pkg/errors"
-	"google.golang.org/protobuf/types/known/durationpb"
-
-	// Databricks SQL.
-	dbsql "github.com/databricks/databricks-sdk-go/service/sql"
-
-	"github.com/bytebase/bytebase/backend/plugin/db"
-	"github.com/bytebase/bytebase/backend/plugin/db/transaction"
-	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	databricksdriver "github.com/bytebase/omni/databricks/driver"
+	odbdriver "github.com/bytebase/omni/driver"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
+	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
-
-func init() {
-	db.Register(storepb.Engine_DATABRICKS, NewDatabricksDriver)
-}
 
 var _ db.Driver = (*Driver)(nil)
 
-type Driver struct {
-	curCatalog  string
-	WarehouseID string
-	Client      *databricks.WorkspaceClient
+func init() {
+	db.Register(storepb.Engine_DATABRICKS, newDriver)
 }
 
-func NewDatabricksDriver() db.Driver {
+// Driver is Bytebase's Databricks driver.
+type Driver struct {
+	util.OmniAdapter
+}
+
+func newDriver() db.Driver {
 	return &Driver{}
 }
 
-// Each Databricks driver is associated with a single Databricks Workspace (Workspace -> catalog -> schema -> table).
-func (d *Driver) Open(_ context.Context, _ storepb.Engine, config db.ConnectionConfig) (db.Driver, error) {
-	// Support Databricks native authentication.
-	// ref: https://github.com/databricks/databricks-sdk-go?tab=readme-ov-file#databricks-native-authentication
-	// only support token authentication.
-	client, err := databricks.NewWorkspaceClient(&databricks.Config{
-		Host:  config.DataSource.Host,
-		Token: config.DataSource.GetAuthenticationPrivateKey(),
-	})
-	if err != nil {
+// Open opens a Databricks driver. It does not reach the workspace: Ping does.
+func (*Driver) Open(ctx context.Context, _ storepb.Engine, config db.ConnectionConfig) (db.Driver, error) {
+	d := &Driver{}
+	if err := d.OpenWith(ctx, util.AdapterOptions{
+		EagerSession: true,
+	}, func(*util.OmniAdapter) (odbdriver.Driver, error) {
+		return databricksdriver.Open(ctx, databricksConfig(config))
+	}); err != nil {
 		return nil, err
 	}
-
-	d.Client = client
-	if config.DataSource.GetWarehouseId() == "" {
-		return nil, errors.New("Warehouse ID must be set")
-	}
-	d.WarehouseID = config.DataSource.GetWarehouseId()
-	d.curCatalog = config.ConnectionContext.DatabaseName
 	return d, nil
 }
 
-func (*Driver) Close(_ context.Context) error {
-	return nil
+// databricksConfig resolves everything Bytebase knows about reaching the
+// workspace into the plain values databricks/driver takes.
+func databricksConfig(config db.ConnectionConfig) odbdriver.Config {
+	ds := config.DataSource
+	cfg := odbdriver.Config{
+		Host:     ds.GetHost(),
+		Database: config.ConnectionContext.DatabaseName,
+		// The product stores the personal access token in the data source's
+		// authentication private key; a token a caller resolved itself wins when
+		// the data source carries none.
+		Password: ds.GetAuthenticationPrivateKey(),
+		Params: map[string]string{
+			databricksdriver.ParamWarehouseID: ds.GetWarehouseId(),
+		},
+	}
+	if cfg.Password == "" {
+		cfg.Password = config.Password
+	}
+	return cfg
 }
 
-func (d *Driver) Ping(ctx context.Context) error {
-	_, err := d.Client.Workspace.ListAll(ctx, workspace.ListWorkspaceRequest{
-		Path: "/",
+// Execute runs the script's statements in order and returns the rows they
+// affected. Databricks has no transaction control a script can issue, so the
+// transaction mode the product sends changes nothing, which is what the previous
+// driver did.
+func (d *Driver) Execute(ctx context.Context, statement string, opts db.ExecuteOptions) (int64, error) {
+	return d.ExecuteScript(ctx, statement, opts, util.ExecuteConfig{
+		StripDirectivesOnly: true,
+		PassCreateDatabase:  true,
+		PassMaxRetries:      true,
+		ShiftCommandRanges:  true,
 	})
-	if err != nil {
-		return errors.Wrapf(err, "failed to ping instance")
-	}
-	return nil
 }
 
-func (*Driver) GetDB() *sql.DB {
-	return nil
-}
-
-func (d *Driver) QueryConn(ctx context.Context, _ *sql.Conn, statement string, queryContext db.QueryContext) ([]*v1pb.QueryResult, error) {
-	var results []*v1pb.QueryResult
-	stmts, err := base.SplitMultiSQL(storepb.Engine_DATABRICKS, statement)
-	if err != nil {
-		return nil, err
-	}
-	// A blank or comment-only tail is not a statement to run, and on an explain
-	// request it would be planned as one.
-	stmts = base.FilterEmptyStatements(stmts)
-
-	for _, stmt := range stmts {
-		text := stmt.Text
-		if queryContext.Explain {
-			explained, err := base.ExplainStatement(storepb.Engine_DATABRICKS, text, db.ExplainFormat(queryContext.Option.GetExplainFormat()))
-			if err != nil {
-				return nil, err
-			}
-			text = explained
-		}
-		result := &v1pb.QueryResult{}
-		startTime := time.Now()
-		dataArr, colInfo, err := d.execStatementSync(ctx, text, int64(queryContext.Limit))
-		if err != nil {
-			return nil, err
-		}
-		if dataArr == nil || colInfo == nil {
-			break
-		}
-
-		colNames, colTypeNames := toStrColInfo(colInfo)
-		result.ColumnNames = colNames
-		result.ColumnTypeNames = colTypeNames
-
-		// process rows.
-		for _, rowData := range dataArr {
-			queryRow := &v1pb.QueryRow{}
-			// process a single row.
-			for idx, rowVal := range rowData {
-				v1pbRowVal, err := toV1pbRowVal(colInfo[idx].TypeName, rowVal)
-				if err != nil {
-					return nil, err
-				}
-				queryRow.Values = append(queryRow.Values, v1pbRowVal)
-			}
-			result.Rows = append(result.Rows, queryRow)
-		}
-		result.Latency = durationpb.New(time.Since(startTime))
-		result.Statement = text
-		result.RowsCount = int64(len(result.Rows))
-		results = append(results, result)
-	}
-
-	return results, nil
-}
-
-func (d *Driver) Execute(ctx context.Context, statement string, _ db.ExecuteOptions) (int64, error) {
-	// Parse transaction mode from the script
-	config, cleanedStatement := base.ParseTransactionConfig(statement)
-	statement = cleanedStatement
-	transactionMode := config.Mode
-
-	// Apply default when transaction mode is not specified
-	if transactionMode == transaction.ModeUnspecified {
-		transactionMode = transaction.DefaultMode()
-	}
-
-	// Databricks has different transaction support based on the target:
-	// - SQL Warehouses: Limited transaction support, primarily for Delta tables
-	// - Unity Catalog: Better transaction support with ACID properties for Delta tables
-	// Since Databricks SQL API doesn't expose direct transaction control (BEGIN/COMMIT/ROLLBACK),
-	// and most DDL operations are auto-committed, we handle this at the statement execution level.
-
-	// For transaction mode "off" or when dealing with non-transactional operations,
-	// we execute statements in auto-commit mode (default behavior).
-	// For transaction mode "on", we note that Databricks will handle transactionality
-	// at the operation level for supported operations (e.g., Delta table operations).
-
-	if transactionMode == transaction.ModeOff {
-		// Execute in auto-commit mode (default Databricks behavior)
-		_, err := d.QueryConn(ctx, nil, statement, db.QueryContext{})
-		return 0, err
-	}
-
-	// Transaction mode "on": Execute with implicit transaction support
-	// Note: Databricks SQL Warehouses don't support explicit transaction control via the REST API.
-	// Transactions are handled implicitly for supported operations (e.g., Delta table DML).
-	// DDL operations are always auto-committed.
-	_, err := d.QueryConn(ctx, nil, statement, db.QueryContext{})
-	return 0, err
-}
-
-// Execute SQL statement synchronously and return row data or error.
-// rowLimit caps the result set when > 0; 0 means no limit (used by sync
-// and dump paths). DDL/DML callers should pass 0.
-func (d *Driver) execStatementSync(ctx context.Context, statement string, rowLimit int64) ([][]string, []dbsql.ColumnInfo, error) {
-	// Bind the connected Bytebase database (= Unity Catalog) to the
-	// session, so unqualified `schema.table` references resolve like in
-	// other RDBMSes. Equivalent to issuing `USE CATALOG <name>` first.
-	req := dbsql.ExecuteStatementRequest{
-		Statement:   statement,
-		WarehouseId: d.WarehouseID,
-		Catalog:     d.curCatalog,
-	}
-	// Honor the user-selected row limit (default 1000 from the SQL Editor).
-	// Without it, INLINE results above ~25 MiB are aborted server-side
-	// with no result available — see DispositionExternalLinks for the
-	// large-result path.
-	if rowLimit > 0 {
-		req.RowLimit = rowLimit
-	}
-	resp, err := d.Client.StatementExecution.ExecuteAndWait(ctx, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	if resp.Result == nil {
-		return nil, nil, errors.New("no response")
-	}
-
-	if len(resp.Result.DataArray) != 0 {
-		if resp.Manifest == nil || resp.Manifest.Schema == nil || len(resp.Manifest.Schema.Columns) == 0 {
-			return nil, nil, errors.New("missing column info")
-		}
-		return resp.Result.DataArray, resp.Manifest.Schema.Columns, nil
-	}
-	return nil, nil, nil
-}
-
-// return a column type name array and a column name array.
-func toStrColInfo(colInfo []dbsql.ColumnInfo) ([]string, []string) {
-	colNames := []string{}
-	colTypeNames := []string{}
-	for _, col := range colInfo {
-		colNames = append(colNames, col.Name)
-		colTypeNames = append(colTypeNames, string(col.TypeName))
-	}
-	return colNames, colTypeNames
-}
-
-func toV1pbRowVal(colType dbsql.ColumnInfoTypeName, val string) (*v1pb.RowValue, error) {
-	rowVal := v1pb.RowValue{}
-	if val == "" && colType != dbsql.ColumnInfoTypeNameString {
-		rowVal.Kind = &v1pb.RowValue_NullValue{}
-		return &rowVal, nil
-	}
-
-	switch colType {
-	case dbsql.ColumnInfoTypeNameBoolean:
-		boolVal, err := strconv.ParseBool(val)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_BoolValue{BoolValue: boolVal}
-
-	case dbsql.ColumnInfoTypeNameBinary:
-		rowVal.Kind = &v1pb.RowValue_BytesValue{BytesValue: []byte(val)}
-
-	case dbsql.ColumnInfoTypeNameShort:
-		shortVal, err := strconv.ParseInt(val, 10, 16)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_Int32Value{Int32Value: int32(shortVal)}
-
-	case dbsql.ColumnInfoTypeNameInt:
-		i32Val, err := strconv.ParseInt(val, 10, 32)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_Int32Value{Int32Value: int32(i32Val)}
-
-	case dbsql.ColumnInfoTypeNameLong:
-		i64Val, err := strconv.ParseInt(val, 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_Int64Value{Int64Value: i64Val}
-
-	case dbsql.ColumnInfoTypeNameFloat:
-		floatVal, err := strconv.ParseFloat(val, 32)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_FloatValue{FloatValue: float32(floatVal)}
-
-	case dbsql.ColumnInfoTypeNameDouble:
-		doubleVal, err := strconv.ParseFloat(val, 64)
-		if err != nil {
-			return nil, err
-		}
-		rowVal.Kind = &v1pb.RowValue_DoubleValue{DoubleValue: doubleVal}
-
-	default:
-		// convert all remaining types to string.
-		rowVal.Kind = &v1pb.RowValue_StringValue{StringValue: val}
-	}
-
-	return &rowVal, nil
+// QueryConn runs each statement of the script on the held session and converts
+// the results into API QueryResults.
+func (d *Driver) QueryConn(ctx context.Context, statement string, queryContext db.QueryContext) ([]*v1pb.QueryResult, error) {
+	return d.QueryHeldConn(
+		ctx,
+		statement,
+		util.OmniQueryOptions(queryContext, true, queryContext.Option.GetExplainFormat().String()),
+		util.SessionQueryOptions{},
+		util.QueryResultOptions{},
+	)
 }

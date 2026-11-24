@@ -2,18 +2,20 @@
   "add-or-remove-rules": "Agregar o eliminar reglas",
   "add-rules": "Agregar reglas",
   "ai-review": {
-    "ai-off": "La IA está desactivada en el espacio de trabajo, por lo que no se ejecuta ninguna revisión con IA.",
+    "ai-off": "La IA está desactivada en el espacio de trabajo, por lo que no se ejecuta ninguna revisión de SQL con IA.",
+    "comments-description": "Un modelo de IA revisa el SQL de una incidencia, incluso en borrador, y comenta los riesgos que encuentra. El despliegue queda bloqueado hasta que se resuelvan todos sus comentarios.",
     "description": "Un modelo de IA que revisa el SQL de un issue en busca de riesgos que las reglas estándar no pueden ver.",
     "enable": {
       "description": "Cada revisión envía al proveedor de IA las sentencias tal como están escritas, y puede enviar el esquema de las bases de datos de destino y las estadísticas de sus tablas. No lee ninguna fila de las bases de datos.",
       "self": "Revisar los cambios con IA"
     },
     "policy": {
+      "ai-review-policy": "Política de revisión de SQL con IA",
       "cannot-clear": "Tu rol no puede eliminar políticas, por lo que esta política no se puede vaciar.",
       "description": "Esta política define lo que la IA revisa al evaluar cambios en la base de datos. Se aplica a todos los proyectos del espacio de trabajo y cada proyecto puede agregar su propia política.",
       "load-failed": "No se pudo cargar la política de revisión.",
       "none": "No hay política de revisión.",
-      "paused": "Esta política está en pausa, por lo que la revisión con IA no la usa.",
+      "paused": "Esta política está en pausa, por lo que la revisión de SQL con IA no la usa.",
       "placeholder": "Por ejemplo:\nInforma sobre un cambio de esquema que bloquee las escrituras en una tabla de más de 1 millón de filas.\nToda clave foránea necesita un índice sobre sus columnas.\nLas tablas nuevas necesitan las columnas created_at y updated_at.",
       "project-description": "Política opcional específica del proyecto. Se agrega a la política del espacio de trabajo y tiene prioridad cuando entran en conflicto.",
       "project-none": "No hay política del proyecto.",
@@ -21,10 +23,11 @@
       "project-self": "Política adicional del proyecto",
       "remove-only": "Puedes eliminar esta política, pero no cambiarla. Vacía el texto para eliminarla.",
       "self": "Política de revisión",
+      "standard-rules-hint": "La revisión de SQL con IA no repite las reglas estándar y omite las que están desactivadas. Para que compruebe alguna de todos modos, nómbrala en la política, por ejemplo: \"Todo UPDATE necesita una cláusula WHERE\".",
       "too-large": "La política ocupa {{size}} bytes, más que el límite de {{limit}} bytes. Acórtala para guardarla."
     },
-    "project-description": "La revisión con IA se configura para el espacio de trabajo. Agrega abajo una política opcional específica del proyecto.",
-    "self": "Revisión con IA",
+    "project-description": "La revisión de SQL con IA se configura para el espacio de trabajo. Agrega abajo una política opcional específica del proyecto.",
+    "self": "Revisión de SQL con IA",
     "set-for-workspace": "Se administra a nivel del espacio de trabajo.",
     "turn-on-ai": "Activar la IA",
     "view-workspace-setting": "Ver la configuración de IA del espacio de trabajo"
@@ -68,7 +71,8 @@
   },
   "delete": "Eliminar política de revisión SQL",
   "delete-description": "La política de revisión SQL y todas sus reglas se eliminarán permanentemente. Esta acción no se puede deshacer.",
-  "description": "La política de revisión de SQL puede definir diferentes conjuntos de reglas de lint SQL para los entornos respectivos. Ayuda a los equipos a adoptar las mejores prácticas de SQL y a hacer cumplir la consistencia del esquema en diferentes bases de datos. Cada vez que intente realizar un cambio DDL/DML o use el Editor SQL para consultar datos, la consulta se verificará en función de la política de revisión de SQL configurada.",
+  "delete-policy-title": "¿Eliminar {{name}}?",
+  "description": "Reglas que revisan cada cambio de SQL y cada consulta del Editor SQL. Una política se aplica a los entornos o proyectos a los que está asociada.",
   "disable-description": "Deshabilitar esta política dejará de aplicar sus reglas a los recursos adjuntos. Puede volver a habilitarla más tarde.",
   "disabled": "La revisión de SQL está deshabilitada",
   "enable-description": "Habilitar esta política comenzará a aplicar sus reglas a los recursos adjuntos.",
@@ -144,17 +148,17 @@
   "input-then-press-enter": "Ingrese el valor y luego presione enter para agregar",
   "level": {
     "disabled": "Deshabilitado",
-    "error": "Error",
-    "name": "Nivel de Error",
-    "warning": "Advertencia"
+    "name": "Prioridad"
   },
   "no-permission": "Solo el DBA o el administrador tiene permiso para crear o actualizar la política de revisión.",
+  "policies": "Políticas de revisión de SQL basada en reglas",
   "policy-create-failed": "No se pudo crear la política de revisión.",
   "policy-created": "La política de revisión se creó correctamente.",
   "policy-removed": "La política de revisión se eliminó correctamente.",
   "policy-update-failed": "No se pudo actualizar la política de revisión.",
   "policy-updated": "La política de revisión se actualizó correctamente.",
   "review-policy": "Política de revisión",
+  "reviewer": "Revisión de SQL",
   "rule": {
     "ADVICE_ONLINE_MIGRATION": {
       "component": {
@@ -882,8 +886,7 @@
     "string-array-required": "Agregue al menos un valor para {{rule}}."
   },
   "version-switch": {
-    "description": "Solo en compilaciones dev. El servidor ejecuta V1 en un proyecto con todas sus reglas estándar desactivadas, y V2 en los demás. Este navegador muestra las páginas de la versión que elijas.",
-    "self": "Versión de la revisión SQL",
+    "description": "Esta etiqueta muestra la versión de la interfaz seleccionada en el navegador. Las reglas estándar efectivas de cada proyecto determinan qué versión de revisión se ejecuta.",
     "to-v1": {
       "confirm": "Cambiar a V1",
       "description": "Esto desactiva todas las reglas estándar del espacio de trabajo, así que la comprobación del plan ejecuta la revisión SQL V1. Los proyectos que personalizan sus reglas estándar las conservan.",
@@ -893,6 +896,8 @@
       "confirm": "Cambiar a V2",
       "description": "Esto activa todas las reglas estándar del espacio de trabajo, así que la revisión de reglas estándar sustituye a la revisión SQL V1.",
       "title": "¿Cambiar a la revisión SQL V2?"
-    }
+    },
+    "v1": "Revisión SQL V1",
+    "v2": "Revisión SQL V2"
   }
 }

@@ -33,6 +33,10 @@
         "desc": "Nhận gợi ý truy vấn và khuyến nghị chỉ mục được hỗ trợ bởi AI.",
         "title": "Gợi ý truy vấn AI"
       },
+      "FEATURE_AI_SQL_REVIEW": {
+        "desc": "Một mô hình AI đánh giá SQL của mỗi issue theo chính sách của bạn và bình luận về các rủi ro tìm thấy.",
+        "title": "Đánh giá SQL bằng AI"
+      },
       "FEATURE_API_INTEGRATION_GUIDANCE": {
         "desc": "Tài liệu và hướng dẫn cho tích hợp API.",
         "title": "Hướng dẫn tích hợp API"
@@ -215,7 +219,7 @@
       },
       "FEATURE_PRE_DEPLOYMENT_SQL_REVIEW": {
         "desc": "Thực thi các phương pháp hay nhất cho SQL với hơn 100 quy tắc lint và kiểm tra tính nhất quán của schema.",
-        "title": "Đánh giá SQL"
+        "title": "Đánh giá SQL dựa trên quy tắc"
       },
       "FEATURE_PROGRESSIVE_ENVIRONMENT_DEPLOYMENT": {
         "desc": "Triển khai thay đổi tuần tự qua các môi trường khác nhau.",

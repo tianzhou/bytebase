@@ -34,6 +34,8 @@ import { useCurrentUser } from "@/hooks/useAppState";
 import { principalLabel, usePrincipal } from "@/hooks/usePrincipal";
 import { displayRoleTitleFromList } from "@/lib/role";
 import { cn } from "@/lib/utils";
+import { AgentDiagnosticHelpButton } from "@/modules/agent/components/AgentDiagnosticHelpButton";
+import { getPlanCheckDiagnosticContext } from "@/modules/agent/logic/planCheckDiagnostics";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { userNamePrefix } from "@/stores/modules/v1/common";
@@ -48,9 +50,10 @@ import { focusPlanPhase } from "../../shell/focusPhase";
 import { usePlanDetailContext } from "../../shell/PlanDetailContext";
 import type { PlanCheckSummary } from "../../utils/phaseSummary";
 import { rowNeedsAttention } from "../../utils/planGates";
-import { reviewerLabel, reviewGateLabel } from "../../utils/reviewLabels";
+import { reviewerLabel } from "../../utils/reviewLabels";
 import { BypassAndDeploySheet, useBypassDeploy } from "../review/bypassDeploy";
 import { deriveSteps, ReviewApprovalFlow } from "../review/ReviewApprovalFlow";
+import { ReviewGateLabel } from "../review/ReviewGateLabel";
 import type { PlanStatusReason } from "./planLifecycleHeaderState";
 import { getPlanStatusTone, type PlanStatusTone } from "./planStatusLabel";
 
@@ -80,7 +83,7 @@ export function PlanStatusAction({
   );
 
   // Literal t() calls (not t(dynamicKey)) so the i18n usage scanner sees them.
-  const labelText = (() => {
+  const labelText = ((): ReactNode => {
     switch (reason) {
       case "checking":
         return t("plan.lifecycle.checking");
@@ -98,7 +101,9 @@ export function PlanStatusAction({
           (candidate) =>
             candidate.kind === "review" || candidate.kind === "discussion"
         );
-        if (gate?.kind === "review") return reviewGateLabel(t, gate.row);
+        if (gate?.kind === "review") {
+          return <ReviewGateLabel row={gate.row} />;
+        }
         if (gate?.kind === "discussion") {
           return t("plan.deploy-waiting.open-discussions", {
             count: gate.open,
@@ -179,6 +184,28 @@ export function PlanStatusAction({
         onOpenChange={setChecksDrawerOpen}
         open={checksDrawerOpen}
         planCheckRuns={page.planCheckRuns}
+        renderResultAction={(result) => {
+          const sourceId = `${page.plan.name}/planCheckRun`;
+          if (
+            page.isCreating ||
+            page.planCheckRuns.length !== 1 ||
+            page.planCheckRuns[0].name !== sourceId
+          )
+            return null;
+          const context = getPlanCheckDiagnosticContext({
+            resource: {
+              kind: "plan",
+              name: page.plan.name,
+              project: `projects/${page.projectId}`,
+              label: page.plan.name,
+            },
+            result,
+            sourceId,
+          });
+          return context ? (
+            <AgentDiagnosticHelpButton context={context} />
+          ) : null;
+        }}
       />
     </>
   );
@@ -188,7 +215,13 @@ export function PlanStatusAction({
 
 // Shared icon-adjacent label for the gate rows: a title with an optional
 // subtitle beneath it.
-function GateLabel({ title, subtitle }: { title: string; subtitle: string }) {
+function GateLabel({
+  title,
+  subtitle,
+}: {
+  title: ReactNode;
+  subtitle: string;
+}) {
   return (
     <span className="min-w-0 flex-1">
       <span className="block break-words text-sm font-medium leading-tight text-main">
@@ -519,9 +552,9 @@ function AutomatedReviewGateRow({
   } else {
     icon = <CircleCheck className="size-5 shrink-0 text-success" />;
   }
-  let title: string;
+  let title: ReactNode;
   if (held.length > 0) {
-    title = reviewGateLabel(t, held[0]);
+    title = <ReviewGateLabel row={held[0]} />;
   } else if (overridden) {
     title = t("plan.deploy-waiting.overridden", {
       count: overridden.findings.overridden,

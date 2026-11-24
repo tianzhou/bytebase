@@ -2,104 +2,147 @@ package trino
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 
+	omnidriver "github.com/bytebase/omni/driver"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
-	"github.com/trinodb/trino-go-client/trino"
 	"google.golang.org/protobuf/testing/protocmp"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/bytebase/bytebase/backend/common/testcontainer"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
+	"github.com/bytebase/bytebase/backend/plugin/db"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
-func TestMakeValueByTypeNameHoldsAVariant(t *testing.T) {
-	destination := makeValueByTypeName("VARIANT", nil)
-	variant, ok := destination.(*trino.Variant)
-	require.True(t, ok, "a VARIANT column needs a *trino.Variant destination, got %T", destination)
-
-	// rows.Scan hands a VARIANT destination the trino.Variant the driver built,
-	// which is why the default destination below cannot serve one.
-	require.NoError(t, variant.Scan(trino.Variant{}))
-	require.Error(t, new(sql.NullString).Scan(trino.Variant{}))
+type stubQuerySession struct {
+	gotScript string
+	gotOpts   omnidriver.QueryOptions
+	results   []*omnidriver.Result
 }
 
-func TestConvertValueReadsAVariant(t *testing.T) {
-	// A SQL NULL reaches Scan as nil and leaves the Variant invalid.
-	//
-	// This pins the NULL path only. convertValue's *trino.Variant branch is not
-	// covered: a populated Variant cannot be built outside the driver, since its
-	// fields are unexported, the only constructor decodes a server response, and
-	// a hand-made Variant{Valid: true} panics in String. Removing that branch
-	// still passes this test, so a VARIANT value rendering correctly needs a
-	// Trino server to prove.
-	variant := new(trino.Variant)
-	require.NoError(t, variant.Scan(nil))
-	require.False(t, variant.Valid)
-	require.Equal(t, util.NullRowValue, convertValue("VARIANT", nil, variant))
+func (s *stubQuerySession) Query(_ context.Context, script string, opts omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+	s.gotScript = script
+	s.gotOpts = opts
+	return s.results, nil
 }
+
+func (*stubQuerySession) Close() error { return nil }
 
 func str(v string) *v1pb.RowValue {
 	return &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{StringValue: v}}
 }
 
-// TestQueryResultRendersTrinoTypes pins how a real Trino's values reach the
-// client, so a driver upgrade that changes a decoded Go type shows up as a
-// failing expectation rather than as a silently reshaped result. The driver
-// hands DATE and TIME a time.Time: before they had a destination of their own,
-// Go rendered them through *sql.NullString as RFC3339Nano, so a date read back
-// as "2026-01-02T00:00:00Z" and a time as "0000-01-01T12:34:56Z".
+// TestQueryResultRendersTrinoTypes pins how the adapter maps omni driver
+// values, query options, and columnless zero-affected-row results into v1pb.
 func TestQueryResultRendersTrinoTypes(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
-	c := testcontainer.SharedTrinoContainer(t)
-	db, err := sql.Open("trino", fmt.Sprintf(
-		"http://%s@%s:%s?catalog=memory&schema=default",
-		c.GetUsername(), c.GetHost(), c.GetPort()))
-	require.NoError(t, err)
-	defer db.Close()
+	ts := time.Date(2026, 1, 2, 12, 34, 56, 0, time.UTC)
+	tsFrac := time.Date(2026, 1, 2, 12, 34, 56, 789000000, time.UTC)
+	tsTZ := time.Date(2026, 1, 2, 12, 34, 56, 0, time.FixedZone("", 7200))
 
 	tests := []struct {
-		name     string
-		expr     string
-		wantType string
-		want     *v1pb.RowValue
+		name    string
+		colType string
+		value   omnidriver.Value
+		want    *v1pb.RowValue
 	}{
-		{"date", "DATE '2026-01-02'", "DATE", str("2026-01-02")},
-		{"time", "TIME '12:34:56'", "TIME", str("12:34:56")},
-		{"time with precision", "CAST('12:34:56.789' AS TIME(3))", "TIME", str("12:34:56.789")},
-		{"zoned time", "TIME '12:34:56 +02:00'", "TIME WITH TIME ZONE", str("12:34:56+02:00")},
-		{"zoned time with precision", "TIME '12:34:56.789 +02:00'", "TIME WITH TIME ZONE", str("12:34:56.789+02:00")},
-		{"timestamp", "TIMESTAMP '2026-01-02 12:34:56'", "TIMESTAMP", &v1pb.RowValue{
+		{"date", "DATE", omnidriver.Value{Kind: omnidriver.String, String: "2026-01-02"}, str("2026-01-02")},
+		{"time", "TIME", omnidriver.Value{Kind: omnidriver.String, String: "12:34:56"}, str("12:34:56")},
+		{"time with precision", "TIME", omnidriver.Value{Kind: omnidriver.String, String: "12:34:56.789"}, str("12:34:56.789")},
+		{"zoned time", "TIME WITH TIME ZONE", omnidriver.Value{Kind: omnidriver.String, String: "12:34:56+02:00"}, str("12:34:56+02:00")},
+		{"zoned time with precision", "TIME WITH TIME ZONE", omnidriver.Value{Kind: omnidriver.String, String: "12:34:56.789+02:00"}, str("12:34:56.789+02:00")},
+		{"timestamp", "TIMESTAMP", omnidriver.Value{Kind: omnidriver.Timestamp, Time: ts}, &v1pb.RowValue{
 			Kind: &v1pb.RowValue_TimestampValue{TimestampValue: &v1pb.RowValue_Timestamp{
-				GoogleTimestamp: timestamppb.New(time.Date(2026, 1, 2, 12, 34, 56, 0, time.UTC)),
-				Accuracy:        6,
+				GoogleTimestamp: timestamppb.New(ts),
 			}},
 		}},
-		{"varchar", "CAST('hi' AS VARCHAR)", "VARCHAR", str("hi")},
-		{"bigint", "CAST(42 AS BIGINT)", "BIGINT", &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{Int64Value: 42}}},
-		{"boolean", "true", "BOOLEAN", &v1pb.RowValue{Kind: &v1pb.RowValue_BoolValue{BoolValue: true}}},
-		{"decimal", "CAST(1.25 AS DECIMAL(5,2))", "DECIMAL", &v1pb.RowValue{Kind: &v1pb.RowValue_DoubleValue{DoubleValue: 1.25}}},
-		{"null date", "CAST(NULL AS DATE)", "DATE", util.NullRowValue},
-		{"null varchar", "CAST(NULL AS VARCHAR)", "VARCHAR", util.NullRowValue},
+		{"timestamp with a fraction", "TIMESTAMP", omnidriver.Value{Kind: omnidriver.Timestamp, Time: tsFrac, Precision: 3}, &v1pb.RowValue{
+			Kind: &v1pb.RowValue_TimestampValue{TimestampValue: &v1pb.RowValue_Timestamp{
+				GoogleTimestamp: timestamppb.New(tsFrac),
+				Accuracy:        3,
+			}},
+		}},
+		{"zoned timestamp", "TIMESTAMP WITH TIME ZONE", omnidriver.Value{Kind: omnidriver.TimestampTZ, Time: tsTZ}, &v1pb.RowValue{
+			Kind: &v1pb.RowValue_TimestampTzValue{TimestampTzValue: &v1pb.RowValue_TimestampTZ{
+				GoogleTimestamp: timestamppb.New(time.Date(2026, 1, 2, 10, 34, 56, 0, time.UTC)),
+				Offset:          7200,
+			}},
+		}},
+		{"varchar", "VARCHAR", omnidriver.Value{Kind: omnidriver.String, String: "hi"}, str("hi")},
+		{"bigint", "BIGINT", omnidriver.Value{Kind: omnidriver.Int64, Int64: 42}, &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{Int64Value: 42}}},
+		{"boolean", "BOOLEAN", omnidriver.Value{Kind: omnidriver.Bool, Bool: true}, &v1pb.RowValue{Kind: &v1pb.RowValue_BoolValue{BoolValue: true}}},
+		{"decimal", "DECIMAL", omnidriver.Value{Kind: omnidriver.String, String: "1.25"}, str("1.25")},
+		{"null date", "DATE", omnidriver.Value{Kind: omnidriver.Null}, util.NullRowValue},
+		{"null varchar", "VARCHAR", omnidriver.Value{Kind: omnidriver.Null}, util.NullRowValue},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			rows, err := db.QueryContext(ctx, "SELECT "+tc.expr)
-			require.NoError(t, err)
-			defer rows.Close()
+			t.Parallel()
+			sess := &stubQuerySession{
+				results: []*omnidriver.Result{{
+					Columns: []omnidriver.Column{{Name: "v", TypeName: tc.colType}},
+					Rows:    [][]omnidriver.Value{{tc.value}},
+				}},
+			}
+			driver := &Driver{}
+			driver.SetSession(sess)
 
-			result, err := util.RowsToQueryResult(rows, makeValueByTypeName, convertValue, 1<<20)
+			results, err := driver.QueryConn(ctx, "SELECT v", db.QueryContext{
+				Schema:               "analytics",
+				Limit:                50,
+				Explain:              true,
+				Option:               &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_JSON},
+				MaximumSQLResultSize: 1 << 20,
+				MaskingEnabled:       true,
+			})
 			require.NoError(t, err)
-			require.NoError(t, rows.Err())
-			require.Len(t, result.Rows, 1)
-			require.Equal(t, tc.wantType, result.ColumnTypeNames[0])
-			require.Empty(t, cmp.Diff(tc.want, result.Rows[0].Values[0], protocmp.Transform()))
+			require.Equal(t, omnidriver.QueryOptions{
+				Schema:         "analytics",
+				Limit:          50,
+				Explain:        true,
+				ExplainFormat:  "JSON",
+				MaxResultBytes: 1 << 20,
+				MaskingEnabled: true,
+			}, sess.gotOpts)
+			require.Len(t, results, 1)
+			require.Empty(t, results[0].Error)
+			require.Equal(t, []string{tc.colType}, results[0].ColumnTypeNames)
+			require.Len(t, results[0].Rows, 1)
+			require.Empty(t, cmp.Diff(tc.want, results[0].Rows[0].Values[0], protocmp.Transform()))
 		})
 	}
+
+	t.Run("fills zero affected rows only for columnless error-free results", func(t *testing.T) {
+		t.Parallel()
+		affected := int64(3)
+		sess := &stubQuerySession{
+			results: []*omnidriver.Result{
+				{Statement: "SET SESSION query_max_run_time = '1m'"},
+				{Statement: "INSERT INTO t VALUES (1), (2), (3)", AffectedRows: &affected},
+				{Statement: "SELECT * FROM missing", Err: errors.New("table not found")},
+			},
+		}
+		driver := &Driver{}
+		driver.SetSession(sess)
+
+		results, err := driver.QueryConn(ctx, "script", db.QueryContext{MaximumSQLResultSize: 1024})
+		require.NoError(t, err)
+		require.Len(t, results, 3)
+
+		require.Equal(t, []string{"Affected Rows"}, results[0].ColumnNames)
+		require.Equal(t, int64(1), results[0].RowsCount)
+		require.Equal(t, int64(0), results[0].Rows[0].Values[0].GetInt64Value())
+
+		require.Equal(t, []string{"Affected Rows"}, results[1].ColumnNames)
+		require.Equal(t, int64(3), results[1].Rows[0].Values[0].GetInt64Value())
+
+		require.Equal(t, "table not found", results[2].Error)
+		require.Empty(t, results[2].Rows)
+	})
 }

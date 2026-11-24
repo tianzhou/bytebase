@@ -849,7 +849,7 @@ func (s *DatabaseService) DiffSchema(ctx context.Context, req *connect.Request[v
 	// getParserEngine aliases MARIADB and OCEANBASE to MYSQL, which would otherwise route
 	// their raw-schema DiffSchema through the omni MySQL SDL path (canonicalizing MariaDB as
 	// MySQL 8.0 and emitting utf8mb4_0900_ai_ci, which MariaDB lacks). The downstream diff
-	// paths still take the parser engine, keeping the MySQL-registered differ/generator.
+	// paths still take the parser engine.
 	rawEngine, err := s.getRawEngine(ctx, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get engine"))
@@ -865,9 +865,7 @@ func (s *DatabaseService) DiffSchema(ctx context.Context, req *connect.Request[v
 		return connect.NewResponse(&v1pb.DiffSchemaResponse{Diff: migrationSQL}), nil
 	}
 
-	// Metadata-backed diff path. PostgreSQL/CockroachDB changelog targets use
-	// their registered metadata migration here, while other engines keep the
-	// existing metadata parser/generator behavior.
+	// Metadata-backed diff path.
 	sourceDBSchema, err := s.getSourceDBMetadata(ctx, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get source schema"))
@@ -876,7 +874,7 @@ func (s *DatabaseService) DiffSchema(ctx context.Context, req *connect.Request[v
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to get target schema"))
 	}
-	migrationSQL, err := schema.DiffMigration(engine, sourceDBSchema, targetDBSchema)
+	migrationSQL, err := schema.DiffMigration(metadataDiffEngine(rawEngine, engine), sourceDBSchema, targetDBSchema)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.Wrapf(err, "failed to compute schema diff"))
 	}
@@ -991,6 +989,16 @@ func (s *DatabaseService) getDiffSchemaDatabase(ctx context.Context, name string
 	return database, nil
 }
 
+// metadataDiffEngine is the engine a metadata diff registers under. MariaDB and
+// OceanBase parse as MySQL but register their diff under their own engines, where
+// each engine's own omni catalog renders it; MySQL's runs on omni's MySQL catalog.
+func metadataDiffEngine(rawEngine, parserEngine storepb.Engine) storepb.Engine {
+	if rawEngine == storepb.Engine_MARIADB || rawEngine == storepb.Engine_OCEANBASE {
+		return rawEngine
+	}
+	return parserEngine
+}
+
 // shouldDiffSchemaViaSDL reports whether a raw-schema-text DiffSchema target should take the
 // omni SDL diff path. engine MUST be the instance's real engine (not the parser-aliased one):
 // the SDL path is gated on common.EngineSupportSDLExport — the same gate GetDatabaseSDLSchema
@@ -1016,9 +1024,8 @@ func (s *DatabaseService) diffSchemaViaSDL(ctx context.Context, req *v1pb.DiffSc
 		return "", errors.Wrap(err, "failed to generate source SDL")
 	}
 
-	// Resolve the target server version so MySQL canonicalizes against the right stored
-	// form. Best-effort: an empty version falls back to the engine default and other
-	// engines ignore it.
+	// MySQL rejects an SDL diff for a server older than 8.0. Best-effort: with no
+	// version known the diff proceeds.
 	engineVersion := s.diffSchemaEngineVersion(ctx, req)
 
 	targetSDL, err := s.resolveDiffSchemaTargetSDL(ctx, req, engine)

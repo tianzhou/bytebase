@@ -2,21 +2,17 @@ package tsql
 
 import (
 	"context"
-	"slices"
-	"strings"
+	"errors"
 
-	"github.com/bytebase/omni/mssql/ast"
+	omnianalysis "github.com/bytebase/omni/analysis"
+	"github.com/bytebase/omni/metadata"
+	"github.com/bytebase/omni/mssql/analysis"
 
-	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	"github.com/bytebase/bytebase/backend/store/model"
 )
 
-func init() {
-	base.RegisterGetQuerySpan(storepb.Engine_MSSQL, GetQuerySpan)
-}
-
 // GetQuerySpan returns the query span for the given statement.
-// Runs on the omni AST extractor.
 func GetQuerySpan(
 	ctx context.Context,
 	gCtx base.GetQuerySpanContext,
@@ -24,56 +20,150 @@ func GetQuerySpan(
 	database, schema string,
 	ignoreCaseSensitive bool,
 ) (*base.QuerySpan, error) {
-	q := newOmniQuerySpanExtractor(database, schema, gCtx, ignoreCaseSensitive)
-	span, err := q.getOmniQuerySpan(ctx, stmt.Text)
+	tempTables := newTempTables(gCtx.TempTables)
+	span, err := analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultDatabase:     database,
+		DefaultSchema:       schema,
+		IgnoreCaseSensitive: ignoreCaseSensitive,
+		Catalog: analysis.Catalog{
+			ListDatabaseNames: base.QuerySpanListDatabasesFunc(ctx, gCtx, false),
+			GetDatabase: base.QuerySpanDatabaseGetter(ctx, gCtx, true, func(db *model.DatabaseMetadata) analysis.Database {
+				return catalogDatabase{database: db}
+			}),
+		},
+		TempTables: tempTables.omni,
+		PlanOutput: gCtx.PlanOutput,
+	})
+	tempTables.store(gCtx.TempTables)
 	if err != nil {
-		return nil, err
+		return nil, convertQuerySpanError(err)
 	}
-	if gCtx.PlanOutput != nil {
-		markPlanOutput(span, q.setOption, gCtx.PlanOutput)
-	}
-	return span, nil
+	return base.OmniResolvedSpan(&omnianalysis.ResolvedSpan{
+		Type:             span.Type,
+		ExplainAnalyze:   span.ExplainAnalyze,
+		SourceColumns:    span.SourceColumns,
+		Results:          span.Results,
+		PredicateColumns: span.PredicateColumns,
+		NotFoundError:    span.NotFoundError,
+	}), nil
 }
 
-var (
-	// showplanOptions plan a statement instead of running it.
-	showplanOptions = []string{"SHOWPLAN_ALL", "SHOWPLAN_TEXT", "SHOWPLAN_XML"}
-	// statisticsOptions run a statement and return its plan as well.
-	statisticsOptions = []string{"STATISTICS XML", "STATISTICS PROFILE"}
-)
+type catalogDatabase struct {
+	database *model.DatabaseMetadata
+}
 
-// markPlanOutput records what a SET statement turns on or off in output and
-// marks the statements a plan comes back for, since reading a plan needs
-// bb.sql.explain. While a SHOWPLAN option is on a read is an Explain; while a
-// STATISTICS option is on a statement is marked like EXPLAIN ANALYZE. A SET
-// that names one of these options is marked the same way, and any other SET
-// follows the batch's options like every other statement.
-func markPlanOutput(span *base.QuerySpan, set *ast.SetOptionStmt, output base.PlanOutput) {
-	if set != nil {
-		// Anything but OFF counts as on, so an unexpected form costs a check
-		// rather than skipping one.
-		on := true
-		if value, ok := set.Value.(*ast.ColumnRef); ok && strings.EqualFold(value.Column, "OFF") {
-			on = false
-		}
-		for _, option := range set.Options {
-			name := strings.ToUpper(option)
-			switch {
-			case slices.Contains(showplanOptions, name):
-				output[name] = on
-				span.Type = base.Explain
-			case slices.Contains(statisticsOptions, name):
-				output[name] = on
-				span.ExplainAnalyze = true
-			default:
+func (d catalogDatabase) ListSchemaNames() []string { return d.database.ListSchemaNames() }
+
+func (d catalogDatabase) GetSchema(name string) analysis.Schema {
+	schema := d.database.GetSchemaMetadata(name)
+	if schema == nil {
+		return nil
+	}
+	return catalogSchema{schema: schema}
+}
+
+type catalogSchema struct {
+	schema *model.SchemaMetadata
+}
+
+func (s catalogSchema) ListTableNames() []string { return s.schema.ListTableNames() }
+
+func (s catalogSchema) GetTable(name string) *metadata.TableMetadata {
+	table := s.schema.GetTable(name)
+	if table == nil {
+		return nil
+	}
+	return table.GetProto()
+}
+
+func (s catalogSchema) ListViewNames() []string { return s.schema.ListViewNames() }
+
+func (s catalogSchema) GetView(name string) *metadata.ViewMetadata { return s.schema.GetView(name) }
+
+// tempTables carries a batch's temp tables to omni and back. omni adds the
+// ones a statement declares; store copies those into the batch's map.
+type tempTables struct {
+	omni     map[string]*analysis.TempTable
+	original map[string]*analysis.TempTable
+}
+
+func newTempTables(batch map[string]*base.PhysicalTable) tempTables {
+	if batch == nil {
+		return tempTables{}
+	}
+	t := tempTables{
+		omni:     make(map[string]*analysis.TempTable, len(batch)),
+		original: make(map[string]*analysis.TempTable, len(batch)),
+	}
+	for name, table := range batch {
+		var converted *analysis.TempTable
+		if table != nil {
+			converted = &analysis.TempTable{
+				Server:   table.Server,
+				Database: table.Database,
+				Schema:   table.Schema,
+				Name:     table.Name,
+				Columns:  table.Columns,
 			}
 		}
+		t.omni[name] = converted
+		t.original[name] = converted
 	}
-	isOn := func(name string) bool { return output[name] }
-	if slices.ContainsFunc(showplanOptions, isOn) && span.Type == base.Select {
-		span.Type = base.Explain
+	return t
+}
+
+func (t tempTables) store(batch map[string]*base.PhysicalTable) {
+	for name, table := range t.omni {
+		if original, ok := t.original[name]; ok && original == table {
+			continue
+		}
+		batch[name] = &base.PhysicalTable{
+			Server:   table.Server,
+			Database: table.Database,
+			Schema:   table.Schema,
+			Name:     table.Name,
+			Columns:  table.Columns,
+		}
 	}
-	if slices.ContainsFunc(statisticsOptions, isOn) {
-		span.ExplainAnalyze = true
+}
+
+func convertQuerySpanError(err error) error {
+	if mixErr := base.ConvertOmniMixTablesError(err); mixErr != nil {
+		return mixErr
+	}
+	var typeNotSupported *analysis.TypeNotSupportedError
+	var notFound *analysis.NotFoundError
+	if errors.As(err, &typeNotSupported) || errors.As(err, &notFound) {
+		return querySpanError{err}
+	}
+	return err
+}
+
+// querySpanError is an omni resolution error that matches the parser/base
+// error types its omni counterparts convert to.
+type querySpanError struct {
+	error
+}
+
+func (e querySpanError) Unwrap() error { return e.error }
+
+func (e querySpanError) As(target any) bool {
+	switch target := target.(type) {
+	case **base.TypeNotSupportedError:
+		var err *analysis.TypeNotSupportedError
+		if !errors.As(e.error, &err) {
+			return false
+		}
+		*target = base.OmniTypeNotSupportedError(err)
+		return true
+	case **base.ResourceNotFoundError:
+		var err *analysis.NotFoundError
+		if !errors.As(e.error, &err) {
+			return false
+		}
+		*target = base.OmniResourceNotFoundError(err)
+		return true
+	default:
+		return false
 	}
 }

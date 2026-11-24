@@ -144,10 +144,12 @@ func (s *Server) handleDecideIssue(ctx context.Context, req *mcp.CallToolRequest
 	if err != nil {
 		return formatToolError(err), nil, nil
 	}
-	return s.askToConfirm(ctx, decision, digest, message,
-		fmt.Sprintf("%s this issue", capitalize(decision.verb())),
-		fmt.Sprintf("Check to %s the issue described above. Leaving it unchecked, declining or cancelling changes nothing.", decision.verb()),
-	), nil, nil
+	action := capitalize(decision.verb())
+	choice := confirmChoice{question: action + " this issue?", action: action}
+	if view.Comment != "" {
+		choice.description = fmt.Sprintf("Comment: %q", view.Comment)
+	}
+	return s.askToConfirm(ctx, decision, digest, message, choice), nil, nil
 }
 
 func parseIssueDecision(input DecideIssueInput) (*issueDecision, error) {
@@ -185,7 +187,7 @@ func refuseIssueType(issue issueView, decision *issueDecision, link string) *too
 	case "ROLE_GRANT":
 		return &toolError{
 			Code: "ROLE_GRANT_NOT_SUPPORTED",
-			Message: fmt.Sprintf("approving a role request grants a project role, which MCP does not do yet, so %s was not %s and nothing changed",
+			Message: fmt.Sprintf("approving a role request grants a project role, which decide_issue does not do, so %s was not %s and nothing changed",
 				decision.issue, decision.pastTense()),
 			Suggestion: "decide it signed in to the Bytebase console: " + link,
 		}
@@ -221,15 +223,19 @@ func (s *Server) recordRefusedDecision(ctx context.Context, decision *issueDecis
 	audit.RecordOutOfBandAudit(ctx, s.store, s.profile.RuntimeEnableAuditLogStdout.Load(), getWorkspaceID(ctx), row)
 }
 
-// decideOnAnswer acts on the answer to a form this server sent. Only an
-// accepted form with the box checked decides, and only while what the user
-// was asked about still matches the issue. A decline is reported before a
-// change, so a user who said no is not asked again.
+// decideOnAnswer acts on the answer to a form this server sent. Only the
+// form's action decides, and only while what the user was asked about still
+// matches the issue. A decline is reported before staleness is checked, so a
+// user who said no is not asked again.
 func (s *Server) decideOnAnswer(ctx context.Context, decision *issueDecision, reply *confirmationReply, issueUpdateTime, link string) (*mcp.CallToolResult, any) {
-	if confirmed, why := confirmationOutcome(reply.response); !confirmed {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf(
-			"Not %s: %s, so nothing changed. Do not retry unless the user asks.\nIssue: %s",
-			decision.pastTense(), why, link)}}}, nil
+	switch choice, why := confirmationOutcome(reply.response); choice {
+	case confirmChoiceApply:
+	case confirmChoiceChange:
+		return textResult(fmt.Sprintf("Not %s: %s. Ask them what to change, such as the decision or its comment, then call decide_issue again.\nIssue: %s",
+			decision.pastTense(), why, link)), nil
+	default:
+		return textResult(fmt.Sprintf("Not %s: %s, so nothing changed. Do not retry unless the user asks.\nIssue: %s",
+			decision.pastTense(), why, link)), nil
 	}
 	if why := reply.staleReason(fmt.Sprintf("what the user confirmed no longer matches %s as it is now", decision.issue)); why != "" {
 		return formatToolError(&toolError{
@@ -421,17 +427,16 @@ func (v *confirmationView) digest() ([]byte, error) {
 }
 
 // describeIssueDecision builds the confirmation message: the decision, the
-// issue, what approving it would let happen, the step it decides, and the
-// comment it records. Every value taken from the issue or from the agent enters
-// through %q, which escapes line breaks, so no value can pose as a line of the
-// message. The message carries no link: the MCP specification asks servers not
-// to put clickable URLs in a form.
+// issue, what approving it would let happen, and the step it decides. Every
+// value taken from the issue enters through %q, which escapes line breaks, so
+// no value can pose as a line of the message. The message carries no link: the
+// MCP specification asks servers not to put clickable URLs in a form.
 //
 // Claude Code 2.1.302 shows four lines of a message, or three and "… (+N more
 // lines)", and cuts each line six columns short of the terminal width. So each
 // line does one job, its bounded part first: the decision; the targets, counted
-// before they are named; the statement; then the approval step, requester and
-// comment. A plan with several changes shows its first change and the total.
+// before they are named; the statement; then the approval step and requester.
+// A plan with several changes shows its first change and the total.
 //
 // It fails closed: if any part cannot be read, nothing is asked.
 func (s *Server) describeIssueDecision(ctx context.Context, decision *issueDecision, view *confirmationView) (string, error) {
@@ -454,9 +459,6 @@ func (s *Server) describeIssueDecision(ctx context.Context, decision *issueDecis
 			return "", err
 		}
 	default:
-	}
-	if view.Comment != "" {
-		last += fmt.Sprintf(" Comment: %q", view.Comment)
 	}
 	lines := append([]string{question + "?"}, details...)
 	return strings.Join(append(lines, last), "\n"), nil

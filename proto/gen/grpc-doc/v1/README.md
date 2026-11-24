@@ -71,6 +71,9 @@
     - [Task](#bytebase-v1-Task)
     - [Task.DatabaseCreate](#bytebase-v1-Task-DatabaseCreate)
     - [Task.DatabaseUpdate](#bytebase-v1-Task-DatabaseUpdate)
+    - [Task.ReleaseState](#bytebase-v1-Task-ReleaseState)
+    - [Task.ReleaseState.DeletedRevision](#bytebase-v1-Task-ReleaseState-DeletedRevision)
+    - [Task.ReleaseState.Range](#bytebase-v1-Task-ReleaseState-Range)
     - [TaskRun](#bytebase-v1-TaskRun)
     - [TaskRun.SchedulerInfo](#bytebase-v1-TaskRun-SchedulerInfo)
     - [TaskRun.SchedulerInfo.WaitingCause](#bytebase-v1-TaskRun-SchedulerInfo-WaitingCause)
@@ -214,8 +217,7 @@
     - [IssueComment.Approval.Status](#bytebase-v1-IssueComment-Approval-Status)
     - [IssueComment.ReviewMetadata.Priority](#bytebase-v1-IssueComment-ReviewMetadata-Priority)
     - [IssueComment.ThreadState](#bytebase-v1-IssueComment-ThreadState)
-    - [ReviewRun.Status](#bytebase-v1-ReviewRun-Status)
-    - [ReviewRun.Type](#bytebase-v1-ReviewRun-Type)
+    - [ReviewRun.State](#bytebase-v1-ReviewRun-State)
   
     - [IssueService](#bytebase-v1-IssueService)
   
@@ -316,6 +318,7 @@
     - [AuditLog](#bytebase-v1-AuditLog)
     - [ExportAuditLogsRequest](#bytebase-v1-ExportAuditLogsRequest)
     - [ExportAuditLogsResponse](#bytebase-v1-ExportAuditLogsResponse)
+    - [FederatedIdentity](#bytebase-v1-FederatedIdentity)
     - [MCPDelegation](#bytebase-v1-MCPDelegation)
     - [RequestMetadata](#bytebase-v1-RequestMetadata)
     - [SearchAuditLogsRequest](#bytebase-v1-SearchAuditLogsRequest)
@@ -476,15 +479,27 @@
     - [DataSourceExternalSecret](#bytebase-v1-DataSourceExternalSecret)
     - [DataSourceExternalSecret.AppRoleAuthOption](#bytebase-v1-DataSourceExternalSecret-AppRoleAuthOption)
     - [DeleteInstanceRequest](#bytebase-v1-DeleteInstanceRequest)
+    - [DiscoverNeonBranchesRequest](#bytebase-v1-DiscoverNeonBranchesRequest)
+    - [DiscoverNeonBranchesResponse](#bytebase-v1-DiscoverNeonBranchesResponse)
     - [GetInstanceRequest](#bytebase-v1-GetInstanceRequest)
+    - [ImportInstancesRequest](#bytebase-v1-ImportInstancesRequest)
+    - [ImportInstancesResponse](#bytebase-v1-ImportInstancesResponse)
     - [Instance](#bytebase-v1-Instance)
     - [Instance.LabelsEntry](#bytebase-v1-Instance-LabelsEntry)
+    - [InstanceImport](#bytebase-v1-InstanceImport)
+    - [InstanceImportFailure](#bytebase-v1-InstanceImportFailure)
+    - [InstanceImportResult](#bytebase-v1-InstanceImportResult)
     - [InstanceResource](#bytebase-v1-InstanceResource)
     - [KerberosConfig](#bytebase-v1-KerberosConfig)
     - [ListInstanceDatabaseRequest](#bytebase-v1-ListInstanceDatabaseRequest)
     - [ListInstanceDatabaseResponse](#bytebase-v1-ListInstanceDatabaseResponse)
     - [ListInstancesRequest](#bytebase-v1-ListInstancesRequest)
     - [ListInstancesResponse](#bytebase-v1-ListInstancesResponse)
+    - [NeonBranch](#bytebase-v1-NeonBranch)
+    - [NeonBranchSource](#bytebase-v1-NeonBranchSource)
+    - [NeonCredential](#bytebase-v1-NeonCredential)
+    - [NeonDatabase](#bytebase-v1-NeonDatabase)
+    - [NeonProjectDiscoveryFailure](#bytebase-v1-NeonProjectDiscoveryFailure)
     - [PrepareSampleProjectInstanceRequest](#bytebase-v1-PrepareSampleProjectInstanceRequest)
     - [RemoveDataSourceRequest](#bytebase-v1-RemoveDataSourceRequest)
     - [SASLConfig](#bytebase-v1-SASLConfig)
@@ -503,6 +518,8 @@
     - [DataSourceExternalSecret.SecretType](#bytebase-v1-DataSourceExternalSecret-SecretType)
     - [DataSourceExternalSecret.TokenType](#bytebase-v1-DataSourceExternalSecret-TokenType)
     - [DataSourceType](#bytebase-v1-DataSourceType)
+    - [InstanceImportFailure.CreationOutcome](#bytebase-v1-InstanceImportFailure-CreationOutcome)
+    - [Vendor](#bytebase-v1-Vendor)
   
     - [InstanceService](#bytebase-v1-InstanceService)
   
@@ -665,6 +682,7 @@
     - [Release](#bytebase-v1-Release)
     - [Release.File](#bytebase-v1-Release-File)
     - [Release.VCSSource](#bytebase-v1-Release-VCSSource)
+    - [Release.VCSSource.PullRequest](#bytebase-v1-Release-VCSSource-PullRequest)
     - [UndeleteReleaseRequest](#bytebase-v1-UndeleteReleaseRequest)
     - [UpdateReleaseRequest](#bytebase-v1-UpdateReleaseRequest)
     - [VCSUser](#bytebase-v1-VCSUser)
@@ -1417,6 +1435,7 @@ StatementType represents the type of SQL statement.
 | UPDATE | 61 |  |
 | DELETE | 62 |  |
 | MERGE | 63 |  |
+| EXECUTE | 70 | A statement that runs procedural or dynamic code: a procedure call (CALL, T-SQL EXEC), a prepared or dynamic statement (EXECUTE, EXECUTE IMMEDIATE, EXEC of a SQL string), or an anonymous block (PostgreSQL DO, Oracle BEGIN ... END). |
 
 
 
@@ -1785,6 +1804,8 @@ When paginating, all other parameters provided to `ListTaskRuns` must match the 
 | database_update | [Task.DatabaseUpdate](#bytebase-v1-Task-DatabaseUpdate) |  |  |
 | update_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) | optional | The update_time is the update time of latest task run. If there are no task runs, it will be empty. |
 | run_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) | optional | The run_time is the scheduled run time of latest task run. If there are no task runs or the task run is not scheduled, it will be empty. |
+| skipper | [string](#string) |  | The user who skipped the task. Format: users/hello@world.com |
+| skip_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the task was skipped. |
 
 
 
@@ -1816,6 +1837,59 @@ Payload for updating a database schema.
 | ----- | ---- | ----- | ----------- |
 | sheet | [string](#string) |  | Format: projects/{project}/sheets/{sheet} |
 | release | [string](#string) |  | Format: projects/{project}/releases/{release} |
+| release_state | [Task.ReleaseState](#bytebase-v1-Task-ReleaseState) |  | The release&#39;s file state on the target database when the rollout was created. Set only for a versioned release. The run reads the database&#39;s revisions again when it starts. |
+
+
+
+
+
+
+<a name="bytebase-v1-Task-ReleaseState"></a>
+
+### Task.ReleaseState
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| pending_ranges | [Task.ReleaseState.Range](#bytebase-v1-Task-ReleaseState-Range) | repeated | The release&#39;s files the task will apply, as half-open ranges of positions in the release&#39;s `files`, ascending. Every other file&#39;s version had a live revision on the database. |
+| pending_count | [int32](#int32) |  | The number of files the task will apply: the ranges&#39; total length. |
+| applied_count | [int32](#int32) |  | The number of the release&#39;s versions already applied. |
+| compute_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the state was computed. |
+| deleted_revisions | [Task.ReleaseState.DeletedRevision](#bytebase-v1-Task-ReleaseState-DeletedRevision) | repeated | The versions to apply that had a deleted revision, in release order. |
+
+
+
+
+
+
+<a name="bytebase-v1-Task-ReleaseState-DeletedRevision"></a>
+
+### Task.ReleaseState.DeletedRevision
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| version | [string](#string) |  |  |
+| delete_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the newest revision of this version was deleted. |
+| deleter | [string](#string) |  | The user who deleted it. Format: users/hello@world.com |
+
+
+
+
+
+
+<a name="bytebase-v1-Task-ReleaseState-Range"></a>
+
+### Task.ReleaseState.Range
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| start | [int32](#int32) |  |  |
+| end | [int32](#int32) |  |  |
 
 
 
@@ -3242,6 +3316,7 @@ For example: creator == &#34;users/ed@bytebase.com&#34; &amp;&amp; create_time &
 | code | [int32](#int32) |  |  |
 | target | [string](#string) |  | Target identification for consolidated results. Format: instances/{instance}/databases/{database} or projects/{project}/instances/{instance}/databases/{database} |
 | type | [PlanCheckRun.Result.Type](#bytebase-v1-PlanCheckRun-Result-Type) |  |  |
+| sheet_sha256 | [string](#string) |  | The content hash of the SQL sheet the result checked, which tells apart the plan&#39;s changes that target the same database. Empty for a result stored before it was recorded. |
 | sql_summary_report | [PlanCheckRun.Result.SqlSummaryReport](#bytebase-v1-PlanCheckRun-Result-SqlSummaryReport) |  |  |
 | sql_review_report | [PlanCheckRun.Result.SqlReviewReport](#bytebase-v1-PlanCheckRun-Result-SqlReviewReport) |  |  |
 
@@ -3565,7 +3640,7 @@ needs a person&#39;s acceptance, not that it is forbidden.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| name | [string](#string) |  | The name of the review run to retrieve. Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun} |
+| name | [string](#string) |  | The name of the review run to retrieve. Format: projects/{project}/issues/{issue}/reviewRun |
 
 
 
@@ -3710,14 +3785,13 @@ What a review result carries beyond its text.
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| run_type | [ReviewRun.Type](#bytebase-v1-ReviewRun-Type) |  | The reviewer that posted the result. |
-| rule_type | [ReviewRuleType](#bytebase-v1-ReviewRuleType) |  | The rule judged against. Set if and only if run_type is RULE. |
+| rule_type | [ReviewRuleType](#bytebase-v1-ReviewRuleType) |  | The standard rule judged against. Set on the result of a standard rule, and on no other result. |
 | priority | [IssueComment.ReviewMetadata.Priority](#bytebase-v1-IssueComment-ReviewMetadata-Priority) |  |  |
 | targets | [string](#string) | repeated | Every database the result applies to, sorted. Format: instances/{instance}/databases/{database} |
-| superseded | [bool](#bool) |  | A later run of the same reviewer has completed without reporting the result again, whatever its thread state. |
+| superseded | [bool](#bool) |  | A later run has completed without reporting the result again, whatever its thread state. |
 | attempt | [int64](#int64) |  | The ReviewRunCompletion.attempt of the run that posted the result. A result a later run reports again keeps its thread and its attempt. |
-| codes | [string](#string) | repeated | The conditions a RULE result reports, as finding codes such as &#34;WT101&#34;, one per reason. A code names the same condition on every engine. Empty for other reviewers. |
-| title | [string](#string) |  | The name of the problem an AI result reports, on one line; the comment holds the rest. Empty for a RULE result, which rule_type names. |
+| codes | [string](#string) | repeated | The conditions the result of a standard rule reports, as finding codes such as &#34;WT101&#34;, one per reason. A code names the same condition on every engine. Empty on any other result. |
+| title | [string](#string) |  | The name of the problem, on one line, for a result that no standard rule names; the comment holds the rest. Empty on the result of a standard rule, which rule_type names. |
 
 
 
@@ -3727,14 +3801,13 @@ What a review result carries beyond its text.
 <a name="bytebase-v1-IssueComment-ReviewRunCompletion"></a>
 
 ### IssueComment.ReviewRunCompletion
-A review run completed, and what it did to the results of its reviewer.
-Posted by the reviewer, with no creator.
+A review run completed, and what it did to the earlier results. Posted
+by the review, with no creator.
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| run_type | [ReviewRun.Type](#bytebase-v1-ReviewRun-Type) |  | The reviewer that ran. |
-| attempt | [int64](#int64) |  | Identifies the run among its reviewer&#39;s runs on the issue. The results it posted carry the same ReviewMetadata.attempt. |
+| attempt | [int64](#int64) |  | Identifies the run among the runs on the issue. The results it posted carry the same ReviewMetadata.attempt. |
 | posted_count | [int32](#int32) |  | Results the run posted as new threads. |
 | kept_count | [int32](#int32) |  | Earlier results the run reported again, which kept their threads. |
 | superseded_count | [int32](#int32) |  | Earlier results the run no longer reports, now superseded. |
@@ -3887,12 +3960,11 @@ For example: creator == &#34;users/ed@bytebase.com&#34; &amp;&amp; status in [&#
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| name | [string](#string) |  | Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun} The {reviewRun} id is the reviewer: &#34;rule&#34; or &#34;ai&#34;. The name addresses a slot, not an execution. |
-| type | [ReviewRun.Type](#bytebase-v1-ReviewRun-Type) |  | Derived from the name. |
-| status | [ReviewRun.Status](#bytebase-v1-ReviewRun-Status) |  |  |
+| name | [string](#string) |  | Format: projects/{project}/issues/{issue}/reviewRun An issue has one review run. The name addresses the current run, which a re-run replaces. |
+| state | [ReviewRun.State](#bytebase-v1-ReviewRun-State) |  |  |
 | create_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the current run was triggered. Reset on every re-run. |
-| end_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the run reached a terminal status. Unset while AVAILABLE or RUNNING. |
-| error | [string](#string) |  | Fatal execution error, set if and only if status is FAILED: the review failed to execute (a platform problem, never the SQL — SQL problems are review results on a DONE run). |
+| end_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the run reached a terminal state. Unset while RUNNING. |
+| error | [google.rpc.Status](#google-rpc-Status) |  | Fatal execution error, set if and only if state is FAILED: the review failed to execute (a platform problem, never the SQL — SQL problems are review results on a SUCCEEDED run). |
 | outdated | [bool](#bool) |  | Whether the plan&#39;s SQL changed after this run started, so the run reviews an earlier version of it. The server starts a new run before it creates the rollout automatically. |
 
 
@@ -3926,7 +3998,7 @@ For example: creator == &#34;users/ed@bytebase.com&#34; &amp;&amp; status in [&#
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| name | [string](#string) |  | Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun} |
+| name | [string](#string) |  | Format: projects/{project}/issues/{issue}/reviewRun |
 
 
 
@@ -4100,33 +4172,18 @@ blocking, which thread_state alone decides.
 
 
 
-<a name="bytebase-v1-ReviewRun-Status"></a>
+<a name="bytebase-v1-ReviewRun-State"></a>
 
-### ReviewRun.Status
-States follow task_run, minus PENDING (review needs no admission
-control) and minus CANCELED (runs are side-effect-free until the fenced
-completion transaction, so re-running supersedes instead of canceling).
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| STATUS_UNSPECIFIED | 0 |  |
-| AVAILABLE | 1 | Created and claimable by any replica. |
-| RUNNING | 2 |  |
-| DONE | 3 | Every (spec, target) unit in the reviewer&#39;s scope was evaluated. RULE&#39;s scope is every target. AI&#39;s scope is the project&#39;s CI sample, the first ci_sampling_size targets of each spec, or every target when ci_sampling_size is 0. DONE does not mean the review passed: whether problems remain is judged from open comments. |
-| FAILED | 4 | At least one unit was not evaluated; the cause is in `error`. |
-
-
-
-<a name="bytebase-v1-ReviewRun-Type"></a>
-
-### ReviewRun.Type
-
+### ReviewRun.State
+There is no canceled state: a run has no effect until its fenced
+completion transaction, so a re-run supersedes it instead.
 
 | Name | Number | Description |
 | ---- | ------ | ----------- |
-| TYPE_UNSPECIFIED | 0 |  |
-| RULE | 1 | Review against the standard rules. |
-| AI | 2 | Review against the natural-language AI review policy, performed by a model. |
+| STATE_UNSPECIFIED | 0 |  |
+| RUNNING | 1 | Queued or running. |
+| SUCCEEDED | 2 | Every (spec, target) unit in scope was evaluated. SUCCEEDED does not mean the review passed: whether problems remain is judged from open comments. |
+| FAILED | 3 | At least one unit was not evaluated; the cause is in `error`. |
 
 
  
@@ -4154,8 +4211,8 @@ IssueService manages issues for tracking database changes and tasks.
 | RejectIssue | [RejectIssueRequest](#bytebase-v1-RejectIssueRequest) | [Issue](#bytebase-v1-Issue) | Rejects an issue. Access determined by approval flow configuration - caller must be a designated approver for the current approval step. Permissions required: None (determined by approval flow) |
 | RequestIssue | [RequestIssueRequest](#bytebase-v1-RequestIssueRequest) | [Issue](#bytebase-v1-Issue) | Requests changes on an issue. Access determined by approval flow configuration - caller must be a designated approver for the current approval step. Permissions required: None (determined by approval flow) |
 | RetryIssueApproval | [RetryIssueApprovalRequest](#bytebase-v1-RetryIssueApprovalRequest) | [Issue](#bytebase-v1-Issue) | Re-runs approval-template finding for an issue stuck in CHECKING. Useful when the synchronous post-create finding errored (e.g. against a malformed workspace approval rule) and the operator has since corrected it — without this, the issue would remain in CHECKING indefinitely because there is no other retry path for non-DATABASE_CHANGE issue types. Idempotent: returns the existing issue unchanged when approval-finding has already completed. Permissions required: None (caller must be the issue creator; mirrors RequestIssue&#39;s authorization model). |
-| GetReviewRun | [GetReviewRunRequest](#bytebase-v1-GetReviewRunRequest) | [ReviewRun](#bytebase-v1-ReviewRun) | Gets the current run of one reviewer on an issue. The run carries execution status only; review results are issue comments. A reviewer that has never run on the issue is NOT_FOUND. Permissions required: bb.reviewRuns.get |
-| RunReview | [RunReviewRequest](#bytebase-v1-RunReviewRequest) | [ReviewRun](#bytebase-v1-ReviewRun) | Triggers a review run. The slot is reset unconditionally: a RUNNING execution is superseded (its completion is fenced off), the attempt number is bumped, and the returned run is AVAILABLE. Review results are not returned by this RPC: they are posted as issue comments. The returned run carries execution status only, and GetReviewRun reads it back. The audit log is the only record of who triggered a run. Permissions required: bb.reviewRuns.run |
+| GetReviewRun | [GetReviewRunRequest](#bytebase-v1-GetReviewRunRequest) | [ReviewRun](#bytebase-v1-ReviewRun) | Gets the review run of an issue. The run carries the execution state only; review results are issue comments. An issue the review has never run on is NOT_FOUND. Permissions required: bb.reviewRuns.get |
+| RunReview | [RunReviewRequest](#bytebase-v1-RunReviewRequest) | [ReviewRun](#bytebase-v1-ReviewRun) | Starts the review of an issue. It replaces the current run unconditionally: an execution in flight is superseded (its completion is fenced off), and the returned run is RUNNING. Review results are not returned by this RPC: they are posted as issue comments. The returned run carries the execution state only, and GetReviewRun reads it back. The audit log is the only record of who triggered a run. Permissions required: bb.reviewRuns.run |
 
  
 
@@ -5584,6 +5641,7 @@ Audit log entry recording system activity or API call.
 | service_data | [google.protobuf.Any](#google-protobuf-Any) |  | Service-specific metadata about the request, response, and activities. |
 | request_metadata | [RequestMetadata](#bytebase-v1-RequestMetadata) |  | Metadata about the request context. |
 | mcp_delegation | [MCPDelegation](#bytebase-v1-MCPDelegation) |  | MCP delegation provenance. Present exactly when the audited call arrived through the MCP server&#39;s delegated credential; never set for public API calls. Presence of this message is the MCP-origin marker. |
+| federated_identity | [FederatedIdentity](#bytebase-v1-FederatedIdentity) |  | The external workload behind a workload identity. Set on a successful token exchange and on every call made with the token it issued. |
 
 
 
@@ -5620,6 +5678,22 @@ Response message for exporting audit logs.
 | ----- | ---- | ----- | ----------- |
 | content | [bytes](#bytes) |  | The exported audit log content in the requested format. |
 | next_page_token | [string](#string) |  | A token to retrieve next page of log entities. Pass this value in the page_token field in the subsequent call to retrieve the next page of log entities. |
+
+
+
+
+
+
+<a name="bytebase-v1-FederatedIdentity"></a>
+
+### FederatedIdentity
+The verified OIDC identity a workload identity token was exchanged for.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| issuer | [string](#string) |  | The token&#39;s &#34;iss&#34; claim, e.g. &#34;https://token.actions.githubusercontent.com&#34;. |
+| subject | [string](#string) |  | The token&#39;s &#34;sub&#34; claim, e.g. &#34;repo:my-org/app:ref:refs/heads/main&#34;. |
 
 
 
@@ -5674,9 +5748,9 @@ Request message for searching audit logs.
 | parent | [string](#string) |  |  |
 | filter | [string](#string) |  | The filter of the log. It should be a valid CEL expression. The syntax and semantics of CEL are documented at https://github.com/google/cel-spec
 
-Supported filter: - method: the API name, can be found in the docs. Usually &#34;/bytebase.v1.…&#34;, for example &#34;/bytebase.v1.UserService/CreateUser&#34;; entries written outside the v1 API carry their own prefix, such as &#34;/bytebase.mcp.Session/Authorize&#34; or &#34;/bytebase.cli.Recovery/ResetUserPassword&#34;. Support &#34;==&#34; operator. - resource: the resource the entry is about, support &#34;==&#34; operator. - severity: support &#34;==&#34; operator, check Severity enum in AuditLog message for values. - actor: the actor, in users/{email}, serviceAccounts/{email}, or workloadIdentities/{email} format. Support &#34;==&#34; operator. - create_time: support &#34;&gt;=&#34; and &#34;&lt;=&#34; operator. - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support &#34;==&#34; operator. - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry&#39;s mcp_delegation.correlation_id. Support &#34;==&#34; operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here.
+Supported filter: - method: the API name, can be found in the docs. Usually &#34;/bytebase.v1.…&#34;, for example &#34;/bytebase.v1.UserService/CreateUser&#34;; entries written outside the v1 API carry their own prefix, such as &#34;/bytebase.mcp.Session/Authorize&#34; or &#34;/bytebase.cli.Recovery/ResetUserPassword&#34;. Support &#34;==&#34; operator. - resource: the resource the entry is about, support &#34;==&#34; operator. - severity: support &#34;==&#34; operator, check Severity enum in AuditLog message for values. - actor: the actor, in users/{email}, serviceAccounts/{email}, or workloadIdentities/{email} format. Support &#34;==&#34; operator. - create_time: support &#34;&gt;=&#34; and &#34;&lt;=&#34; operator. - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support &#34;==&#34; operator. - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry&#39;s mcp_delegation.correlation_id. Support &#34;==&#34; operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here. - federated_subject: the external subject behind a workload identity, taken from an entry&#39;s federated_identity.subject. Support &#34;==&#34; operator.
 
-For example: - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; actor == &#39;users/bb@bytebase.com&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; create_time &lt;= &#39;2021-01-01T00:00:00Z&#39; &amp;&amp; create_time &gt;= &#39;2020-01-01T00:00:00Z&#39;&#34; - filter = &#34;mcp == true&#34; - filter = &#34;mcp_correlation_id == &#39;0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60&#39;&#34; |
+For example: - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; actor == &#39;users/bb@bytebase.com&#39;&#34; - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; create_time &lt;= &#39;2021-01-01T00:00:00Z&#39; &amp;&amp; create_time &gt;= &#39;2020-01-01T00:00:00Z&#39;&#34; - filter = &#34;mcp == true&#34; - filter = &#34;mcp_correlation_id == &#39;0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60&#39;&#34; - filter = &#34;federated_subject == &#39;repo:my-org/app:ref:refs/heads/main&#39;&#34; |
 | order_by | [string](#string) |  | The order by of the log. Only support order by create_time. The default sorting order is ascending. For example: - order_by = &#34;create_time asc&#34; - order_by = &#34;create_time desc&#34; |
 | page_size | [int32](#int32) |  | The maximum number of logs to return. The service may return fewer than this value. If unspecified, at most 10 log entries will be returned. The maximum value is 5000; values above 5000 will be coerced to 5000. |
 | page_token | [string](#string) |  | A page token, received from a previous `SearchLogs` call. Provide this to retrieve the subsequent page. |
@@ -7952,6 +8026,42 @@ This value should be 4-63 characters, and valid characters are /[a-z][0-9]-/. |
 
 
 
+<a name="bytebase-v1-DiscoverNeonBranchesRequest"></a>
+
+### DiscoverNeonBranchesRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| parent | [string](#string) | optional | The parent, which owns this collection of instances. Format: projects/{project}. If omitted, branches are discovered for the workspace collection. |
+| api_key | [string](#string) |  | Used only during this request and never persisted. |
+| project_id | [string](#string) |  | Neon project filter. Required for project-scoped Neon keys. |
+| page_size | [int32](#int32) |  | Defaults to 50. Values above 100 are capped; negative values are invalid. |
+| page_token | [string](#string) |  | Opaque continuation token containing no credentials. The destination and project filter must match the original request; page size may change. |
+
+
+
+
+
+
+<a name="bytebase-v1-DiscoverNeonBranchesResponse"></a>
+
+### DiscoverNeonBranchesResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| branches | [NeonBranch](#bytebase-v1-NeonBranch) | repeated |  |
+| next_page_token | [string](#string) |  | Only an empty token indicates completion; a page may contain zero branches. |
+| failures | [NeonProjectDiscoveryFailure](#bytebase-v1-NeonProjectDiscoveryFailure) | repeated | Projects that could not be enumerated must not be interpreted as empty. |
+
+
+
+
+
+
 <a name="bytebase-v1-GetInstanceRequest"></a>
 
 ### GetInstanceRequest
@@ -7961,6 +8071,38 @@ This value should be 4-63 characters, and valid characters are /[a-z][0-9]-/. |
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | name | [string](#string) |  | The name of the instance to retrieve. Format: instances/{instance} or projects/{project}/instances/{instance} |
+
+
+
+
+
+
+<a name="bytebase-v1-ImportInstancesRequest"></a>
+
+### ImportInstancesRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| parent | [string](#string) | optional | The parent, which owns this collection of instances. Format: projects/{project}. If omitted, every entry is created in the workspace collection; otherwise, every entry is created in this project collection. |
+| neon_credential | [NeonCredential](#bytebase-v1-NeonCredential) |  |  |
+| imports | [InstanceImport](#bytebase-v1-InstanceImport) | repeated | Between 1 and 20 entries. Every entry&#39;s source must belong to the credential. Duplicate target IDs or sources are rejected before any creation. Successful entries are not rolled back. |
+
+
+
+
+
+
+<a name="bytebase-v1-ImportInstancesResponse"></a>
+
+### ImportInstancesResponse
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| results | [InstanceImportResult](#bytebase-v1-InstanceImportResult) | repeated | Exactly one result per entry, in request order. |
 
 
 
@@ -7989,6 +8131,7 @@ This value should be 4-63 characters, and valid characters are /[a-z][0-9]-/. |
 | sync_databases | [SyncDatabases](#bytebase-v1-SyncDatabases) |  | Enable sync for following databases. Not set means sync all schemas &amp; databases. |
 | last_sync_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | The last time the instance was synced. |
 | labels | [Instance.LabelsEntry](#bytebase-v1-Instance-LabelsEntry) | repeated | Labels are key-value pairs that can be attached to the instance. For example, { &#34;org_group&#34;: &#34;infrastructure&#34;, &#34;environment&#34;: &#34;production&#34; } |
+| vendor | [Vendor](#bytebase-v1-Vendor) |  | Database service variant. Unspecified retains generic connection behavior. |
 
 
 
@@ -8005,6 +8148,58 @@ This value should be 4-63 characters, and valid characters are /[a-z][0-9]-/. |
 | ----- | ---- | ----- | ----------- |
 | key | [string](#string) |  |  |
 | value | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-v1-InstanceImport"></a>
+
+### InstanceImport
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| instance_id | [string](#string) |  | Bytebase instance resource ID. Uniqueness does not provide idempotency. |
+| instance | [Instance](#bytebase-v1-Instance) |  | The instance to register, with the same meaning as in CreateInstance. The source determines engine, vendor, and data_sources, which must be unset. The workspace license determines activation, so a supplied value is ignored. |
+| username | [string](#string) |  | Existing database user for the instance&#39;s ADMIN data source. The server derives the host and port from the source. |
+| connection_database | [string](#string) |  | Initial connection target, independent of instance.sync_databases. |
+| password | [string](#string) | optional | Omit to let the vendor supply the password. A supplied empty value is invalid. |
+| neon_branch | [NeonBranchSource](#bytebase-v1-NeonBranchSource) |  |  |
+
+
+
+
+
+
+<a name="bytebase-v1-InstanceImportFailure"></a>
+
+### InstanceImportFailure
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| status | [google.rpc.Status](#google-rpc-Status) |  |  |
+| creation_outcome | [InstanceImportFailure.CreationOutcome](#bytebase-v1-InstanceImportFailure-CreationOutcome) |  | Always populated. Unknown outcomes must be reconciled before retrying. |
+
+
+
+
+
+
+<a name="bytebase-v1-InstanceImportResult"></a>
+
+### InstanceImportResult
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| imported | [Instance](#bytebase-v1-Instance) |  | Confirms registration, not synchronization. |
+| failure | [InstanceImportFailure](#bytebase-v1-InstanceImportFailure) |  |  |
 
 
 
@@ -8120,6 +8315,90 @@ For example: name == &#34;sample instance&#34; name.contains(&#34;sample&#34;) r
 | ----- | ---- | ----- | ----------- |
 | instances | [Instance](#bytebase-v1-Instance) | repeated | The instances from the specified request. |
 | next_page_token | [string](#string) |  | A token, which can be sent as `page_token` to retrieve the next page. If this field is omitted, there are no subsequent pages. |
+
+
+
+
+
+
+<a name="bytebase-v1-NeonBranch"></a>
+
+### NeonBranch
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| project_id | [string](#string) |  |  |
+| project_title | [string](#string) |  |  |
+| branch_id | [string](#string) |  |  |
+| branch_title | [string](#string) |  |  |
+| databases | [NeonDatabase](#bytebase-v1-NeonDatabase) | repeated |  |
+| roles | [string](#string) | repeated |  |
+| discovery_error | [google.rpc.Status](#google-rpc-Status) |  | Absent when inspection succeeded and a direct read-write endpoint exists. Successful discovery does not establish database access or privileges. |
+
+
+
+
+
+
+<a name="bytebase-v1-NeonBranchSource"></a>
+
+### NeonBranchSource
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| project_id | [string](#string) |  |  |
+| branch_id | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-v1-NeonCredential"></a>
+
+### NeonCredential
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| api_key | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-v1-NeonDatabase"></a>
+
+### NeonDatabase
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| name | [string](#string) |  |  |
+| owner | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-v1-NeonProjectDiscoveryFailure"></a>
+
+### NeonProjectDiscoveryFailure
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| project_id | [string](#string) |  |  |
+| status | [google.rpc.Status](#google-rpc-Status) |  |  |
 
 
 
@@ -8383,6 +8662,31 @@ CloudSQLIPType selects which Cloud SQL IP to dial for Google Cloud SQL IAM conne
 | READ_ONLY | 2 | Read-only data source for query operations. |
 
 
+
+<a name="bytebase-v1-InstanceImportFailure-CreationOutcome"></a>
+
+### InstanceImportFailure.CreationOutcome
+
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| CREATION_OUTCOME_UNSPECIFIED | 0 |  |
+| NOT_CREATED | 1 |  |
+| UNKNOWN | 2 |  |
+
+
+
+<a name="bytebase-v1-Vendor"></a>
+
+### Vendor
+Database service variant, independent of engine and registration method.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| VENDOR_UNSPECIFIED | 0 |  |
+| NEON | 1 |  |
+
+
  
 
  
@@ -8398,6 +8702,8 @@ InstanceService manages database instances and their connections.
 | GetInstance | [GetInstanceRequest](#bytebase-v1-GetInstanceRequest) | [Instance](#bytebase-v1-Instance) | Gets a database instance by name. Permissions required: bb.instances.get |
 | ListInstances | [ListInstancesRequest](#bytebase-v1-ListInstancesRequest) | [ListInstancesResponse](#bytebase-v1-ListInstancesResponse) | Lists database instances, optionally within a project. Permissions required: bb.instances.list |
 | CreateInstance | [CreateInstanceRequest](#bytebase-v1-CreateInstanceRequest) | [Instance](#bytebase-v1-Instance) | Creates a new database instance. Permissions required: bb.instances.create |
+| DiscoverNeonBranches | [DiscoverNeonBranchesRequest](#bytebase-v1-DiscoverNeonBranchesRequest) | [DiscoverNeonBranchesResponse](#bytebase-v1-DiscoverNeonBranchesResponse) | Discovers Neon branches without persisting the management API key. Permissions required: bb.instances.create |
+| ImportInstances | [ImportInstancesRequest](#bytebase-v1-ImportInstancesRequest) | [ImportInstancesResponse](#bytebase-v1-ImportInstancesResponse) | Registers instances resolved from a vendor&#39;s control plane. Synchronous; entries succeed or fail independently and successes are not rolled back. Registration does not wait for instance synchronization. Permissions required: bb.instances.create |
 | PrepareSampleProjectInstance | [PrepareSampleProjectInstanceRequest](#bytebase-v1-PrepareSampleProjectInstanceRequest) | [Instance](#bytebase-v1-Instance) | Prepares a Sample Project Instance for a project. Permissions required: bb.instances.create |
 | UpdateInstance | [UpdateInstanceRequest](#bytebase-v1-UpdateInstanceRequest) | [Instance](#bytebase-v1-Instance) | Updates a database instance. Permissions required: bb.instances.update |
 | DeleteInstance | [DeleteInstanceRequest](#bytebase-v1-DeleteInstanceRequest) | [.google.protobuf.Empty](#google-protobuf-Empty) | Deletes or soft-deletes a database instance. Soft-delete requests fail with FAILED_PRECONDITION while any task run targeting the instance is pending, available, or running. Permissions required: bb.instances.delete |
@@ -10538,7 +10844,7 @@ When paginating, all other parameters provided to `ListProjects` must match the 
 | postgres_database_tenant_mode | [bool](#bool) |  | Whether to enable database tenant mode for PostgreSQL. If enabled, issues will include &#34;set role &lt;db_owner&gt;&#34; statement. |
 | allow_self_approval | [bool](#bool) |  | Whether to allow issue creators to self-approve their own issues. |
 | execution_retry_policy | [Project.ExecutionRetryPolicy](#bytebase-v1-Project-ExecutionRetryPolicy) |  | Execution retry policy for task runs. |
-| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation and AI review. Without specification, sampling is disabled, resulting in full validation. |
+| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation and SQL review. Without specification, sampling is disabled, resulting in full validation. |
 | parallel_tasks_per_rollout | [int32](#int32) |  | The maximum number of parallel tasks allowed during rollout execution. |
 | labels | [Project.LabelsEntry](#bytebase-v1-Project-LabelsEntry) | repeated | Labels are key-value pairs that can be attached to the project. For example, { &#34;environment&#34;: &#34;production&#34;, &#34;team&#34;: &#34;backend&#34; } |
 | enforce_sql_review | [bool](#bool) |  | Whether to enforce SQL review checks to pass before issue creation. If enabled, issues cannot be created when SQL review finds errors. |
@@ -11066,6 +11372,29 @@ Version control system source information.
 | ----- | ---- | ----- | ----------- |
 | vcs_type | [VCSType](#bytebase-v1-VCSType) |  | The type of VCS. |
 | url | [string](#string) |  | The url link to the e.g., GitHub commit or pull request. |
+| commit_sha | [string](#string) |  | The commit the release&#39;s files were read from. |
+| branch | [string](#string) |  | The source branch. In a pull request build, the pull request&#39;s source branch rather than the platform&#39;s synthetic merge ref. Empty for a run on a tag or a merge queue&#39;s temporary branch. |
+| commit_title | [string](#string) |  | The first line of the commit message. |
+| author_name | [string](#string) |  | The author&#39;s display name: the commit&#39;s author where the CI platform exposes it, else the person who started the build. |
+| author_login | [string](#string) |  | The author&#39;s login on the VCS platform: the commit&#39;s author, or the pull request&#39;s author in a pull request build. |
+| pull_request | [Release.VCSSource.PullRequest](#bytebase-v1-Release-VCSSource-PullRequest) |  | The pull request the commit belongs to, when the build knows it. |
+
+
+
+
+
+
+<a name="bytebase-v1-Release-VCSSource-PullRequest"></a>
+
+### Release.VCSSource.PullRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  |  |
+| number | [int64](#int64) |  |  |
+| title | [string](#string) |  |  |
 
 
 
@@ -12967,6 +13296,7 @@ PlanFeature represents the available features in Bytebase
 | FEATURE_EMAIL_SUPPORT | 70 |  |
 | FEATURE_DEDICATED_SUPPORT_WITH_SLA | 71 |  |
 | FEATURE_SHAREPOINT_EXPORT | 72 | Upload exports to SharePoint. |
+| FEATURE_AI_SQL_REVIEW | 73 | An AI model reviews the SQL of an issue. |
 
 
 

@@ -1,231 +1,194 @@
 package tidb
 
 import (
-	"regexp"
-	"strconv"
-	"strings"
+	"context"
 
-	tidbparser "github.com/pingcap/tidb/pkg/parser"
-	"github.com/pingcap/tidb/pkg/parser/ast"
-	"github.com/pingcap/tidb/pkg/parser/mysql"
+	"github.com/bytebase/omni/tidb/analysis"
+	"github.com/bytebase/omni/tidb/ast"
+	omnicompletion "github.com/bytebase/omni/tidb/completion"
+	omniparser "github.com/bytebase/omni/tidb/parser"
 	"github.com/pkg/errors"
-
-	// The packege parser_driver has to be imported.
-	_ "github.com/pingcap/tidb/pkg/types/parser_driver"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
-	"github.com/bytebase/bytebase/backend/plugin/parser/tokenizer"
+	"github.com/bytebase/bytebase/backend/store/model"
 )
 
 func init() {
-	// Phase 1.5 §1.5.N+1 dispatcher flip: register the Option B
-	// omni-first/pingcap-fallback dispatcher (parseTiDBStatementsOmni in
-	// dispatcher.go). See plans/2026-04-23-omni-tidb-completion-plan.md
-	// §1.5.0 invariant #8 for the contract.
-	base.RegisterParseStatementsFunc(storepb.Engine_TIDB, parseTiDBStatementsOmni)
-	base.RegisterGetStatementTypes(storepb.Engine_TIDB, GetStatementTypes)
+	base.Register(base.Engine{
+		Split:                SplitSQL,
+		Parse:                parseTiDBStatements,
+		StatementTypes:       GetStatementTypes,
+		StatementRanges:      GetStatementRanges,
+		Diagnose:             Diagnose,
+		Complete:             Completion,
+		ValidateQuery:        validateQuery,
+		QuerySpan:            GetQuerySpan,
+		Explain:              explainStatement,
+		ResultLimit:          statementWithResultLimit,
+		ExtractChanged:       extractChangedResources,
+		TransformDMLToSelect: TransformDMLToSelect,
+		GenerateRestoreSQL:   GenerateRestoreSQL,
+	}, storepb.Engine_TIDB)
 }
 
-// ParseTiDBForSyntaxCheck parses TiDB SQL for syntax checking purposes.
-// Returns []base.AST with *AST instances.
-//
-// Per-statement parse + line-tracking is delegated to
-// parsePingCapSingleStatement (in dispatcher.go) so the dispatcher's
-// pingcap-fallback path and this canonical pre-flip path produce
-// structurally identical *AST values. (nil, nil) from the helper
-// signals "non-1 node count, skip" — same semantic as the pre-
-// refactor inline `if len(nodes) != 1 { continue }`.
-func ParseTiDBForSyntaxCheck(statement string) ([]base.AST, error) {
-	singleSQLs, err := base.SplitMultiSQL(storepb.Engine_TIDB, statement)
+// AST wraps an omni/tidb AST node and implements the base.AST interface.
+type AST = base.NodeAST[ast.Node]
+
+// GetNode extracts the omni AST node from a base.AST interface.
+func GetNode(a base.AST) (ast.Node, bool) {
+	return base.ExtractNode[ast.Node](a)
+}
+
+// SplitSQL splits the given SQL statement into multiple SQL statements.
+func SplitSQL(statement string) ([]base.Statement, error) {
+	return base.BuildStatements(statement, omniparser.Split(statement), func(s omniparser.Segment) (int, int, bool) {
+		return s.ByteStart, s.ByteEnd, s.Empty()
+	}, true), nil
+}
+
+func parseTiDBStatements(statement string) ([]base.ParsedStatement, error) {
+	return base.ParseMultiNodeStatements(statement, func(s string) ([]base.Statement, error) {
+		return base.SplitMultiSQL(storepb.Engine_TIDB, s)
+	}, func(stmt base.Statement) ([]base.AST, error) {
+		if stmt.Empty {
+			return nil, nil
+		}
+		list, err := omniparser.Parse(stmt.Text)
+		if err != nil {
+			return nil, convertParseError(err, stmt)
+		}
+		if list == nil || len(list.Items) == 0 {
+			return nil, nil
+		}
+		asts := make([]base.AST, len(list.Items))
+		for i, node := range list.Items {
+			asts[i] = &AST{
+				Node:          node,
+				Text:          stmt.Text,
+				StartPosition: stmt.Start,
+			}
+		}
+		return asts, nil
+	})
+}
+
+func GetStatementTypes(asts []base.AST) ([]storepb.StatementType, error) {
+	return base.CollectOmniStatementTypes(asts, GetNode, "expected TiDB AST", analysis.StatementTypeOf)
+}
+
+// GetStatementRanges returns LSP-compatible ranges (0-based line, UTF-16 character)
+// for each top-level SQL statement in statement. The ranges come from a lexical
+// split, so the editor still gets them while the user is mid-edit.
+func GetStatementRanges(_ context.Context, _ base.StatementRangeContext, statement string) ([]base.Range, error) {
+	return base.MapByteRangesToLSP(statement, analysis.StatementRanges(statement)), nil
+}
+
+// Diagnose returns the script's first syntax error as a diagnostic.
+func Diagnose(_ context.Context, _ base.DiagnoseContext, statement string) ([]base.Diagnostic, error) {
+	syntaxError, err := analysis.Diagnose(statement)
 	if err != nil {
 		return nil, err
 	}
-
-	var results []base.AST
-	for _, singleSQL := range singleSQLs {
-		ast, err := parsePingCapSingleStatement(singleSQL)
-		if err != nil {
-			return nil, err
-		}
-		if ast == nil {
-			continue
-		}
-		results = append(results, ast)
+	if syntaxError == nil {
+		return base.DiagnoseSyntaxError(statement, nil), nil
 	}
-
-	return results, nil
+	return base.DiagnoseSyntaxError(statement, toSyntaxError(statement, syntaxError)), nil
 }
 
-// applyTiDBLineTracking sets OriginTextPosition on a freshly-parsed pingcap
-// node and walks CREATE TABLE columns to set their per-column line numbers
-// via SetLineForMySQLCreateTableStmt. Used by both ParseTiDBForSyntaxCheck
-// (the canonical pre-flip parsing path) and OmniAST.AsPingCapAST (the
-// post-flip bridge for un-migrated advisors), so consumers reading
-// node.OriginTextPosition() see consistent values across both paths.
-//
-// baseLine is the 0-based line index of the statement's first line in the
-// original (pre-split) SQL — i.e., base.Statement.BaseLine().
-//
-// Returns the 1-based actualStartLine (`baseLine + leadingNewlinesStripped +
-// 1`) so callers can use it for *AST.StartPosition.
-func applyTiDBLineTracking(node ast.StmtNode, baseLine int, originalText string) (int, error) {
-	// The statement's absolute start line is baseLine plus the number of
-	// newlines in its leading whitespace (the blank lines before the first
-	// token). Counting the leading newlines of originalText directly is robust;
-	// the native parser's node.Text() does not reliably strip ALL leading
-	// newlines, so diffing original-vs-native newline counts under-counts when
-	// more than one blank line precedes the statement (BYT-9381). This keeps the
-	// pingcap-bridge line in step with the omni path's FirstTokenLine.
-	leadingWhitespace := originalText[:len(originalText)-len(strings.TrimLeft(originalText, " \t\r\n"))]
-	actualStartLine := baseLine + strings.Count(leadingWhitespace, "\n") + 1
-
-	node.SetOriginTextPosition(actualStartLine)
-	if n, ok := node.(*ast.CreateTableStmt); ok {
-		if err := SetLineForMySQLCreateTableStmt(n); err != nil {
-			return actualStartLine, errors.Wrapf(err, "failed to set line for create table statement at line %d", actualStartLine)
-		}
-	}
-	return actualStartLine, nil
-}
-
-func newTiDBParser() *tidbparser.Parser {
-	p := tidbparser.New()
-
-	// To support MySQL8 window function syntax.
-	// See https://github.com/bytebase/bytebase/issues/175.
-	p.EnableWindowFunc(true)
-
-	return p
-}
-
-// ParseTiDB parses the given SQL statement and returns the AST.
-func ParseTiDB(sql string, charset string, collation string) ([]ast.StmtNode, error) {
-	p := tidbparser.New()
-
-	// To support MySQL8 window function syntax.
-	// See https://github.com/bytebase/bytebase/issues/175.
-	p.EnableWindowFunc(true)
-	mode, err := mysql.GetSQLMode(mysql.DefaultSQLMode)
-	if err != nil {
-		return nil, errors.Errorf("failed to get sql mode: %v", err)
-	}
-	mode = mysql.DelSQLMode(mode, mysql.ModeNoZeroDate)
-	mode = mysql.DelSQLMode(mode, mysql.ModeNoZeroInDate)
-	p.SetSQLMode(mode)
-
-	nodes, _, err := p.Parse(sql, charset, collation)
-	if err != nil {
-		return nil, convertParserError(err)
-	}
-	return nodes, nil
-}
-
-var (
-	lineColumnRegex = regexp.MustCompile(`line (\d+) column (\d+)`)
-)
-
-func convertParserError(parserErr error) error {
-	// line 1 column 15 near "TO world;"
-	res := lineColumnRegex.FindAllStringSubmatch(parserErr.Error(), -1)
-	if len(res) != 1 {
-		return parserErr
-	}
-	if len(res[0]) != 3 {
-		return parserErr
-	}
-	line, err := strconv.ParseInt(res[0][1], 10, 32)
-	if err != nil {
-		return parserErr
-	}
-	column, err := strconv.ParseInt(res[0][2], 10, 32)
-	if err != nil {
-		return parserErr
+// toSyntaxError places omni's error the way convertParseError places a parse
+// error from the split statement that holds it.
+func toSyntaxError(statement string, e *analysis.SyntaxError) *base.SyntaxError {
+	stmt := base.NewStatementFromRange(statement, base.NewByteOffsetPositionMapper(statement), e.ByteStart, e.ByteEnd, false)
+	pos := base.ByteOffsetToRunePosition(stmt.Text, e.Offset)
+	if stmt.Start != nil {
+		pos.Line += stmt.Start.Line - 1
 	}
 	return &base.SyntaxError{
-		Position: convertParserErrorPositionToPosition(int32(line), int32(column)),
-		Message:  parserErr.Error(),
+		Position:   pos,
+		Message:    base.FormatLineColSyntaxError(pos, e.Message, e.RelatedText),
+		RawMessage: e.Message,
 	}
 }
 
-// SetLineForMySQLCreateTableStmt sets the line for columns and table constraints in MySQL CREATE TABLE statments.
-// This is a temporary function. Because we do not convert tidb AST to our AST. So we have to implement this.
-// TODO(rebelice): remove it.
-func SetLineForMySQLCreateTableStmt(node *ast.CreateTableStmt) error {
-	// exclude CREATE TABLE ... AS and CREATE TABLE ... LIKE statement.
-	if len(node.Cols) == 0 {
-		return nil
-	}
-	// node.OriginTextPosition() is the statement's first line (the CREATE
-	// keyword). The tokenizer counts newlines from the START of node.Text(),
-	// which may retain leading newlines the native parser didn't strip, so its
-	// base must be the line of node.Text()'s first character — the statement
-	// line minus those leading newlines. Otherwise blank lines before the
-	// statement are double-counted into every column/constraint line (BYT-9381).
-	text := node.Text()
-	leadingNewlines := strings.Count(text[:len(text)-len(strings.TrimLeft(text, " \t\r\n"))], "\n")
-	return tokenizer.NewTokenizer(text).SetLineForMySQLCreateTableStmt(node, node.OriginTextPosition()-leadingNewlines)
+// Completion provides auto-complete candidates for TiDB statements using the
+// omni TiDB completion engine.
+func Completion(ctx context.Context, cCtx base.CompletionContext, statement string, caretLine int, caretOffset int) ([]base.Candidate, error) {
+	loadDB, listDBs := base.MySQLFamilyDatabaseLoaders(cCtx)
+	raw := omnicompletion.CompleteSession(ctx, omnicompletion.SessionConfig{
+		ReadOnly:          cCtx.Scene == base.SceneTypeQuery,
+		DefaultDatabase:   cCtx.DefaultDatabase,
+		LoadDatabase:      loadDB,
+		ListDatabaseNames: listDBs,
+	}, statement, caretLine, caretOffset)
+	return base.ConvertOmniCandidates(raw, func(c omnicompletion.Candidate) (string, omnicompletion.CandidateType, string, string) {
+		return c.Text, c.Type, c.Definition, c.Comment
+	}, base.CompareCandidate), nil
 }
 
-// TypeString returns the string representation of the type for MySQL.
-func TypeString(tp byte) string {
-	switch tp {
-	case mysql.TypeTiny:
-		return "tinyint"
-	case mysql.TypeShort:
-		return "smallint"
-	case mysql.TypeInt24:
-		return "mediumint"
-	case mysql.TypeLong:
-		return "int"
-	case mysql.TypeLonglong:
-		return "bigint"
-	case mysql.TypeFloat:
-		return "float"
-	case mysql.TypeDouble:
-		return "double"
-	case mysql.TypeNewDecimal:
-		return "decimal"
-	case mysql.TypeVarchar:
-		return "varchar"
-	case mysql.TypeBit:
-		return "bit"
-	case mysql.TypeTimestamp:
-		return "timestamp"
-	case mysql.TypeDatetime:
-		return "datetime"
-	case mysql.TypeDate:
-		return "date"
-	case mysql.TypeDuration:
-		return "time"
-	case mysql.TypeJSON:
-		return "json"
-	case mysql.TypeEnum:
-		return "enum"
-	case mysql.TypeSet:
-		return "set"
-	case mysql.TypeTinyBlob:
-		return "tinyblob"
-	case mysql.TypeMediumBlob:
-		return "mediumblob"
-	case mysql.TypeLongBlob:
-		return "longblob"
-	case mysql.TypeBlob:
-		return "blob"
-	case mysql.TypeVarString:
-		return "varbinary"
-	case mysql.TypeString:
-		return "binary"
-	case mysql.TypeGeometry:
-		return "geometry"
-	default:
-		return "unknown"
+func validateQuery(statement string) (bool, bool, error) {
+	stmts, err := base.ParseStatements(storepb.Engine_TIDB, statement)
+	if err != nil {
+		return false, false, err
 	}
+	var nodes []ast.Node
+	for _, stmt := range stmts {
+		node, ok := GetNode(stmt.AST)
+		if !ok {
+			// An empty or comment-only statement carries no AST.
+			continue
+		}
+		nodes = append(nodes, node)
+	}
+	readOnly, returnsData := analysis.ValidateQuery(nodes)
+	return readOnly, returnsData, nil
 }
 
-func convertParserErrorPositionToPosition(line, column int32) *storepb.Position {
-	return &storepb.Position{
-		Line:   max(line, 1),
-		Column: max(column, 1),
+// GetQuerySpan returns the query span for the given statement.
+func GetQuerySpan(ctx context.Context, gCtx base.GetQuerySpanContext, stmt base.Statement, database, _ string, _ bool) (*base.QuerySpan, error) {
+	_, getDB := base.UnnamedSchemaQuerySpanCatalog(ctx, gCtx, wrapDatabase)
+	querySpan, err := base.OmniResolvedSpanResult(analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultDatabase: database,
+		Catalog:         analysis.Catalog{GetDatabase: getDB},
+	}))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to get query span from statement: %s", stmt.Text)
 	}
+	return querySpan, nil
+}
+
+// explainStatement implements base.ExplainStatement. Only the JSON format has
+// a reader downstream; any other format gets the engine's default plan.
+func explainStatement(statement string, format base.ExplainFormat) (string, error) {
+	explain, err := analysis.ExplainStatement(statement, format == base.ExplainFormatJSON)
+	return base.ExplainStatementResult(explain, err, func(e error) error {
+		return convertParseError(e, base.Statement{Text: statement})
+	})
+}
+
+// DescribeExplain returns the output format of an EXPLAIN statement and whether
+// it executes the statement it plans.
+func DescribeExplain(statement string) (format string, executed bool, ok bool) {
+	return analysis.DescribeExplain(statement)
+}
+
+// statementWithResultLimit implements base.ResultLimitFunc for TiDB, which
+// takes no engineVersion.
+func statementWithResultLimit(statement string, limit int, _ string) string {
+	return base.RewriteResultLimit(statement, limit, analysis.RewriteResultLimit, "WITH result AS (%s) SELECT * FROM result LIMIT %d;")
+}
+
+func extractChangedResources(database string, _ string, dbMetadata *model.DatabaseMetadata, asts []base.AST, _ string) (*base.ChangeSummary, error) {
+	return base.ExtractTypedChangedResources(dbMetadata, asts, "expected TiDB AST", false, func(wrapped *AST) (analysis.StatementChanges, bool) {
+		return analysis.ExtractChangedResources(wrapped.Node, database, wrapped.Text), true
+	})
+}
+
+func convertParseError(err error, stmt base.Statement) error {
+	return base.ConvertSyntaxError(stmt, err, false,
+		func(pe *omniparser.ParseError) (int, string) { return pe.Position, pe.Message },
+		func(pe *omniparser.ParseError, pos *storepb.Position) string {
+			return base.FormatLineColSyntaxError(pos, pe.Message, pe.RelatedText)
+		},
+	)
 }

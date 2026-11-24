@@ -4,7 +4,6 @@ package advisor
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/bytebase/bytebase/backend/common/log"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	"github.com/bytebase/bytebase/backend/plugin/db"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/store/model"
 )
@@ -48,7 +48,10 @@ type Context struct {
 	Rule             *storepb.SQLReviewRule
 	OriginalMetadata *model.DatabaseMetadata
 	FinalMetadata    *model.DatabaseMetadata
-	Driver           *sql.DB
+	// Prober runs the live probes the rules need. Nil means the review has no
+	// live connection; a rule that needs one reports that it was not checked
+	// (see UnsupportedError) rather than returning no advice.
+	Prober db.Prober
 	// ParsedStatements contains complete per-statement info including text.
 	ParsedStatements []base.ParsedStatement
 
@@ -58,14 +61,15 @@ type Context struct {
 	// Used for size limit checks without needing the full statement text.
 	StatementsTotalSize int
 	// TenantMode indicates whether to use database owner role for PostgreSQL tenant mode.
+	// The probe's role switch belongs to the driver, which reads its own connection
+	// context, so a caller that opens the driver for a review must pass this same value to
+	// it (db.ConnectionContext.TenantMode); this field only decides whether a rule probes
+	// as the owner or trusts the synced schema's owner.
 	TenantMode bool
 
 	// SQL review level fields.
 	DBType      storepb.Engine
 	SessionUser string
-
-	// Snowflake specific fields (duplicates CurrentDatabase, kept for compatibility).
-	// CurrentDatabase string
 
 	// Used for test only.
 	NoAppendBuiltin bool
@@ -76,8 +80,7 @@ type Context struct {
 	// (advisors run sequentially, no synchronization needed).
 	//
 	// Engine-specific helpers use this to amortize work that would otherwise
-	// repeat per advisor, e.g. omni re-parsing during the tidb advisor
-	// migration (advisor/tidb/utils.go).
+	// repeat per advisor, such as memoized AST extraction in V1Engine.
 	//
 	// Callers that bypass SQLReviewCheck and construct Context directly
 	// without initializing memo will see Memo/SetMemo silently no-op (cache
@@ -121,6 +124,21 @@ type Advisor interface {
 	Check(ctx context.Context, checkCtx Context) ([]*storepb.Advice, error)
 }
 
+// Func is an adapter to allow the use of ordinary functions as Advisors.
+type Func func(ctx context.Context, checkCtx Context) ([]*storepb.Advice, error)
+
+// Check calls f(ctx, checkCtx).
+func (f Func) Check(ctx context.Context, checkCtx Context) ([]*storepb.Advice, error) {
+	return f(ctx, checkCtx)
+}
+
+// RegisterRules registers every rule in rules for dbType.
+func RegisterRules(dbType storepb.Engine, rules map[storepb.SQLReviewRule_Type]Advisor) {
+	for ruleType, a := range rules {
+		Register(dbType, ruleType, a)
+	}
+}
+
 var (
 	advisorMu sync.RWMutex
 	advisors  = make(map[storepb.Engine]map[storepb.SQLReviewRule_Type]Advisor)
@@ -146,6 +164,14 @@ func Register(dbType storepb.Engine, ruleType storepb.SQLReviewRule_Type, f Advi
 		}
 		dbAdvisors[ruleType] = f
 	}
+}
+
+// IsRegistered reports whether an advisor is registered for dbType and ruleType.
+func IsRegistered(dbType storepb.Engine, ruleType storepb.SQLReviewRule_Type) bool {
+	advisorMu.RLock()
+	defer advisorMu.RUnlock()
+	_, ok := advisors[dbType][ruleType]
+	return ok
 }
 
 // Check runs the advisor and returns the advices.

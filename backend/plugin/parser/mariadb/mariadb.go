@@ -1,84 +1,157 @@
 package mariadb
 
 import (
-	"errors"
-	"fmt"
+	"context"
 
-	mariadbomniparser "github.com/bytebase/omni/mariadb/parser"
+	"github.com/bytebase/omni/mariadb/analysis"
+	"github.com/bytebase/omni/mariadb/ast"
+	omnicompletion "github.com/bytebase/omni/mariadb/completion"
+	mariadbparser "github.com/bytebase/omni/mariadb/parser"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	"github.com/bytebase/bytebase/backend/store/model"
 )
 
 func init() {
-	base.RegisterParseStatementsFunc(storepb.Engine_MARIADB, parseStatements)
-	base.RegisterGetStatementTypes(storepb.Engine_MARIADB, GetStatementTypes)
+	base.Register(base.Engine{
+		Split:                SplitSQL,
+		Parse:                parseStatements,
+		StatementTypes:       GetStatementTypes,
+		Diagnose:             Diagnose,
+		Complete:             Completion,
+		ValidateQuery:        validateQuery,
+		QuerySpan:            GetQuerySpan,
+		Explain:              explainStatement,
+		ResultLimit:          statementWithResultLimit,
+		ExtractChanged:       extractChangedResources,
+		TransformDMLToSelect: TransformDMLToSelect,
+		GenerateRestoreSQL:   GenerateRestoreSQL,
+	}, storepb.Engine_MARIADB)
 }
 
-// parseStatements is the ParseStatementsFunc for MariaDB.
-// Returns []ParsedStatement with both text and AST populated.
+// AST wraps an omni MariaDB AST node and implements the base.AST interface.
+type AST = base.NodeAST[ast.Node]
+
+// GetNode extracts the omni AST node from a base.AST interface.
+func GetNode(a base.AST) (ast.Node, bool) {
+	return base.ExtractNode[ast.Node](a)
+}
+
+// SplitSQL splits the given SQL statement into multiple SQL statements.
+// It uses omni's lexical splitter which handles quotes, comments, compound
+// statements (BEGIN...END, IF...END IF, etc.) and DELIMITER without
+// requiring valid SQL.
+func SplitSQL(statement string) ([]base.Statement, error) {
+	return base.BuildStatements(statement, mariadbparser.Split(statement), func(s mariadbparser.Segment) (int, int, bool) {
+		return s.ByteStart, s.ByteEnd, s.Empty()
+	}, true), nil
+}
+
 func parseStatements(statement string) ([]base.ParsedStatement, error) {
-	// Split once to get Statement with text and positions
-	stmts, err := SplitSQL(statement)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []base.ParsedStatement
-	for _, stmt := range stmts {
-		if stmt.Empty {
-			continue
+	return base.ParseNonEmptyMultiNodeStatements(statement, SplitSQL, func(stmt base.Statement) ([]base.AST, error) {
+		list, err := mariadbparser.Parse(stmt.Text)
+		if err != nil {
+			return nil, convertError(err, stmt)
 		}
-
-		list, omniErr := ParseMariaDB(stmt.Text)
-		if omniErr != nil {
-			return nil, convertOmniError(omniErr, stmt)
-		}
-
 		if list == nil || len(list.Items) == 0 {
-			continue
+			return nil, nil
 		}
-
-		for _, node := range list.Items {
-			result = append(result, base.ParsedStatement{
-				Statement: stmt,
-				AST: &OmniAST{
-					Node:          node,
-					Text:          stmt.Text,
-					StartPosition: stmt.Start,
-				},
-			})
+		asts := make([]base.AST, len(list.Items))
+		for i, node := range list.Items {
+			asts[i] = &AST{Node: node, Text: stmt.Text, StartPosition: stmt.Start}
 		}
-	}
-
-	return result, nil
+		return asts, nil
+	})
 }
 
-// convertOmniError converts an omni MariaDB parser error to a base.SyntaxError with proper line:column position.
-func convertOmniError(err error, stmt base.Statement) error {
-	var parseErr *mariadbomniparser.ParseError
-	if !errors.As(err, &parseErr) {
-		return err
-	}
+func GetStatementTypes(asts []base.AST) ([]storepb.StatementType, error) {
+	return base.CollectOmniStatementTypes(asts, GetNode, "expected AST for MariaDB", analysis.StatementTypeOf)
+}
 
-	pos := ByteOffsetToRunePosition(stmt.Text, parseErr.Position)
+// Diagnose returns the script's first syntax error as a diagnostic.
+func Diagnose(_ context.Context, _ base.DiagnoseContext, statement string) ([]base.Diagnostic, error) {
+	return base.DiagnoseFirstError(statement, analysis.Diagnose(statement), func(e *analysis.SyntaxError) (string, int, string) {
+		return e.Text, e.Offset, e.Message
+	}), nil
+}
 
-	// Offset by the statement's 1-based start; its column applies only to the statement's first line.
-	if stmt.Start != nil {
-		if pos.Line == 1 {
-			pos.Column += stmt.Start.Column - 1
-		}
-		pos.Line += stmt.Start.Line - 1
-	}
+// Completion provides auto-complete candidates for MariaDB statements using the
+// omni MariaDB completion engine.
+func Completion(ctx context.Context, cCtx base.CompletionContext, statement string, caretLine int, caretOffset int) ([]base.Candidate, error) {
+	loadDB, listDBs := base.MySQLFamilyDatabaseLoaders(cCtx)
+	raw := omnicompletion.CompleteSession(ctx, omnicompletion.SessionConfig{
+		ReadOnly:          cCtx.Scene == base.SceneTypeQuery,
+		DefaultDatabase:   cCtx.DefaultDatabase,
+		LoadDatabase:      loadDB,
+		ListDatabaseNames: listDBs,
+	}, statement, caretLine, caretOffset)
+	return base.ConvertOmniCandidates(raw, func(c omnicompletion.Candidate) (string, omnicompletion.CandidateType, string, string) {
+		return c.Text, c.Type, c.Definition, c.Comment
+	}, base.CompareCandidate), nil
+}
 
-	msg := fmt.Sprintf("Syntax error at line %d:%d: %s", pos.Line, pos.Column, parseErr.Message)
-	if parseErr.RelatedText != "" {
-		msg += "\nrelated text: " + parseErr.RelatedText
+func validateQuery(statement string) (bool, bool, error) {
+	stmts, err := mariadbparser.Parse(statement)
+	if err != nil {
+		return false, false, convertError(err, base.Statement{Text: statement})
 	}
+	readOnly, returnsData := analysis.ValidateQuery(stmts.Items)
+	return readOnly, returnsData, nil
+}
 
-	return &base.SyntaxError{
-		Position:   pos,
-		Message:    msg,
-		RawMessage: parseErr.Message,
+// GetQuerySpan returns the query span for the given statement.
+func GetQuerySpan(
+	ctx context.Context,
+	gCtx base.GetQuerySpanContext,
+	stmt base.Statement,
+	database, _ string,
+	ignoreCaseSensitive bool,
+) (*base.QuerySpan, error) {
+	listDBs, getDB := base.UnnamedSchemaQuerySpanCatalog(ctx, gCtx, wrapDatabase)
+	querySpan, err := base.OmniResolvedSpanResult(analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultDatabase:     database,
+		IgnoreCaseSensitive: ignoreCaseSensitive,
+		Catalog:             analysis.Catalog{ListDatabaseNames: listDBs, GetDatabase: getDB},
+	}))
+	if err != nil {
+		return nil, convertError(err, stmt)
 	}
+	return querySpan, nil
+}
+
+// explainStatement implements base.ExplainStatement. Only the JSON format has
+// a reader downstream; any other format gets the engine's default plan.
+func explainStatement(statement string, format base.ExplainFormat) (string, error) {
+	explain, err := analysis.ExplainStatement(statement, format == base.ExplainFormatJSON)
+	return base.ExplainStatementResult(explain, err, func(e error) error {
+		return convertError(e, base.Statement{Text: statement})
+	})
+}
+
+// DescribeExplain returns the output format of an EXPLAIN statement and whether
+// it executes the statement it plans.
+func DescribeExplain(statement string) (format string, executed bool, ok bool) {
+	return analysis.DescribeExplain(statement)
+}
+
+// statementWithResultLimit implements base.ResultLimitFunc for MariaDB, which
+// takes no engineVersion.
+func statementWithResultLimit(statement string, limit int, _ string) string {
+	return base.RewriteResultLimit(statement, limit, analysis.RewriteResultLimit, "SELECT * FROM (%s) result LIMIT %d;")
+}
+
+func extractChangedResources(currentDatabase string, _ string, dbMetadata *model.DatabaseMetadata, asts []base.AST, _ string) (*base.ChangeSummary, error) {
+	return base.ExtractTypedChangedResources(dbMetadata, asts, "expected AST for MariaDB", false, func(node *AST) (analysis.StatementChanges, bool) {
+		return analysis.ExtractChangedResources(node.Node, currentDatabase, node.Text), true
+	})
+}
+
+func convertError(err error, stmt base.Statement) error {
+	return base.ConvertSyntaxError(stmt, err, true,
+		func(pe *mariadbparser.ParseError) (int, string) { return pe.Position, pe.Message },
+		func(pe *mariadbparser.ParseError, pos *storepb.Position) string {
+			return base.FormatLineColSyntaxError(pos, pe.Message, pe.RelatedText)
+		},
+	)
 }

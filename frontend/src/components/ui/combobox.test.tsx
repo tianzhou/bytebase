@@ -23,10 +23,11 @@ describe("Combobox", () => {
     document.body.innerHTML = "";
   });
 
-  test("mounts a portaled dropdown into the overlay surface layer above the dialog surface", () => {
+  test("mounts the dropdown into the overlay surface layer above the dialog surface", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
+    const triggerRef = vi.fn();
 
     act(() => {
       root.render(
@@ -35,7 +36,7 @@ describe("Combobox", () => {
             <div>Dialog body</div>
             <Combobox
               className="test-combobox"
-              portal
+              triggerRef={triggerRef}
               value=""
               onChange={() => {}}
               options={[{ value: "alpha", label: "Alpha" }]}
@@ -51,6 +52,7 @@ describe("Combobox", () => {
 
     const trigger = overlayRoot?.querySelector(".test-combobox > div");
     expect(trigger).toBeInstanceOf(HTMLDivElement);
+    expect(triggerRef).toHaveBeenCalledWith(trigger);
 
     act(() => {
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -113,9 +115,9 @@ describe("Combobox", () => {
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("Load more");
+    expect(document.body.textContent).toContain("Load more");
 
-    const loadMoreButton = Array.from(container.querySelectorAll("button")).find(
+    const loadMoreButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent === "Load more"
     );
     act(() => loadMoreButton?.click());
@@ -154,7 +156,7 @@ describe("Combobox", () => {
       container.firstElementChild?.firstElementChild
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    const input = container.querySelector("input");
+    const input = document.body.querySelector("input");
     act(() => {
       if (!input) return;
       const valueSetter = Object.getOwnPropertyDescriptor(
@@ -167,7 +169,7 @@ describe("Combobox", () => {
     });
 
     expect(
-      container.querySelector('[data-testid="custom-option"]')?.textContent
+      document.body.querySelector('[data-testid="custom-option"]')?.textContent
     ).toBe("byte");
 
     act(() => root.unmount());

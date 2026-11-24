@@ -440,6 +440,18 @@
                 </li>
               
                 <li>
+                  <a href="#bytebase.v1.Task.ReleaseState"><span class="badge">M</span>Task.ReleaseState</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.Task.ReleaseState.DeletedRevision"><span class="badge">M</span>Task.ReleaseState.DeletedRevision</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.Task.ReleaseState.Range"><span class="badge">M</span>Task.ReleaseState.Range</a>
+                </li>
+              
+                <li>
                   <a href="#bytebase.v1.TaskRun"><span class="badge">M</span>TaskRun</a>
                 </li>
               
@@ -992,11 +1004,7 @@
                 </li>
               
                 <li>
-                  <a href="#bytebase.v1.ReviewRun.Status"><span class="badge">E</span>ReviewRun.Status</a>
-                </li>
-              
-                <li>
-                  <a href="#bytebase.v1.ReviewRun.Type"><span class="badge">E</span>ReviewRun.Type</a>
+                  <a href="#bytebase.v1.ReviewRun.State"><span class="badge">E</span>ReviewRun.State</a>
                 </li>
               
               
@@ -1383,6 +1391,10 @@
               
                 <li>
                   <a href="#bytebase.v1.ExportAuditLogsResponse"><span class="badge">M</span>ExportAuditLogsResponse</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.FederatedIdentity"><span class="badge">M</span>FederatedIdentity</a>
                 </li>
               
                 <li>
@@ -1997,7 +2009,23 @@
                 </li>
               
                 <li>
+                  <a href="#bytebase.v1.DiscoverNeonBranchesRequest"><span class="badge">M</span>DiscoverNeonBranchesRequest</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.DiscoverNeonBranchesResponse"><span class="badge">M</span>DiscoverNeonBranchesResponse</a>
+                </li>
+              
+                <li>
                   <a href="#bytebase.v1.GetInstanceRequest"><span class="badge">M</span>GetInstanceRequest</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.ImportInstancesRequest"><span class="badge">M</span>ImportInstancesRequest</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.ImportInstancesResponse"><span class="badge">M</span>ImportInstancesResponse</a>
                 </li>
               
                 <li>
@@ -2006,6 +2034,18 @@
               
                 <li>
                   <a href="#bytebase.v1.Instance.LabelsEntry"><span class="badge">M</span>Instance.LabelsEntry</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.InstanceImport"><span class="badge">M</span>InstanceImport</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.InstanceImportFailure"><span class="badge">M</span>InstanceImportFailure</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.InstanceImportResult"><span class="badge">M</span>InstanceImportResult</a>
                 </li>
               
                 <li>
@@ -2030,6 +2070,26 @@
               
                 <li>
                   <a href="#bytebase.v1.ListInstancesResponse"><span class="badge">M</span>ListInstancesResponse</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.NeonBranch"><span class="badge">M</span>NeonBranch</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.NeonBranchSource"><span class="badge">M</span>NeonBranchSource</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.NeonCredential"><span class="badge">M</span>NeonCredential</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.NeonDatabase"><span class="badge">M</span>NeonDatabase</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.NeonProjectDiscoveryFailure"><span class="badge">M</span>NeonProjectDiscoveryFailure</a>
                 </li>
               
                 <li>
@@ -2099,6 +2159,14 @@
               
                 <li>
                   <a href="#bytebase.v1.DataSourceType"><span class="badge">E</span>DataSourceType</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.InstanceImportFailure.CreationOutcome"><span class="badge">E</span>InstanceImportFailure.CreationOutcome</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.Vendor"><span class="badge">E</span>Vendor</a>
                 </li>
               
               
@@ -2725,6 +2793,10 @@
               
                 <li>
                   <a href="#bytebase.v1.Release.VCSSource"><span class="badge">M</span>Release.VCSSource</a>
+                </li>
+              
+                <li>
+                  <a href="#bytebase.v1.Release.VCSSource.PullRequest"><span class="badge">M</span>Release.VCSSource.PullRequest</a>
                 </li>
               
                 <li>
@@ -5079,6 +5151,15 @@ Examples:
                 <td><p></p></td>
               </tr>
             
+              <tr>
+                <td>EXECUTE</td>
+                <td>70</td>
+                <td><p>A statement that runs procedural or dynamic code: a procedure call (CALL,
+T-SQL EXEC), a prepared or dynamic statement (EXECUTE, EXECUTE IMMEDIATE,
+EXEC of a SQL string), or an anonymous block (PostgreSQL DO, Oracle
+BEGIN ... END).</p></td>
+              </tr>
+            
           </tbody>
         </table>
       
@@ -5883,6 +5964,21 @@ If there are no task runs, it will be empty. </p></td>
 If there are no task runs or the task run is not scheduled, it will be empty. </p></td>
                 </tr>
               
+                <tr>
+                  <td>skipper</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The user who skipped the task.
+Format: users/hello@world.com </p></td>
+                </tr>
+              
+                <tr>
+                  <td>skip_time</td>
+                  <td><a href="#google.protobuf.Timestamp">google.protobuf.Timestamp</a></td>
+                  <td></td>
+                  <td><p>When the task was skipped. </p></td>
+                </tr>
+              
             </tbody>
           </table>
 
@@ -5936,6 +6032,139 @@ If there are no task runs or the task run is not scheduled, it will be empty. </
                   <td><a href="#string">string</a></td>
                   <td></td>
                   <td><p>Format: projects/{project}/releases/{release} </p></td>
+                </tr>
+              
+                <tr>
+                  <td>release_state</td>
+                  <td><a href="#bytebase.v1.Task.ReleaseState">Task.ReleaseState</a></td>
+                  <td></td>
+                  <td><p>The release&#39;s file state on the target database when the rollout was
+created. Set only for a versioned release. The run reads the database&#39;s
+revisions again when it starts. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.Task.ReleaseState">Task.ReleaseState</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>pending_ranges</td>
+                  <td><a href="#bytebase.v1.Task.ReleaseState.Range">Task.ReleaseState.Range</a></td>
+                  <td>repeated</td>
+                  <td><p>The release&#39;s files the task will apply, as half-open ranges of
+positions in the release&#39;s `files`, ascending. Every other file&#39;s
+version had a live revision on the database. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>pending_count</td>
+                  <td><a href="#int32">int32</a></td>
+                  <td></td>
+                  <td><p>The number of files the task will apply: the ranges&#39; total length. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>applied_count</td>
+                  <td><a href="#int32">int32</a></td>
+                  <td></td>
+                  <td><p>The number of the release&#39;s versions already applied. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>compute_time</td>
+                  <td><a href="#google.protobuf.Timestamp">google.protobuf.Timestamp</a></td>
+                  <td></td>
+                  <td><p>When the state was computed. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>deleted_revisions</td>
+                  <td><a href="#bytebase.v1.Task.ReleaseState.DeletedRevision">Task.ReleaseState.DeletedRevision</a></td>
+                  <td>repeated</td>
+                  <td><p>The versions to apply that had a deleted revision, in release order. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.Task.ReleaseState.DeletedRevision">Task.ReleaseState.DeletedRevision</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>version</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>delete_time</td>
+                  <td><a href="#google.protobuf.Timestamp">google.protobuf.Timestamp</a></td>
+                  <td></td>
+                  <td><p>When the newest revision of this version was deleted. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>deleter</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The user who deleted it.
+Format: users/hello@world.com </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.Task.ReleaseState.Range">Task.ReleaseState.Range</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>start</td>
+                  <td><a href="#int32">int32</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>end</td>
+                  <td><a href="#int32">int32</a></td>
+                  <td></td>
+                  <td><p> </p></td>
                 </tr>
               
             </tbody>
@@ -10046,6 +10275,15 @@ Format: instances/{instance}/databases/{database} or projects/{project}/instance
                 </tr>
               
                 <tr>
+                  <td>sheet_sha256</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The content hash of the SQL sheet the result checked, which tells apart
+the plan&#39;s changes that target the same database. Empty for a result
+stored before it was recorded. </p></td>
+                </tr>
+              
+                <tr>
                   <td>sql_summary_report</td>
                   <td><a href="#bytebase.v1.PlanCheckRun.Result.SqlSummaryReport">PlanCheckRun.Result.SqlSummaryReport</a></td>
                   <td></td>
@@ -10823,7 +11061,7 @@ Format: projects/{project}/issues/{issue} </p></td>
                   <td><a href="#string">string</a></td>
                   <td></td>
                   <td><p>The name of the review run to retrieve.
-Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun} </p></td>
+Format: projects/{project}/issues/{issue}/reviewRun </p></td>
                 </tr>
               
             </tbody>
@@ -11276,17 +11514,11 @@ Never accepted on create or update. </p></td>
             <tbody>
               
                 <tr>
-                  <td>run_type</td>
-                  <td><a href="#bytebase.v1.ReviewRun.Type">ReviewRun.Type</a></td>
-                  <td></td>
-                  <td><p>The reviewer that posted the result. </p></td>
-                </tr>
-              
-                <tr>
                   <td>rule_type</td>
                   <td><a href="#bytebase.v1.ReviewRuleType">ReviewRuleType</a></td>
                   <td></td>
-                  <td><p>The rule judged against. Set if and only if run_type is RULE. </p></td>
+                  <td><p>The standard rule judged against. Set on the result of a standard rule,
+and on no other result. </p></td>
                 </tr>
               
                 <tr>
@@ -11308,8 +11540,8 @@ Format: instances/{instance}/databases/{database} </p></td>
                   <td>superseded</td>
                   <td><a href="#bool">bool</a></td>
                   <td></td>
-                  <td><p>A later run of the same reviewer has completed without reporting the
-result again, whatever its thread state. </p></td>
+                  <td><p>A later run has completed without reporting the result again, whatever
+its thread state. </p></td>
                 </tr>
               
                 <tr>
@@ -11324,17 +11556,18 @@ result a later run reports again keeps its thread and its attempt. </p></td>
                   <td>codes</td>
                   <td><a href="#string">string</a></td>
                   <td>repeated</td>
-                  <td><p>The conditions a RULE result reports, as finding codes such as
-&#34;WT101&#34;, one per reason. A code names the same condition on every
-engine. Empty for other reviewers. </p></td>
+                  <td><p>The conditions the result of a standard rule reports, as finding codes
+such as &#34;WT101&#34;, one per reason. A code names the same condition on
+every engine. Empty on any other result. </p></td>
                 </tr>
               
                 <tr>
                   <td>title</td>
                   <td><a href="#string">string</a></td>
                   <td></td>
-                  <td><p>The name of the problem an AI result reports, on one line; the comment
-holds the rest. Empty for a RULE result, which rule_type names. </p></td>
+                  <td><p>The name of the problem, on one line, for a result that no standard
+rule names; the comment holds the rest. Empty on the result of a
+standard rule, which rule_type names. </p></td>
                 </tr>
               
             </tbody>
@@ -11345,7 +11578,7 @@ holds the rest. Empty for a RULE result, which rule_type names. </p></td>
         
       
         <h3 id="bytebase.v1.IssueComment.ReviewRunCompletion">IssueComment.ReviewRunCompletion</h3>
-        <p>A review run completed, and what it did to the results of its reviewer.</p><p>Posted by the reviewer, with no creator.</p>
+        <p>A review run completed, and what it did to the earlier results. Posted</p><p>by the review, with no creator.</p>
 
         
           <table class="field-table">
@@ -11355,18 +11588,11 @@ holds the rest. Empty for a RULE result, which rule_type names. </p></td>
             <tbody>
               
                 <tr>
-                  <td>run_type</td>
-                  <td><a href="#bytebase.v1.ReviewRun.Type">ReviewRun.Type</a></td>
-                  <td></td>
-                  <td><p>The reviewer that ran. </p></td>
-                </tr>
-              
-                <tr>
                   <td>attempt</td>
                   <td><a href="#int64">int64</a></td>
                   <td></td>
-                  <td><p>Identifies the run among its reviewer&#39;s runs on the issue. The results
-it posted carry the same ReviewMetadata.attempt. </p></td>
+                  <td><p>Identifies the run among the runs on the issue. The results it posted
+carry the same ReviewMetadata.attempt. </p></td>
                 </tr>
               
                 <tr>
@@ -11718,21 +11944,14 @@ Format: projects/{project}/issues/{issue} </p></td>
                   <td>name</td>
                   <td><a href="#string">string</a></td>
                   <td></td>
-                  <td><p>Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun}
-The {reviewRun} id is the reviewer: &#34;rule&#34; or &#34;ai&#34;. The name
-addresses a slot, not an execution. </p></td>
+                  <td><p>Format: projects/{project}/issues/{issue}/reviewRun
+An issue has one review run. The name addresses the current run, which
+a re-run replaces. </p></td>
                 </tr>
               
                 <tr>
-                  <td>type</td>
-                  <td><a href="#bytebase.v1.ReviewRun.Type">ReviewRun.Type</a></td>
-                  <td></td>
-                  <td><p>Derived from the name. </p></td>
-                </tr>
-              
-                <tr>
-                  <td>status</td>
-                  <td><a href="#bytebase.v1.ReviewRun.Status">ReviewRun.Status</a></td>
+                  <td>state</td>
+                  <td><a href="#bytebase.v1.ReviewRun.State">ReviewRun.State</a></td>
                   <td></td>
                   <td><p> </p></td>
                 </tr>
@@ -11748,17 +11967,16 @@ addresses a slot, not an execution. </p></td>
                   <td>end_time</td>
                   <td><a href="#google.protobuf.Timestamp">google.protobuf.Timestamp</a></td>
                   <td></td>
-                  <td><p>When the run reached a terminal status. Unset while AVAILABLE or
-RUNNING. </p></td>
+                  <td><p>When the run reached a terminal state. Unset while RUNNING. </p></td>
                 </tr>
               
                 <tr>
                   <td>error</td>
-                  <td><a href="#string">string</a></td>
+                  <td><a href="#google.rpc.Status">google.rpc.Status</a></td>
                   <td></td>
-                  <td><p>Fatal execution error, set if and only if status is FAILED: the review
+                  <td><p>Fatal execution error, set if and only if state is FAILED: the review
 failed to execute (a platform problem, never the SQL — SQL problems are
-review results on a DONE run). </p></td>
+review results on a SUCCEEDED run). </p></td>
                 </tr>
               
                 <tr>
@@ -11838,7 +12056,7 @@ Format: users/{email}. </p></td>
                   <td>name</td>
                   <td><a href="#string">string</a></td>
                   <td></td>
-                  <td><p>Format: projects/{project}/issues/{issue}/reviewRuns/{reviewRun} </p></td>
+                  <td><p>Format: projects/{project}/issues/{issue}/reviewRun </p></td>
                 </tr>
               
             </tbody>
@@ -12266,8 +12484,8 @@ In this situation, `update_mask` is ignored. </p></td>
           </tbody>
         </table>
       
-        <h3 id="bytebase.v1.ReviewRun.Status">ReviewRun.Status</h3>
-        <p>States follow task_run, minus PENDING (review needs no admission</p><p>control) and minus CANCELED (runs are side-effect-free until the fenced</p><p>completion transaction, so re-running supersedes instead of canceling).</p>
+        <h3 id="bytebase.v1.ReviewRun.State">ReviewRun.State</h3>
+        <p>There is no canceled state: a run has no effect until its fenced</p><p>completion transaction, so a re-run supersedes it instead.</p>
         <table class="enum-table">
           <thead>
             <tr><td>Name</td><td>Number</td><td>Description</td></tr>
@@ -12275,67 +12493,29 @@ In this situation, `update_mask` is ignored. </p></td>
           <tbody>
             
               <tr>
-                <td>STATUS_UNSPECIFIED</td>
+                <td>STATE_UNSPECIFIED</td>
                 <td>0</td>
                 <td><p></p></td>
-              </tr>
-            
-              <tr>
-                <td>AVAILABLE</td>
-                <td>1</td>
-                <td><p>Created and claimable by any replica.</p></td>
               </tr>
             
               <tr>
                 <td>RUNNING</td>
-                <td>2</td>
-                <td><p></p></td>
+                <td>1</td>
+                <td><p>Queued or running.</p></td>
               </tr>
             
               <tr>
-                <td>DONE</td>
-                <td>3</td>
-                <td><p>Every (spec, target) unit in the reviewer&#39;s scope was evaluated. RULE&#39;s
-scope is every target. AI&#39;s scope is the project&#39;s CI sample, the first
-ci_sampling_size targets of each spec, or every target when
-ci_sampling_size is 0. DONE does not mean the review passed: whether
-problems remain is judged from open comments.</p></td>
+                <td>SUCCEEDED</td>
+                <td>2</td>
+                <td><p>Every (spec, target) unit in scope was evaluated. SUCCEEDED does not
+mean the review passed: whether problems remain is judged from open
+comments.</p></td>
               </tr>
             
               <tr>
                 <td>FAILED</td>
-                <td>4</td>
+                <td>3</td>
                 <td><p>At least one unit was not evaluated; the cause is in `error`.</p></td>
-              </tr>
-            
-          </tbody>
-        </table>
-      
-        <h3 id="bytebase.v1.ReviewRun.Type">ReviewRun.Type</h3>
-        <p></p>
-        <table class="enum-table">
-          <thead>
-            <tr><td>Name</td><td>Number</td><td>Description</td></tr>
-          </thead>
-          <tbody>
-            
-              <tr>
-                <td>TYPE_UNSPECIFIED</td>
-                <td>0</td>
-                <td><p></p></td>
-              </tr>
-            
-              <tr>
-                <td>RULE</td>
-                <td>1</td>
-                <td><p>Review against the standard rules.</p></td>
-              </tr>
-            
-              <tr>
-                <td>AI</td>
-                <td>2</td>
-                <td><p>Review against the natural-language AI review policy, performed by a
-model.</p></td>
               </tr>
             
           </tbody>
@@ -12468,9 +12648,9 @@ mirrors RequestIssue&#39;s authorization model).</p></td>
                 <td>GetReviewRun</td>
                 <td><a href="#bytebase.v1.GetReviewRunRequest">GetReviewRunRequest</a></td>
                 <td><a href="#bytebase.v1.ReviewRun">ReviewRun</a></td>
-                <td><p>Gets the current run of one reviewer on an issue. The run carries
-execution status only; review results are issue comments. A reviewer
-that has never run on the issue is NOT_FOUND.
+                <td><p>Gets the review run of an issue. The run carries the execution state
+only; review results are issue comments. An issue the review has never
+run on is NOT_FOUND.
 Permissions required: bb.reviewRuns.get</p></td>
               </tr>
             
@@ -12478,11 +12658,11 @@ Permissions required: bb.reviewRuns.get</p></td>
                 <td>RunReview</td>
                 <td><a href="#bytebase.v1.RunReviewRequest">RunReviewRequest</a></td>
                 <td><a href="#bytebase.v1.ReviewRun">ReviewRun</a></td>
-                <td><p>Triggers a review run. The slot is reset unconditionally: a RUNNING
-execution is superseded (its completion is fenced off), the attempt
-number is bumped, and the returned run is AVAILABLE.
+                <td><p>Starts the review of an issue. It replaces the current run
+unconditionally: an execution in flight is superseded (its completion is
+fenced off), and the returned run is RUNNING.
 Review results are not returned by this RPC: they are posted as issue
-comments. The returned run carries execution status only, and
+comments. The returned run carries the execution state only, and
 GetReviewRun reads it back.
 The audit log is the only record of who triggered a run.
 Permissions required: bb.reviewRuns.run</p></td>
@@ -12641,7 +12821,7 @@ Permissions required: bb.reviewRuns.run</p></td>
               <tr>
                 <td>GetReviewRun</td>
                 <td>GET</td>
-                <td>/v1/{name=projects/*/issues/*/reviewRuns/*}</td>
+                <td>/v1/{name=projects/*/issues/*/reviewRun}</td>
                 <td></td>
               </tr>
               
@@ -12651,7 +12831,7 @@ Permissions required: bb.reviewRuns.run</p></td>
               <tr>
                 <td>RunReview</td>
                 <td>POST</td>
-                <td>/v1/{name=projects/*/issues/*/reviewRuns/*}:run</td>
+                <td>/v1/{name=projects/*/issues/*/reviewRun}:run</td>
                 <td>*</td>
               </tr>
               
@@ -16178,6 +16358,14 @@ through the MCP server&#39;s delegated credential; never set for public API
 calls. Presence of this message is the MCP-origin marker. </p></td>
                 </tr>
               
+                <tr>
+                  <td>federated_identity</td>
+                  <td><a href="#bytebase.v1.FederatedIdentity">FederatedIdentity</a></td>
+                  <td></td>
+                  <td><p>The external workload behind a workload identity. Set on a successful
+token exchange and on every call made with the token it issued. </p></td>
+                </tr>
+              
             </tbody>
           </table>
 
@@ -16277,6 +16465,37 @@ Provide this to retrieve the subsequent page. </p></td>
                   <td><p>A token to retrieve next page of log entities.
 Pass this value in the page_token field in the subsequent call
 to retrieve the next page of log entities. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.FederatedIdentity">FederatedIdentity</h3>
+        <p>The verified OIDC identity a workload identity token was exchanged for.</p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>issuer</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The token&#39;s &#34;iss&#34; claim, e.g. &#34;https://token.actions.githubusercontent.com&#34;. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>subject</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The token&#39;s &#34;sub&#34; claim, e.g. &#34;repo:my-org/app:ref:refs/heads/main&#34;. </p></td>
                 </tr>
               
             </tbody>
@@ -16402,6 +16621,7 @@ Supported filter:
 - create_time: support &#34;&gt;=&#34; and &#34;&lt;=&#34; operator.
 - mcp: true selects the entries MCP produced, false the rest. A boolean, not a string. Support &#34;==&#34; operator.
 - mcp_correlation_id: the MCP session an entry belongs to, taken from an entry&#39;s mcp_delegation.correlation_id. Support &#34;==&#34; operator. Entries MCP produced outside a session — a refused connection or consent — carry none and match no value here.
+- federated_subject: the external subject behind a workload identity, taken from an entry&#39;s federated_identity.subject. Support &#34;==&#34; operator.
 
 For example:
  - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39;&#34;
@@ -16409,7 +16629,8 @@ For example:
  - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; actor == &#39;users/bb@bytebase.com&#39;&#34;
  - filter = &#34;method == &#39;/bytebase.v1.SQLService/Query&#39; &amp;&amp; severity == &#39;ERROR&#39; &amp;&amp; create_time &lt;= &#39;2021-01-01T00:00:00Z&#39; &amp;&amp; create_time &gt;= &#39;2020-01-01T00:00:00Z&#39;&#34;
  - filter = &#34;mcp == true&#34;
- - filter = &#34;mcp_correlation_id == &#39;0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60&#39;&#34; </p></td>
+ - filter = &#34;mcp_correlation_id == &#39;0b7f1a3c-1d2e-4f56-8a90-1b2c3d4e5f60&#39;&#34;
+ - filter = &#34;federated_subject == &#39;repo:my-org/app:ref:refs/heads/main&#39;&#34; </p></td>
                 </tr>
               
                 <tr>
@@ -22512,6 +22733,99 @@ The instance must already be soft-deleted for this to work. </p></td>
 
         
       
+        <h3 id="bytebase.v1.DiscoverNeonBranchesRequest">DiscoverNeonBranchesRequest</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>parent</td>
+                  <td><a href="#string">string</a></td>
+                  <td>optional</td>
+                  <td><p>The parent, which owns this collection of instances.
+Format: projects/{project}. If omitted, branches are discovered for the
+workspace collection. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>api_key</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Used only during this request and never persisted. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>project_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Neon project filter. Required for project-scoped Neon keys. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>page_size</td>
+                  <td><a href="#int32">int32</a></td>
+                  <td></td>
+                  <td><p>Defaults to 50. Values above 100 are capped; negative values are invalid. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>page_token</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Opaque continuation token containing no credentials. The destination and
+project filter must match the original request; page size may change. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.DiscoverNeonBranchesResponse">DiscoverNeonBranchesResponse</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>branches</td>
+                  <td><a href="#bytebase.v1.NeonBranch">NeonBranch</a></td>
+                  <td>repeated</td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>next_page_token</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Only an empty token indicates completion; a page may contain zero branches. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>failures</td>
+                  <td><a href="#bytebase.v1.NeonProjectDiscoveryFailure">NeonProjectDiscoveryFailure</a></td>
+                  <td>repeated</td>
+                  <td><p>Projects that could not be enumerated must not be interpreted as empty. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
         <h3 id="bytebase.v1.GetInstanceRequest">GetInstanceRequest</h3>
         <p></p>
 
@@ -22528,6 +22842,73 @@ The instance must already be soft-deleted for this to work. </p></td>
                   <td></td>
                   <td><p>The name of the instance to retrieve.
 Format: instances/{instance} or projects/{project}/instances/{instance} </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.ImportInstancesRequest">ImportInstancesRequest</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>parent</td>
+                  <td><a href="#string">string</a></td>
+                  <td>optional</td>
+                  <td><p>The parent, which owns this collection of instances.
+Format: projects/{project}. If omitted, every entry is created in the
+workspace collection; otherwise, every entry is created in this project
+collection. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>neon_credential</td>
+                  <td><a href="#bytebase.v1.NeonCredential">NeonCredential</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>imports</td>
+                  <td><a href="#bytebase.v1.InstanceImport">InstanceImport</a></td>
+                  <td>repeated</td>
+                  <td><p>Between 1 and 20 entries. Every entry&#39;s source must belong to the
+credential. Duplicate target IDs or sources are rejected before any
+creation. Successful entries are not rolled back. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.ImportInstancesResponse">ImportInstancesResponse</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>results</td>
+                  <td><a href="#bytebase.v1.InstanceImportResult">InstanceImportResult</a></td>
+                  <td>repeated</td>
+                  <td><p>Exactly one result per entry, in request order. </p></td>
                 </tr>
               
             </tbody>
@@ -22649,6 +23030,13 @@ Not set means sync all schemas &amp; databases. </p></td>
 For example, { &#34;org_group&#34;: &#34;infrastructure&#34;, &#34;environment&#34;: &#34;production&#34; } </p></td>
                 </tr>
               
+                <tr>
+                  <td>vendor</td>
+                  <td><a href="#bytebase.v1.Vendor">Vendor</a></td>
+                  <td></td>
+                  <td><p>Database service variant. Unspecified retains generic connection behavior. </p></td>
+                </tr>
+              
             </tbody>
           </table>
 
@@ -22676,6 +23064,131 @@ For example, { &#34;org_group&#34;: &#34;infrastructure&#34;, &#34;environment&#
                 <tr>
                   <td>value</td>
                   <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.InstanceImport">InstanceImport</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>instance_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Bytebase instance resource ID. Uniqueness does not provide idempotency. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>instance</td>
+                  <td><a href="#bytebase.v1.Instance">Instance</a></td>
+                  <td></td>
+                  <td><p>The instance to register, with the same meaning as in CreateInstance.
+The source determines engine, vendor, and data_sources, which must be
+unset. The workspace license determines activation, so a supplied value
+is ignored. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>username</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Existing database user for the instance&#39;s ADMIN data source. The server
+derives the host and port from the source. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>connection_database</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>Initial connection target, independent of instance.sync_databases. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>password</td>
+                  <td><a href="#string">string</a></td>
+                  <td>optional</td>
+                  <td><p>Omit to let the vendor supply the password. A supplied empty value is invalid. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>neon_branch</td>
+                  <td><a href="#bytebase.v1.NeonBranchSource">NeonBranchSource</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.InstanceImportFailure">InstanceImportFailure</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>status</td>
+                  <td><a href="#google.rpc.Status">google.rpc.Status</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>creation_outcome</td>
+                  <td><a href="#bytebase.v1.InstanceImportFailure.CreationOutcome">InstanceImportFailure.CreationOutcome</a></td>
+                  <td></td>
+                  <td><p>Always populated. Unknown outcomes must be reconciled before retrying. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.InstanceImportResult">InstanceImportResult</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>imported</td>
+                  <td><a href="#bytebase.v1.Instance">Instance</a></td>
+                  <td></td>
+                  <td><p>Confirms registration, not synchronization. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>failure</td>
+                  <td><a href="#bytebase.v1.InstanceImportFailure">InstanceImportFailure</a></td>
                   <td></td>
                   <td><p> </p></td>
                 </tr>
@@ -23008,6 +23521,190 @@ For example:
                   <td></td>
                   <td><p>A token, which can be sent as `page_token` to retrieve the next page.
 If this field is omitted, there are no subsequent pages. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.NeonBranch">NeonBranch</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>project_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>project_title</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>branch_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>branch_title</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>databases</td>
+                  <td><a href="#bytebase.v1.NeonDatabase">NeonDatabase</a></td>
+                  <td>repeated</td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>roles</td>
+                  <td><a href="#string">string</a></td>
+                  <td>repeated</td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>discovery_error</td>
+                  <td><a href="#google.rpc.Status">google.rpc.Status</a></td>
+                  <td></td>
+                  <td><p>Absent when inspection succeeded and a direct read-write endpoint exists.
+Successful discovery does not establish database access or privileges. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.NeonBranchSource">NeonBranchSource</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>project_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>branch_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.NeonCredential">NeonCredential</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>api_key</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.NeonDatabase">NeonDatabase</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>name</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>owner</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.NeonProjectDiscoveryFailure">NeonProjectDiscoveryFailure</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>project_id</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>status</td>
+                  <td><a href="#google.rpc.Status">google.rpc.Status</a></td>
+                  <td></td>
+                  <td><p> </p></td>
                 </tr>
               
             </tbody>
@@ -23581,6 +24278,58 @@ holds the token value.</p></td>
           </tbody>
         </table>
       
+        <h3 id="bytebase.v1.InstanceImportFailure.CreationOutcome">InstanceImportFailure.CreationOutcome</h3>
+        <p></p>
+        <table class="enum-table">
+          <thead>
+            <tr><td>Name</td><td>Number</td><td>Description</td></tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td>CREATION_OUTCOME_UNSPECIFIED</td>
+                <td>0</td>
+                <td><p></p></td>
+              </tr>
+            
+              <tr>
+                <td>NOT_CREATED</td>
+                <td>1</td>
+                <td><p></p></td>
+              </tr>
+            
+              <tr>
+                <td>UNKNOWN</td>
+                <td>2</td>
+                <td><p></p></td>
+              </tr>
+            
+          </tbody>
+        </table>
+      
+        <h3 id="bytebase.v1.Vendor">Vendor</h3>
+        <p>Database service variant, independent of engine and registration method.</p>
+        <table class="enum-table">
+          <thead>
+            <tr><td>Name</td><td>Number</td><td>Description</td></tr>
+          </thead>
+          <tbody>
+            
+              <tr>
+                <td>VENDOR_UNSPECIFIED</td>
+                <td>0</td>
+                <td><p></p></td>
+              </tr>
+            
+              <tr>
+                <td>NEON</td>
+                <td>1</td>
+                <td><p></p></td>
+              </tr>
+            
+          </tbody>
+        </table>
+      
 
       
 
@@ -23614,6 +24363,24 @@ Permissions required: bb.instances.list</p></td>
                 <td><a href="#bytebase.v1.CreateInstanceRequest">CreateInstanceRequest</a></td>
                 <td><a href="#bytebase.v1.Instance">Instance</a></td>
                 <td><p>Creates a new database instance.
+Permissions required: bb.instances.create</p></td>
+              </tr>
+            
+              <tr>
+                <td>DiscoverNeonBranches</td>
+                <td><a href="#bytebase.v1.DiscoverNeonBranchesRequest">DiscoverNeonBranchesRequest</a></td>
+                <td><a href="#bytebase.v1.DiscoverNeonBranchesResponse">DiscoverNeonBranchesResponse</a></td>
+                <td><p>Discovers Neon branches without persisting the management API key.
+Permissions required: bb.instances.create</p></td>
+              </tr>
+            
+              <tr>
+                <td>ImportInstances</td>
+                <td><a href="#bytebase.v1.ImportInstancesRequest">ImportInstancesRequest</a></td>
+                <td><a href="#bytebase.v1.ImportInstancesResponse">ImportInstancesResponse</a></td>
+                <td><p>Registers instances resolved from a vendor&#39;s control plane. Synchronous;
+entries succeed or fail independently and successes are not rolled back.
+Registration does not wait for instance synchronization.
 Permissions required: bb.instances.create</p></td>
               </tr>
             
@@ -23775,6 +24542,40 @@ Permissions required: bb.instances.update</p></td>
                 <td>POST</td>
                 <td>/v1/{parent=projects/*}/instances</td>
                 <td>instance</td>
+              </tr>
+              
+            
+              
+              
+              <tr>
+                <td>DiscoverNeonBranches</td>
+                <td>POST</td>
+                <td>/v1/instances:discoverNeonBranches</td>
+                <td>*</td>
+              </tr>
+              
+              <tr>
+                <td>DiscoverNeonBranches</td>
+                <td>POST</td>
+                <td>/v1/{parent=projects/*}/instances:discoverNeonBranches</td>
+                <td>*</td>
+              </tr>
+              
+            
+              
+              
+              <tr>
+                <td>ImportInstances</td>
+                <td>POST</td>
+                <td>/v1/instances:import</td>
+                <td>*</td>
+              </tr>
+              
+              <tr>
+                <td>ImportInstances</td>
+                <td>POST</td>
+                <td>/v1/{parent=projects/*}/instances:import</td>
+                <td>*</td>
               </tr>
               
             
@@ -30022,7 +30823,7 @@ If enabled, issues will include &#34;set role &lt;db_owner&gt;&#34; statement. <
                   <td><a href="#int32">int32</a></td>
                   <td></td>
                   <td><p>The maximum number of databases to sample during CI data validation and
-AI review. Without specification, sampling is disabled, resulting in full
+SQL review. Without specification, sampling is disabled, resulting in full
 validation. </p></td>
                 </tr>
               
@@ -31524,6 +32325,90 @@ Format: projects/{project}/sheets/{sheet} </p></td>
                   <td><a href="#string">string</a></td>
                   <td></td>
                   <td><p>The url link to the e.g., GitHub commit or pull request. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>commit_sha</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The commit the release&#39;s files were read from. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>branch</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The source branch. In a pull request build, the pull request&#39;s source
+branch rather than the platform&#39;s synthetic merge ref. Empty for a run
+on a tag or a merge queue&#39;s temporary branch. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>commit_title</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The first line of the commit message. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>author_name</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The author&#39;s display name: the commit&#39;s author where the CI platform
+exposes it, else the person who started the build. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>author_login</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p>The author&#39;s login on the VCS platform: the commit&#39;s author, or the pull
+request&#39;s author in a pull request build. </p></td>
+                </tr>
+              
+                <tr>
+                  <td>pull_request</td>
+                  <td><a href="#bytebase.v1.Release.VCSSource.PullRequest">Release.VCSSource.PullRequest</a></td>
+                  <td></td>
+                  <td><p>The pull request the commit belongs to, when the build knows it. </p></td>
+                </tr>
+              
+            </tbody>
+          </table>
+
+          
+
+        
+      
+        <h3 id="bytebase.v1.Release.VCSSource.PullRequest">Release.VCSSource.PullRequest</h3>
+        <p></p>
+
+        
+          <table class="field-table">
+            <thead>
+              <tr><td>Field</td><td>Type</td><td>Label</td><td>Description</td></tr>
+            </thead>
+            <tbody>
+              
+                <tr>
+                  <td>url</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>number</td>
+                  <td><a href="#int64">int64</a></td>
+                  <td></td>
+                  <td><p> </p></td>
+                </tr>
+              
+                <tr>
+                  <td>title</td>
+                  <td><a href="#string">string</a></td>
+                  <td></td>
+                  <td><p> </p></td>
                 </tr>
               
             </tbody>
@@ -36865,6 +37750,12 @@ the response that produced it was redacted. </p></td>
                 <td>FEATURE_SHAREPOINT_EXPORT</td>
                 <td>72</td>
                 <td><p>Upload exports to SharePoint.</p></td>
+              </tr>
+            
+              <tr>
+                <td>FEATURE_AI_SQL_REVIEW</td>
+                <td>73</td>
+                <td><p>An AI model reviews the SQL of an issue.</p></td>
               </tr>
             
           </tbody>

@@ -41,6 +41,7 @@ import {
   DataSourceExternalSecretSchema,
   KerberosConfigSchema,
   SASLConfigSchema,
+  Vendor,
 } from "@/types/proto-es/v1/instance_service_pb";
 import { PlanType } from "@/types/proto-es/v1/subscription_service_pb";
 import { onlyAllowNumber } from "@/utils";
@@ -202,6 +203,9 @@ export function DataSourceForm({
     needsKeytabResupply,
     dataSourceResetEvent,
   } = ctx;
+
+  const isNeon =
+    basicInfo.engine === Engine.POSTGRES && basicInfo.vendor === Vendor.NEON;
 
   const {
     showDatabase,
@@ -654,13 +658,15 @@ export function DataSourceForm({
 
   const onLocalTlsPostureChange = useCallback(
     (posture: LocalTlsPosture) => {
-      setLocalTlsPosture(posture);
       if (posture === LOCAL_TLS_POSTURE_DISABLED) {
+        if (isNeon) return;
+        setLocalTlsPosture(posture);
         setLocalTlsCaSource("SYSTEM_TRUST");
         setLocalTlsClientCertSource(LOCAL_TLS_CLIENT_CERT_SOURCE_NONE);
         update({ ...disableLocalTls(dataSource), updateSsl: true });
         return;
       }
+      setLocalTlsPosture(posture);
 
       const next = applyLocalTlsPosture(dataSource, posture);
       const enablingTls = !dataSource.useSsl;
@@ -685,7 +691,7 @@ export function DataSourceForm({
         }),
       });
     },
-    [dataSource, localTlsClientCertSource, update]
+    [dataSource, isNeon, localTlsClientCertSource, update]
   );
 
   const passwordSourceOptions = [
@@ -1169,7 +1175,10 @@ export function DataSourceForm({
                                   : undefined
                               }
                             >
-                              <div className="flex flex-col gap-2">
+                              <div
+                                className="flex flex-col gap-2"
+                                data-connection-primary-secret
+                              >
                                 <SecretInput
                                   resetKey={dataSource.id}
                                   aria-label={t("common.password")}
@@ -1910,10 +1919,7 @@ export function DataSourceForm({
                 {/* Snowflake keypair */}
                 {basicInfo.engine === Engine.SNOWFLAKE && (
                   <>
-                    <FormField
-                      validationField="authenticationPrivateKey"
-                      title={<>{t("data-source.ssh.private-key")}</>}
-                    >
+                    <FormField title={<>{t("data-source.ssh.private-key")}</>}>
                       <SecretInput
                         resetKey={dataSource.id}
                         aria-label={t("data-source.ssh.private-key")}
@@ -1924,7 +1930,6 @@ export function DataSourceForm({
                         isCreating={isCreating || dataSource.pendingCreate}
                         disabled={!allowEdit}
                         multiline
-                        allowEmpty={false}
                         onValueChange={(value) =>
                           onDataSourceChange(
                             updateDataSourceSecret(
@@ -1992,6 +1997,7 @@ export function DataSourceForm({
                     </FormField>
                     <FormField
                       validationField="updatedToken"
+                      data-connection-primary-secret
                       title={
                         <>
                           {t("common.token")}{" "}
@@ -2186,6 +2192,7 @@ export function DataSourceForm({
                     })
                   }
                   engineType={basicInfo.engine}
+                  requireTls={isNeon}
                   disabled={!allowEdit}
                 />
               </FormField>

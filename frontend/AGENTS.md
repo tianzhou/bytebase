@@ -77,16 +77,16 @@ React UI components live in `src/components/ui/` and follow shadcn-style pattern
 - **Use `cn()` for conditional classes** — import from `@/lib/utils`, don't write manual template literal ternaries
 - **Overlay layering policy** — React overlays use three semantic families: `overlay`, `agent`, and `critical`.
   - Standard app overlays mount into `overlay`.
-  - The shared primitives in `src/components/ui/` are the `overlay` entry points; they are not for agent-owned or critical surfaces.
+  - The shared primitives in `src/components/ui/` default to `overlay`; they are not entry points for critical surfaces.
   - `AgentWindow`, the minimized launcher, and other agent-owned overlays mount into `agent` and stay above normal app overlays.
-  - Agent-owned surfaces should use the wrappers in `src/modules/agent/components/ui/` or other agent-owned code that mounts into `getLayerRoot("agent")`.
+  - Agent-owned alert dialogs use shared `AlertDialogContent` with `layer="agent"`. Other agent-owned surfaces should use the wrappers in `src/modules/agent/components/ui/` or other agent-owned code that mounts into `getLayerRoot("agent")`.
   - Forced session-expired / re-login UI mounts into `critical` and is the only layer allowed above and disabling the agent.
   - `critical` is reserved for auth/session recovery surfaces such as `SessionExpiredSurface`; do not introduce new feature-level critical overlays without an explicit policy change.
   - Each family has a dedicated portal root; use `getLayerRoot(<family>)` to choose the family root, and use `LAYER_SURFACE_CLASS` / `LAYER_BACKDROP_CLASS` from `src/components/ui/layer.ts` for shared intra-family stacking where appropriate.
   - Children inherit the owning family. If a parent mounts into `agent` or `critical`, its descendants must not remount into a lower family.
   - Raw global `z-index` values are forbidden in React feature code for cross-surface stacking. Local component-internal `z-index` remains allowed when it only affects internal composition.
   - Consumers of overlay primitives must not set their own global `z-index`.
-  - Dropdown-bearing controls inside `Sheet`, `Dialog`, or any clipped/stacked container must render their popup through the shared layer. For shared controls that expose a `portal` prop, such as `Combobox` and select wrappers built on it, pass `portal` instead of raising a local dropdown with raw `z-index`.
+  - Every dropdown, popover, and floating panel renders its popup through the shared layer, never inline with `absolute` positioning: an inline popup loses to any later sibling with a local `z-index` and is clipped by `overflow` ancestors. `Combobox` and the select wrappers built on it always portal. Feature code uses `LAYER_SURFACE_CLASS` / `LAYER_BACKDROP_CLASS` only on content it mounts into `getLayerRoot(<family>)`.
   - Menus, popovers, dropdowns, and custom floating panels should use shared `DropdownMenu`, `Popover`, `Combobox`, `Select`, `Dialog`, or `Sheet` primitives rather than ad hoc `absolute top-full z-*` markup.
   - Do not portal feature UI directly to `document.body` or a `document.body` alias. Use the shared overlay primitives, or explicitly mount into the correct semantic root with `getLayerRoot(<family>)`.
   - Do not hide raw global overlay classes in constants, imported helpers, `cn()` inputs, or interpolated template literals. A value like `fixed inset-0 z-50` is still forbidden even when it is not written directly in `className`.

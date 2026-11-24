@@ -1,28 +1,39 @@
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { create } from "@bufbuild/protobuf";
 import { createContextValues } from "@connectrpc/connect";
+import { isEqual } from "lodash-es";
 import {
   Archive,
-  Bot,
+  Check,
   ChevronLeft,
+  Ellipsis,
   EllipsisVertical,
   Folder,
   FolderOpen,
+  Info,
   LoaderCircle,
   MessageSquare,
+  Minus,
+  Pencil,
   Plus,
+  RefreshCw,
+  Settings,
   Trash2,
   Undo2,
+  X,
 } from "lucide-react";
 import {
+  lazy,
   type ReactNode,
   type RefObject,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
@@ -65,12 +76,21 @@ import {
   getCurrentChatContext,
 } from "../logic/chatContext";
 import {
+  type AgentPageHelpRequest,
+  canStartAgentPageHelp,
+  isAgentPageHelpRequestCurrent,
+  subscribeAgentPageHelp,
+} from "../logic/contextualHelp";
+import type { AccessGrantDraft } from "../logic/deniedQueryAccess";
+import { withDefaultAccessGrantReason } from "../logic/justInTime";
+import {
   getLandingStarterIdForText,
   type LandingStarterId,
 } from "../logic/landingStarters";
 import {
   formatResourceMention,
   getDatabaseMentionLabel,
+  getDraftResourceMentions,
   getPlanMentionLabel,
   normalizeAgentResourceReference,
   normalizeAgentResourceReferences,
@@ -78,9 +98,12 @@ import {
 import { normalizeAgentResponseActions } from "../logic/responseActions";
 import type {
   AgentChat as AgentChatRecord,
+  AgentDraft,
   AgentResourceReference,
+  AgentRunMode,
 } from "../logic/types";
 import {
+  selectContinueChatForContext,
   selectCurrentChat,
   selectHasRunningChat,
   selectOrderedChats,
@@ -92,9 +115,15 @@ import {
   MIN_WIDTH,
   WINDOW_MARGIN,
 } from "../window";
+import { AgentActionGroup } from "./AgentActionGroup";
 import { AgentChat } from "./AgentChat";
 import { AgentContextualStart } from "./AgentContextualStart";
 import { AgentInput } from "./AgentInput";
+import {
+  type AgentLauncherPosition,
+  AgentMinimizedLauncher,
+} from "./AgentMinimizedLauncher";
+import { AgentPreferences } from "./AgentPreferences";
 import {
   RESIZE_POINTER_MEDIA_QUERY,
   supportsWindowBorderResize,
@@ -105,7 +134,6 @@ import {
   AgentDialogContent,
   AgentDialogDescription,
   AgentDialogTitle,
-  AgentDialogTrigger,
 } from "./ui/AgentDialog";
 import {
   AgentDropdownMenu,
@@ -113,6 +141,12 @@ import {
   AgentDropdownMenuItem,
   AgentDropdownMenuTrigger,
 } from "./ui/AgentDropdownMenu";
+import {
+  AgentPopover,
+  AgentPopoverContent,
+  AgentPopoverTitle,
+  AgentPopoverTrigger,
+} from "./ui/AgentPopover";
 import { AgentTooltip } from "./ui/AgentTooltip";
 import {
   type ResizeBounds,
@@ -121,6 +155,13 @@ import {
 } from "./window-resize";
 
 type AnchoredResizeDirection = Extract<ResizeDirection, "n" | "w" | "nw">;
+
+// Keep SQL Editor stores out of the app shell's initialization path.
+const AgentAccessGrantRequestDrawer = lazy(() =>
+  import("./AgentAccessGrantRequestDrawer").then((module) => ({
+    default: module.AgentAccessGrantRequestDrawer,
+  }))
+);
 
 const resizeZoneClasses: Record<AnchoredResizeDirection, string> = {
   n: "left-[12px] top-[-6px] h-[6px] w-[calc(100%-24px)] cursor-n-resize",
@@ -187,6 +228,11 @@ export function AgentWindow() {
   const orderedChats = useAgentStore(selectOrderedChats);
   const currentChat = useAgentStore(selectCurrentChat);
   const currentChatId = useAgentStore((s) => s.currentChatId);
+  const landingDraft = useAgentStore((s) => s.landingDraft);
+  const landingContext = useAgentStore((s) => s.landingContext);
+  const chatProtectionReady = useAgentStore(
+    (s) => s.chatProtectionReady !== false
+  );
   const queuedChatId = useAgentStore((s) =>
     s.currentChatId && s.queuedUserMessagesByChatId[s.currentChatId]
       ? s.currentChatId
@@ -195,6 +241,25 @@ export function AgentWindow() {
   const hasRunningChat = useAgentStore(selectHasRunningChat);
   const storedWorkspaceName = useAgentStore((s) => s.workspaceName);
   const storedUserEmail = useAgentStore((s) => s.userEmail);
+  const conversationIdentity = JSON.stringify([
+    storedWorkspaceName,
+    storedUserEmail,
+    currentChatId,
+  ]);
+  const protectedConversationRef = useRef<string | null>(null);
+  const waitingForChatProtection = Boolean(currentChat && !chatProtectionReady);
+  // Reclamation releases protection without discarding pending answers or recovery callbacks.
+  const keepConversationMounted =
+    !waitingForChatProtection ||
+    protectedConversationRef.current === conversationIdentity;
+  useLayoutEffect(() => {
+    if (chatProtectionReady) {
+      protectedConversationRef.current = conversationIdentity;
+    } else if (protectedConversationRef.current !== conversationIdentity) {
+      protectedConversationRef.current = null;
+    }
+  }, [chatProtectionReady, conversationIdentity]);
+  const openingBehavior = useAgentStore((s) => s.preferences.openingBehavior);
   const getOrFetchSettingByName = useAppStore((s) => s.getOrFetchSettingByName);
   const aiEnabled = useAppStore((s) => s.serverInfo?.aiEnabled);
   const batchFetchProjects = useAppStore((s) => s.batchFetchProjects);
@@ -207,15 +272,119 @@ export function AgentWindow() {
     currentUser && workspace && currentUser.workspace === workspace.name
       ? currentUser.email
       : "";
+  const currentOwnerIdentity =
+    workspace?.name && userEmail
+      ? JSON.stringify([workspace.name, userEmail])
+      : null;
+  const initializationFailure = useAgentStore(
+    (state) => state.initializationFailureIdentity
+  );
+  const [initializationAttempt, setInitializationAttempt] = useState(0);
+  const accessGrantDraftSequence = useRef(0);
+  const [accessGrantDraft, setAccessGrantDraft] = useState<{
+    id: number;
+    draft: AccessGrantDraft;
+    workspace: string;
+    userEmail: string;
+    source: { chatId: string; messageId: string; draft: AccessGrantDraft };
+  }>();
+  useLayoutEffect(() => {
+    if (
+      !visible ||
+      accessGrantDraft?.workspace !== workspace?.name ||
+      accessGrantDraft?.userEmail !== userEmail
+    ) {
+      setAccessGrantDraft(undefined);
+    }
+  }, [visible, workspace?.name, userEmail, accessGrantDraft]);
+  const openAccessGrantDraft = useCallback(
+    (
+      draft: AccessGrantDraft,
+      source: { chatId: string; messageId: string }
+    ) => {
+      const owner = useAppStore.getState();
+      const state = useAgentStore.getState();
+      const chat = state.getChat(source.chatId);
+      const message = state
+        .getMessages(source.chatId)
+        .find((item) => item.id === source.messageId);
+      const sourceDraft = message?.metadata?.accessRequestDraft;
+      if (
+        !state.visible ||
+        state.currentChatId !== source.chatId ||
+        !chat ||
+        chat.archived ||
+        message?.role !== "assistant" ||
+        !sourceDraft ||
+        sourceDraft.kind === "requestRole" ||
+        message.metadata?.actionReceipts?.some(
+          (receipt) => receipt.kind === "access-grant"
+        ) ||
+        message.metadata?.submittedAccessGrants?.length ||
+        !isEqual(withDefaultAccessGrantReason(sourceDraft), draft) ||
+        !owner.workspace?.name ||
+        !owner.currentUser?.email ||
+        owner.currentUser.workspace !== owner.workspace.name ||
+        state.workspaceName !== owner.workspace.name ||
+        state.userEmail !== owner.currentUser.email ||
+        chat.workspaceName !== owner.workspace.name ||
+        owner.workspace.name !== workspace?.name ||
+        owner.currentUser.email !== userEmail
+      )
+        return false;
+      setAccessGrantDraft({
+        id: ++accessGrantDraftSequence.current,
+        draft,
+        workspace: owner.workspace.name,
+        userEmail,
+        source: { ...source, draft: structuredClone(sourceDraft) },
+      });
+      return true;
+    },
+    [workspace?.name, userEmail]
+  );
 
   useLayoutEffect(() => {
-    useAgentStore.getState().setWorkspaceName(workspace?.name, userEmail);
-  }, [hasRunningChat, userEmail, workspace?.name]);
+    const initialized = useAgentStore
+      .getState()
+      .setWorkspaceName(workspace?.name, userEmail);
+    const failureIdentity = initialized
+      ? undefined
+      : (currentOwnerIdentity ?? undefined);
+    if (
+      useAgentStore.getState().initializationFailureIdentity !== failureIdentity
+    ) {
+      useAgentStore.setState({
+        initializationFailureIdentity: failureIdentity,
+      });
+    }
+  }, [
+    currentOwnerIdentity,
+    hasRunningChat,
+    initializationAttempt,
+    userEmail,
+    workspace?.name,
+  ]);
 
   const windowRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const launcherPositionRef = useRef<AgentLauncherPosition | undefined>(
+    undefined
+  );
+  const continuedChatIdRef = useRef<string | null>(null);
   const compactPanelTriggerRef = useRef<HTMLElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const renameFocusChatIdRef = useRef<string | null>(null);
+  const preferencesTriggerRef = useRef<HTMLButtonElement>(null);
+  const preferencesReturnFocusRef = useRef(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!preferencesOpen && preferencesReturnFocusRef.current) {
+      preferencesTriggerRef.current?.focus();
+      preferencesReturnFocusRef.current = false;
+    }
+  }, [preferencesOpen]);
 
   const [viewportSize, setViewportSize] = useState({
     width: window.innerWidth,
@@ -230,6 +399,38 @@ export function AgentWindow() {
   const [showArchivedOnly, setShowArchivedOnly] = useState(false);
   const [contextualStart, setContextualStart] =
     useState<AgentPageResource | null>(null);
+  const [contextualDraft, setContextualDraft] = useState<AgentDraft>({
+    text: "",
+  });
+  const contextualPageHelpRef = useRef<AgentPageHelpRequest | null>(null);
+  const [contextualPageHelp, setContextualPageHelp] =
+    useState<AgentPageHelpRequest | null>(null);
+  const canStartPageHelp = useSyncExternalStore(
+    useCallback(
+      (listener) =>
+        contextualPageHelp?.subscribeCanStart?.(listener) ?? (() => {}),
+      [contextualPageHelp]
+    ),
+    useCallback(
+      () => !contextualPageHelp || canStartAgentPageHelp(contextualPageHelp),
+      [contextualPageHelp]
+    )
+  );
+  const [contextualChatScope, setContextualChatScope] = useState<{
+    context: string;
+    workspaceName: string;
+  } | null>(null);
+  const continuableChat = useAgentStore((state) =>
+    contextualStart &&
+    contextualChatScope?.workspaceName === workspace?.name &&
+    state.userEmail === userEmail
+      ? selectContinueChatForContext(
+          state,
+          contextualChatScope?.context,
+          contextualChatScope?.workspaceName
+        )
+      : null
+  );
   const [contextualReference, setContextualReference] = useState<
     AgentResourceReference | undefined
   >();
@@ -287,7 +488,43 @@ export function AgentWindow() {
         ))
     );
   });
-  const openingRef = useRef(false);
+  const openedOwnerRef = useRef<{
+    workspaceName: string | null;
+    userEmail: string | null;
+    openingBehavior: "landing" | "continue";
+  } | null>(null);
+  const wasVisibleRef = useRef(false);
+  const resetContextualStart = useCallback(
+    (context?: string) => {
+      contextualPageHelpRef.current = null;
+      setContextualPageHelp(null);
+      setContextualDraft({ text: "" });
+      let pageResource = getCurrentAgentPageResource();
+      const pageContext = pageResource
+        ? ("project" in pageResource && pageResource.project) || workspace?.name
+        : undefined;
+      if (context && context !== pageContext) {
+        pageResource = context.startsWith(projectNamePrefix)
+          ? { kind: "project", name: context, project: context }
+          : undefined;
+      }
+      setContextualStart(pageResource ?? null);
+      setContextualChatScope(
+        pageResource && workspace?.name && userEmail
+          ? {
+              context:
+                ("project" in pageResource && pageResource.project) ||
+                workspace.name,
+              workspaceName: workspace.name,
+            }
+          : null
+      );
+      setContextualReference(undefined);
+      setContextualLoading(false);
+      return pageResource;
+    },
+    [userEmail, workspace?.name]
+  );
   const [compactPanel, setCompactPanel] = useState<"chats" | "archived" | null>(
     null
   );
@@ -297,40 +534,163 @@ export function AgentWindow() {
   const [collapsedChatGroups, setCollapsedChatGroups] = useState<Set<string>>(
     () => new Set()
   );
-  const [isRenamingCurrentChat, setIsRenamingCurrentChat] = useState(false);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [pendingDeleteChatId, setPendingDeleteChatId] = useState<string | null>(
     null
   );
-  const [
-    isDeleteAllArchivedChatsDialogOpen,
-    setIsDeleteAllArchivedChatsDialogOpen,
-  ] = useState(false);
   const [renamingTitle, setRenamingTitle] = useState("");
 
   useEffect(() => {
+    setPreferencesOpen(false);
+  }, [storedWorkspaceName, storedUserEmail]);
+
+  useEffect(() => {
     const isOpen = visible && !minimized;
+    const store = useAgentStore.getState();
+    const selected = store.currentChatId
+      ? store.getChat(store.currentChatId)
+      : undefined;
     const hasQueuedChat = Boolean(
-      queuedChatId && queuedChatId === currentChatId
+      store.currentChatId &&
+        store.queuedUserMessagesByChatId[store.currentChatId] &&
+        !selected?.archived
     );
-    if (isOpen && !openingRef.current) {
-      const pageResource = hasQueuedChat
-        ? undefined
-        : getCurrentAgentPageResource();
-      setContextualStart(pageResource ?? null);
-      setContextualReference(undefined);
-      setContextualLoading(false);
-      if (pageResource || hasQueuedChat) {
+    const { workspaceName, userEmail: ownerEmail } = store;
+    if (workspaceName !== workspace?.name || ownerEmail !== userEmail) return;
+    const hasOpenedForOwner =
+      openedOwnerRef.current?.workspaceName === workspaceName &&
+      openedOwnerRef.current?.userEmail === ownerEmail;
+    const openingPreferenceChanged =
+      !wasVisibleRef.current &&
+      openedOwnerRef.current?.openingBehavior !==
+        store.preferences.openingBehavior;
+    if (
+      isOpen &&
+      contextualPageHelpRef.current &&
+      isAgentPageHelpRequestCurrent(contextualPageHelpRef.current)
+    ) {
+      if (!wasVisibleRef.current) {
+        setPreferencesOpen(false);
+      }
+      setShowArchivedOnly(false);
+      setRenamingChatId(null);
+      setMobileScreen("conversation");
+    } else if (isOpen && (!hasOpenedForOwner || openingPreferenceChanged)) {
+      setPreferencesOpen(false);
+      const pageResource = hasQueuedChat ? undefined : resetContextualStart();
+      if (hasQueuedChat) setContextualStart(null);
+      const context = pageResource
+        ? ("project" in pageResource && pageResource.project) || workspaceName
+        : getCurrentChatContext() || workspaceName;
+      const lastChat =
+        !hasQueuedChat && store.preferences.openingBehavior === "continue"
+          ? selectContinueChatForContext(
+              store,
+              context ?? undefined,
+              workspaceName ?? undefined
+            )
+          : null;
+      if (lastChat) {
+        continuedChatIdRef.current = lastChat.id;
+        store.setCurrentChat(lastChat.id);
+        if (useAgentStore.getState().currentChatId === lastChat.id) {
+          setContextualStart(null);
+        } else {
+          continuedChatIdRef.current = null;
+        }
+      }
+      if (!pageResource && !hasQueuedChat && !lastChat) {
+        const selected = store.currentChatId
+          ? store.getChat(store.currentChatId)
+          : undefined;
+        const draft = store.getDraft();
+        if (
+          selected &&
+          !selected.archived &&
+          !store.isChatRunning(selected.id) &&
+          selected.status !== "awaiting_user" &&
+          !draft.text &&
+          !draft.mentions?.length &&
+          !draft.project &&
+          !draft.resource &&
+          store.getMessages(selected.id).length > 0
+        ) {
+          store.createChat({
+            context: context ?? undefined,
+            workspaceName: workspaceName ?? undefined,
+            page: {
+              path: `${window.location.pathname}${window.location.search}${window.location.hash}`,
+              title: document.title,
+            },
+          });
+        }
+      }
+      if (pageResource || hasQueuedChat || lastChat) {
         setShowArchivedOnly(false);
-        setIsRenamingCurrentChat(false);
+        setRenamingChatId(null);
         setMobileScreen("conversation");
       }
     } else if (isOpen && hasQueuedChat) {
+      setPreferencesOpen(false);
       setContextualStart(null);
       setShowArchivedOnly(false);
       setMobileScreen("conversation");
     }
-    openingRef.current = isOpen;
-  }, [currentChatId, minimized, queuedChatId, visible]);
+    if (isOpen && (!hasOpenedForOwner || !wasVisibleRef.current)) {
+      openedOwnerRef.current = {
+        workspaceName,
+        userEmail: ownerEmail,
+        openingBehavior: store.preferences.openingBehavior,
+      };
+    }
+    wasVisibleRef.current = visible;
+  }, [
+    contextualPageHelp,
+    currentChat?.archived,
+    currentChatId,
+    minimized,
+    openingBehavior,
+    queuedChatId,
+    resetContextualStart,
+    userEmail,
+    visible,
+    workspace?.name,
+  ]);
+
+  useEffect(() => {
+    const receiveRequest = (request: AgentPageHelpRequest) => {
+      if (!isAgentPageHelpRequestCurrent(request)) {
+        if (contextualPageHelpRef.current === request) {
+          contextualPageHelpRef.current = null;
+          setContextualPageHelp(null);
+          setContextualStart(null);
+        }
+        return;
+      }
+      contextualPageHelpRef.current = request;
+      setPreferencesOpen(false);
+      setContextualPageHelp(request);
+      setContextualStart(request.page);
+      setContextualDraft({ text: "" });
+      setContextualChatScope({
+        context:
+          ("project" in request.page && request.page.project) ||
+          request.workspaceName,
+        workspaceName: request.workspaceName,
+      });
+      setContextualReference(undefined);
+      setContextualLoading(false);
+      setShowArchivedOnly(false);
+      setRenamingChatId(null);
+      setMobileScreen("conversation");
+      setCompactPanel(null);
+    };
+    const activeRequest = contextualPageHelpRef.current;
+    if (activeRequest && !isAgentPageHelpRequestCurrent(activeRequest)) {
+      receiveRequest(activeRequest);
+    }
+    return subscribeAgentPageHelp(receiveRequest);
+  }, [storedUserEmail, storedWorkspaceName]);
 
   useEffect(() => {
     if (
@@ -564,14 +924,44 @@ export function AgentWindow() {
     () => orderedChats.filter((chat) => !chat.archived),
     [orderedChats]
   );
-  const canContinueCurrentChat =
-    !!currentChat &&
-    !currentChat.archived &&
-    useAgentStore.getState().canSelectChat(currentChat.id);
   const archivedChats = useMemo(
     () => orderedChats.filter((chat) => chat.archived),
     [orderedChats]
   );
+
+  useEffect(() => {
+    if (
+      !visible ||
+      minimized ||
+      showArchivedOnly ||
+      currentChat ||
+      activeChats.length > 0 ||
+      storedWorkspaceName !== workspace?.name ||
+      storedUserEmail !== userEmail
+    )
+      return;
+    if (
+      !contextualStart &&
+      !landingDraft.text.trim() &&
+      getDraftResourceMentions(landingDraft).length === 0
+    )
+      resetContextualStart();
+    setCompactPanel(null);
+    setMobileScreen("conversation");
+  }, [
+    activeChats.length,
+    contextualStart,
+    currentChat,
+    landingDraft,
+    minimized,
+    resetContextualStart,
+    showArchivedOnly,
+    storedUserEmail,
+    storedWorkspaceName,
+    userEmail,
+    visible,
+    workspace?.name,
+  ]);
 
   const isArchiveAllDisabled =
     hasRunningChat || showArchivedOnly || activeChats.length === 0;
@@ -606,16 +996,6 @@ export function AgentWindow() {
   const getEditableChatTitle = useCallback(
     (chat: AgentChatRecord) => chat.title || t("agent.chat-default-title"),
     [t]
-  );
-
-  const getChatLabel = useCallback(
-    (chat: AgentChatRecord) => {
-      const baseLabel = getEditableChatTitle(chat);
-      return chat.archived
-        ? `${baseLabel} (${t("agent.chat-archived-label")})`
-        : baseLabel;
-    },
-    [getEditableChatTitle, t]
   );
 
   const getContextLabel = useCallback(
@@ -658,6 +1038,10 @@ export function AgentWindow() {
                           `#${contextualStart.name.split("/").at(-1)}`
                         : `#${contextualStart.name.split("/").at(-1)}`))
     : "";
+
+  const conversationContext = currentChat
+    ? currentChat.context
+    : (landingContext ?? getCurrentChatContext() ?? workspace?.name);
 
   const selectFirstDisplayedChat = useCallback(() => {
     const store = useAgentStore.getState();
@@ -729,62 +1113,91 @@ export function AgentWindow() {
 
   // --- Rename ---
 
-  const beginRenameCurrentChat = useCallback(() => {
-    if (!currentChat) return;
-    setRenamingTitle(getEditableChatTitle(currentChat));
-    setIsRenamingCurrentChat(true);
-  }, [currentChat, getEditableChatTitle]);
+  const beginRenameChat = useCallback(
+    (chatId: string) => {
+      const chat = useAgentStore.getState().getChat(chatId);
+      if (!chat) return;
+      setRenamingTitle(getEditableChatTitle(chat));
+      setRenamingChatId(chat.id);
+    },
+    [getEditableChatTitle]
+  );
 
-  const cancelRenameCurrentChat = useCallback(() => {
-    setIsRenamingCurrentChat(false);
-    setRenamingTitle("");
-  }, []);
+  const cancelRenameChat = useCallback(
+    (restoreFocus = false) => {
+      renameFocusChatIdRef.current = restoreFocus ? renamingChatId : null;
+      setRenamingChatId(null);
+      setRenamingTitle("");
+    },
+    [renamingChatId]
+  );
 
-  const commitRenameCurrentChat = useCallback(() => {
-    const chat = useAgentStore
-      .getState()
-      .chats.find((c) => c.id === useAgentStore.getState().currentChatId);
-    const title = renamingTitle.trim();
-    if (!chat || !isRenamingCurrentChat) return;
-    if (!title) {
-      cancelRenameCurrentChat();
-      return;
-    }
-    useAgentStore.getState().renameChat(chat.id, title);
-    cancelRenameCurrentChat();
-  }, [renamingTitle, isRenamingCurrentChat, cancelRenameCurrentChat]);
+  const commitRenameChat = useCallback(
+    (restoreFocus = true) => {
+      const chat = useAgentStore.getState().getChat(renamingChatId);
+      const title = renamingTitle.trim();
+      if (chat && title && title !== getEditableChatTitle(chat)) {
+        useAgentStore.getState().renameChat(chat.id, title);
+      }
+      cancelRenameChat(restoreFocus);
+    },
+    [renamingTitle, renamingChatId, getEditableChatTitle, cancelRenameChat]
+  );
 
   const onRenameKeydown = useCallback(
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       if (event.nativeEvent.isComposing) return;
       if (event.key === "Escape") {
         event.preventDefault();
-        cancelRenameCurrentChat();
+        event.stopPropagation();
+        cancelRenameChat(true);
         return;
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        commitRenameCurrentChat();
+        event.stopPropagation();
+        commitRenameChat();
       }
     },
-    [cancelRenameCurrentChat, commitRenameCurrentChat]
+    [cancelRenameChat, commitRenameChat]
   );
 
-  // Cancel rename when currentChatId changes
   useEffect(() => {
-    if (isRenamingCurrentChat) {
-      cancelRenameCurrentChat();
-    }
-    // Only react to currentChatId changes, not the rename state itself
-  }, [currentChatId]);
+    setRenamingChatId(null);
+    setRenamingTitle("");
+  }, [currentChatId, storedWorkspaceName, storedUserEmail]);
 
-  // Focus rename input when it appears
   useEffect(() => {
-    if (isRenamingCurrentChat && renameInputRef.current) {
+    if (!visible || minimized) return;
+    if (renamingChatId && renameInputRef.current) {
       renameInputRef.current.focus();
       renameInputRef.current.select();
+    } else if (!renamingChatId && renameFocusChatIdRef.current) {
+      windowRef.current
+        ?.querySelector<HTMLButtonElement>(
+          `[data-agent-chat-row="${renameFocusChatIdRef.current}"] [data-agent-chat-menu]`
+        )
+        ?.focus();
+      renameFocusChatIdRef.current = null;
     }
-  }, [isRenamingCurrentChat]);
+  }, [
+    renamingChatId,
+    isMobileWindow,
+    isCompactWindow,
+    compactPanel,
+    mobileScreen,
+    visible,
+    minimized,
+  ]);
+
+  useEffect(() => {
+    if (
+      renamingChatId &&
+      !displayedChats.some((chat) => chat.id === renamingChatId)
+    ) {
+      cancelRenameChat();
+    }
+  }, [renamingChatId, displayedChats, cancelRenameChat]);
 
   // --- Chat actions ---
 
@@ -812,62 +1225,68 @@ export function AgentWindow() {
   );
 
   const createChat = useCallback(() => {
-    setContextualStart(null);
     const context = getCurrentChatContext();
+    const pageResource = resetContextualStart(context);
     setChatGroupOpen(context, true, false);
-    useAgentStore.getState().createChat({
-      page: getCurrentPageSnapshot(),
-      context,
-      workspaceName: workspace?.name,
-    });
+    if (pageResource) {
+      useAgentStore.getState().clearCurrentChat();
+    } else {
+      useAgentStore.getState().createChat({
+        page: getCurrentPageSnapshot(),
+        context,
+        workspaceName: workspace?.name,
+      });
+    }
     setShowArchivedOnly(false);
     if (isCompactWindow) setCompactPanel(null);
   }, [
     getCurrentPageSnapshot,
     isCompactWindow,
+    resetContextualStart,
     setChatGroupOpen,
     workspace?.name,
   ]);
 
   const createChatForContext = useCallback(
     (context: string) => {
-      setContextualStart(null);
+      const pageResource = resetContextualStart(context);
       setChatGroupOpen(context, true, false);
-      useAgentStore.getState().createChat({
-        page: getCurrentPageSnapshot(),
-        context,
-        workspaceName: workspace?.name,
-      });
+      if (pageResource) {
+        useAgentStore.getState().clearCurrentChat();
+      } else {
+        useAgentStore.getState().createChat({
+          page: getCurrentPageSnapshot(),
+          context,
+          workspaceName: workspace?.name,
+        });
+      }
       if (isCompactWindow) setCompactPanel(null);
     },
-    [getCurrentPageSnapshot, isCompactWindow, setChatGroupOpen, workspace?.name]
+    [
+      getCurrentPageSnapshot,
+      isCompactWindow,
+      resetContextualStart,
+      setChatGroupOpen,
+      workspace?.name,
+    ]
   );
 
   const handleChatRowClick = useCallback(
     (chatId: string) => {
+      commitRenameChat(false);
+      contextualPageHelpRef.current = null;
+      setContextualPageHelp(null);
       if (contextualStart) {
         setContextualStart(null);
         if (chatId === useAgentStore.getState().currentChatId) return;
       }
       if (chatId === useAgentStore.getState().currentChatId) {
-        if (!isRenamingCurrentChat) {
-          beginRenameCurrentChat();
-        }
         return;
-      }
-      if (isRenamingCurrentChat) {
-        cancelRenameCurrentChat();
       }
       useAgentStore.getState().setCurrentChat(chatId);
       if (isCompactWindow) setCompactPanel(null);
     },
-    [
-      isCompactWindow,
-      contextualStart,
-      isRenamingCurrentChat,
-      beginRenameCurrentChat,
-      cancelRenameCurrentChat,
-    ]
+    [isCompactWindow, contextualStart, commitRenameChat]
   );
 
   const archiveChat = useCallback(
@@ -898,6 +1317,16 @@ export function AgentWindow() {
     [ensureCurrentChatMatchesDisplayedMode]
   );
 
+  const restoreCurrentChat = useCallback(() => {
+    const store = useAgentStore.getState();
+    const chat = currentChatId ? store.getChat(currentChatId) : undefined;
+    if (!chat?.archived || store.currentChatId !== chat.id) return;
+    store.unarchiveChat(chat.id);
+    setShowArchivedOnly(false);
+    setCompactPanel(null);
+    setMobileScreen("conversation");
+  }, [currentChatId]);
+
   const archiveAllChats = useCallback(() => {
     if (isArchiveAllDisabled) return;
     const store = useAgentStore.getState();
@@ -907,11 +1336,11 @@ export function AgentWindow() {
     const archivedCount = store.archiveAllActiveChats();
     if (archivedCount === 0) return;
     if (currentChatWasActive) {
-      cancelRenameCurrentChat();
+      cancelRenameChat();
       ensureCurrentChatMatchesDisplayedMode({ allowCreateWhenEmpty: false });
     }
   }, [
-    cancelRenameCurrentChat,
+    cancelRenameChat,
     ensureCurrentChatMatchesDisplayedMode,
     isArchiveAllDisabled,
   ]);
@@ -925,11 +1354,11 @@ export function AgentWindow() {
     const unarchivedCount = store.unarchiveAllArchivedChats();
     if (unarchivedCount === 0) return;
     if (currentChatWasArchived) {
-      cancelRenameCurrentChat();
+      cancelRenameChat();
       ensureCurrentChatMatchesDisplayedMode({ allowCreateWhenEmpty: false });
     }
   }, [
-    cancelRenameCurrentChat,
+    cancelRenameChat,
     ensureCurrentChatMatchesDisplayedMode,
     isUnarchiveAllDisabled,
   ]);
@@ -942,13 +1371,12 @@ export function AgentWindow() {
     );
     const deletedCount = store.deleteAllArchivedChats();
     if (deletedCount === 0) return;
-    setIsDeleteAllArchivedChatsDialogOpen(false);
     if (currentChatWasArchived) {
-      cancelRenameCurrentChat();
+      cancelRenameChat();
       ensureCurrentChatMatchesDisplayedMode({ allowCreateWhenEmpty: false });
     }
   }, [
-    cancelRenameCurrentChat,
+    cancelRenameChat,
     ensureCurrentChatMatchesDisplayedMode,
     isDeleteAllDisabled,
   ]);
@@ -971,6 +1399,16 @@ export function AgentWindow() {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   const retryLastTurnRef = useRef<(() => void) | null>(null);
   const retryLastTurn = useCallback(() => retryLastTurnRef.current?.(), []);
+  const freeSpaceAndRetryRef = useRef<(() => Promise<boolean>) | null>(null);
+  const freeSpaceAndRetry = useCallback(
+    () => freeSpaceAndRetryRef.current?.() ?? Promise.resolve(false),
+    []
+  );
+  const resendMessageRef = useRef<((messageId: string) => void) | null>(null);
+  const resendMessage = useCallback(
+    (messageId: string) => resendMessageRef.current?.(messageId),
+    []
+  );
   const focusInputRef = useRef<((atEnd?: boolean) => void) | null>(null);
   const focusContextualDraftRef = useRef(false);
   useEffect(() => {
@@ -981,9 +1419,21 @@ export function AgentWindow() {
   const selectEmptyChatSuggestion = useCallback(
     (starterId: LandingStarterId) => {
       const store = useAgentStore.getState();
-      const chat = store.getChat(store.currentChatId);
+      let chat = store.getChat(store.currentChatId);
+      if (!chat) {
+        if (
+          showArchivedOnly ||
+          store.landingDraft.text.trim() ||
+          getDraftResourceMentions(store.landingDraft).length > 0
+        )
+          return;
+        chat = store.ensureCurrentChat(
+          getCurrentPageSnapshot(),
+          store.landingContext ?? getCurrentChatContext() ?? workspace?.name,
+          workspace?.name
+        );
+      }
       if (
-        !chat ||
         chat.status !== "idle" ||
         store.getMessages(chat.id).length ||
         store.getDraft(chat.id).text.trim() ||
@@ -999,22 +1449,22 @@ export function AgentWindow() {
         starterId,
       });
     },
-    [getCurrentPageSnapshot, t]
+    [getCurrentPageSnapshot, showArchivedOnly, t, workspace?.name]
   );
   const continueResponseAction = useCallback(
-    (chatId: string, prompt: string, references: AgentResourceReference[]) => {
+    (
+      chatId: string,
+      prompt: string,
+      references: AgentResourceReference[],
+      followUpSourceId?: string
+    ) => {
       const store = useAgentStore.getState();
       const chat = store.getChat(chatId);
-      const draft = store.getDraft(chatId);
       if (
         store.currentChatId !== chatId ||
         !chat ||
         chat.status !== "idle" ||
         chat.archived ||
-        draft.text.trim() ||
-        draft.project ||
-        draft.resource ||
-        draft.mentions?.length ||
         store.queuedUserMessagesByChatId[chatId]
       ) {
         return;
@@ -1034,6 +1484,7 @@ export function AgentWindow() {
         text: `${prefix}${prefix ? " " : ""}${action.prompt}`,
         page: getCurrentPageSnapshot(),
         runMode: "default",
+        ...(followUpSourceId !== undefined ? { followUpSourceId } : {}),
         ...(boundReferences.length > 0
           ? { resourceReferences: boundReferences }
           : {}),
@@ -1042,8 +1493,37 @@ export function AgentWindow() {
     [getCurrentPageSnapshot]
   );
   const startContextualChat = useCallback(
-    (prompt: string, reference?: AgentResourceReference) => {
+    (
+      prompt: string,
+      reference?: AgentResourceReference,
+      runMode: AgentRunMode = "read-only",
+      resources?: AgentResourceReference[]
+    ) => {
       if (!contextualStart) return;
+      const pageHelp = contextualPageHelpRef.current;
+      if (pageHelp) {
+        if (!canStartAgentPageHelp(pageHelp)) return;
+        if (pageHelp.onStart) {
+          if (resources?.length) return;
+          let started = false;
+          try {
+            started = pageHelp.onStart(prompt);
+          } catch {
+            return;
+          }
+          if (!started) return;
+          const chat = selectCurrentChat(useAgentStore.getState());
+          if (chat?.context) setChatGroupOpen(chat.context, true, false);
+          contextualPageHelpRef.current = null;
+          setContextualPageHelp(null);
+          setContextualStart(null);
+          setContextualDraft({ text: "" });
+          setShowArchivedOnly(false);
+          if (isCompactWindow) setCompactPanel(null);
+          if (isMobileWindow) setMobileScreen("conversation");
+          return;
+        }
+      }
       const requiresReference =
         contextualStart.kind === "database" ||
         contextualStart.kind === "database-catalog" ||
@@ -1052,27 +1532,78 @@ export function AgentWindow() {
         (contextualStart.kind === "plan-create" &&
           Boolean(contextualStart.databaseName));
       if (requiresReference && !reference) return;
+      const requestedReferences = resources ?? (reference ? [reference] : []);
+      const references =
+        requestedReferences.length > 0
+          ? normalizeAgentResourceReferences(requestedReferences)
+          : [];
+      if (references.length !== requestedReferences.length) return;
+      if (
+        reference &&
+        !references.some(
+          (resource) =>
+            resource.kind === reference.kind &&
+            resource.name === reference.name &&
+            resource.project === reference.project
+        )
+      )
+        return;
       const chatContext =
         ("project" in contextualStart && contextualStart.project) ||
+        pageHelp?.workspaceName ||
         getCurrentChatContext();
       if (!chatContext) return;
       const store = useAgentStore.getState();
       const page = getCurrentPageSnapshot();
-      const chat = store.createChat({
-        page,
-        context: chatContext,
-        workspaceName: workspace?.name,
-      });
+      const current = store.getChat(store.currentChatId);
+      const canReusePlaceholder =
+        current &&
+        !current.context &&
+        !current.workspaceName &&
+        !current.page &&
+        !current.title &&
+        !current.capability &&
+        !current.archived &&
+        !current.interrupted &&
+        !current.runId &&
+        !current.runCheckpoint &&
+        !current.runBudget &&
+        current.status === "idle" &&
+        !store.isChatRunning(current.id) &&
+        store.getMessages(current.id).length === 0 &&
+        !store.getPendingAsk(current.id) &&
+        !store.draftsByChatId[current.id] &&
+        !store.queuedUserMessagesByChatId[current.id];
+      const chat = canReusePlaceholder
+        ? store.ensureCurrentChat(page, chatContext, workspace?.name)
+        : store.createChat({
+            page,
+            context: chatContext,
+            workspaceName: workspace?.name,
+          });
       if (useAgentStore.getState().currentChatId !== chat.id) return;
-      const mention = reference ? formatResourceMention(reference.label) : "";
+      const hasBoundMention =
+        runMode === "default" &&
+        reference &&
+        getDraftResourceMentions(contextualDraft).some(
+          ({ resource }) =>
+            resource.kind === reference.kind &&
+            resource.name === reference.name &&
+            resource.project === reference.project
+        );
+      const mention =
+        reference && !hasBoundMention
+          ? formatResourceMention(reference.label)
+          : "";
       if (prompt) {
         store.queueUserMessage({
           chatId: chat.id,
           text: mention ? `${mention} ${prompt}` : prompt,
           page,
-          runMode: "read-only",
-          ...(reference ? { resourceReference: reference } : {}),
-          ...(contextualStart.kind === "project"
+          runMode,
+          ...(references[0] ? { resourceReference: references[0] } : {}),
+          ...(references.length > 1 ? { resourceReferences: references } : {}),
+          ...(contextualStart.kind === "project" && runMode === "read-only"
             ? {
                 starterId: getLandingStarterIdForText({
                   context: chatContext,
@@ -1100,12 +1631,16 @@ export function AgentWindow() {
       }
       setChatGroupOpen(chatContext, true, false);
       setShowArchivedOnly(false);
+      contextualPageHelpRef.current = null;
+      setContextualPageHelp(null);
       setContextualStart(null);
+      setContextualDraft({ text: "" });
       if (isCompactWindow) setCompactPanel(null);
       if (isMobileWindow) setMobileScreen("conversation");
     },
     [
       contextualStart,
+      contextualDraft,
       getCurrentPageSnapshot,
       isCompactWindow,
       isMobileWindow,
@@ -1116,12 +1651,42 @@ export function AgentWindow() {
   );
 
   const continueCurrentChat = useCallback(() => {
-    const store = useAgentStore.getState();
-    const current = store.getChat(store.currentChatId);
-    if (!current || current.archived || !store.canSelectChat(current.id))
+    if (
+      !contextualStart ||
+      !contextualChatScope ||
+      contextualChatScope.workspaceName !== workspace?.name
+    ) {
       return;
+    }
+    const store = useAgentStore.getState();
+    if (store.userEmail !== userEmail) return;
+    const chat = selectContinueChatForContext(
+      store,
+      contextualChatScope.context,
+      contextualChatScope.workspaceName
+    );
+    if (!chat) return;
+    continuedChatIdRef.current = chat.id;
+    store.setCurrentChat(chat.id);
+    if (useAgentStore.getState().currentChatId !== chat.id) {
+      continuedChatIdRef.current = null;
+      return;
+    }
+    setChatGroupOpen(contextualChatScope.context, true, false);
+    setShowArchivedOnly(false);
     setContextualStart(null);
-  }, []);
+    setContextualDraft({ text: "" });
+    if (isCompactWindow) setCompactPanel(null);
+    if (isMobileWindow) setMobileScreen("conversation");
+  }, [
+    contextualChatScope,
+    contextualStart,
+    isCompactWindow,
+    isMobileWindow,
+    setChatGroupOpen,
+    userEmail,
+    workspace?.name,
+  ]);
 
   // Cleanup resize listeners on unmount.
   useEffect(() => {
@@ -1322,7 +1887,13 @@ export function AgentWindow() {
   }, [clampSidebarWidth]);
 
   useEffect(() => {
-    if (!visible || !currentChatId || getCurrentAgentPageResource()) return;
+    if (!visible || !currentChatId || contextualStart) return;
+    // Restoring a chat must not bind it to a page visited after the landing opened.
+    if (continuedChatIdRef.current === currentChatId) {
+      continuedChatIdRef.current = null;
+      return;
+    }
+    if (getCurrentAgentPageResource()) return;
     useAgentStore
       .getState()
       .ensureCurrentChat(
@@ -1330,7 +1901,13 @@ export function AgentWindow() {
         getCurrentChatContext(),
         workspace?.name
       );
-  }, [currentChatId, getCurrentPageSnapshot, visible, workspace?.name]);
+  }, [
+    contextualStart,
+    currentChatId,
+    getCurrentPageSnapshot,
+    visible,
+    workspace?.name,
+  ]);
 
   useEffect(() => {
     if (!visible || !currentChatId) return;
@@ -1387,25 +1964,156 @@ export function AgentWindow() {
   const selectMobileChat = useCallback(
     (chatId: string) => {
       if (!useAgentStore.getState().canSelectChat(chatId)) return;
-      cancelRenameCurrentChat();
+      commitRenameChat(false);
+      contextualPageHelpRef.current = null;
+      setContextualPageHelp(null);
       setContextualStart(null);
       useAgentStore.getState().setCurrentChat(chatId);
       setMobileScreen("conversation");
     },
-    [cancelRenameCurrentChat]
+    [commitRenameChat]
+  );
+
+  const renderChatRow = (chat: AgentChatRecord) => (
+    <div
+      key={chat.id}
+      className={cn(
+        "group/agent-chat flex min-h-10 w-full min-w-0 items-center gap-x-2 py-1.5 pr-3 pl-5 text-left text-sm transition-colors",
+        !contextualStart && chat.id === currentChatId
+          ? "bg-accent/10 text-accent"
+          : "text-control hover:bg-control-bg-hover"
+      )}
+      data-agent-chat-row={chat.id}
+      onBlur={(event) => {
+        if (
+          renamingChatId === chat.id &&
+          !event.currentTarget.contains(event.relatedTarget)
+        ) {
+          commitRenameChat(false);
+        }
+      }}
+    >
+      {renamingChatId === chat.id ? (
+        <>
+          <Input
+            ref={renameInputRef}
+            size="sm"
+            value={renamingTitle}
+            onChange={(event) => setRenamingTitle(event.target.value)}
+            className="min-w-0 flex-1"
+            aria-label={t("agent.rename-chat-placeholder")}
+            placeholder={t("agent.rename-chat-placeholder")}
+            data-agent-inline-rename-input
+            data-agent-chat-title-input
+            onKeyDown={onRenameKeydown}
+          />
+          <div className="flex shrink-0 items-center gap-x-1">
+            <AgentTooltip content={t("common.save")}>
+              <Button
+                appearance="secondary"
+                size="xs"
+                aria-label={t("common.save")}
+                data-agent-save-chat-title
+                disabled={
+                  !renamingTitle.trim() ||
+                  renamingTitle.trim() === getEditableChatTitle(chat)
+                }
+                onClick={() => commitRenameChat()}
+              >
+                <Check className="size-3.5" aria-hidden="true" />
+              </Button>
+            </AgentTooltip>
+            <AgentTooltip content={t("common.cancel")}>
+              <Button
+                appearance="secondary"
+                size="xs"
+                aria-label={t("common.cancel")}
+                data-agent-cancel-chat-title
+                onClick={() => cancelRenameChat(true)}
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </Button>
+            </AgentTooltip>
+          </div>
+        </>
+      ) : (
+        <>
+          <Button
+            appearance="secondary"
+            size="md"
+            type="button"
+            title={getEditableChatTitle(chat)}
+            className="h-auto min-w-0 flex-1 justify-start p-0 text-left font-normal hover:bg-transparent disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!useAgentStore.getState().canSelectChat(chat.id)}
+            aria-current={
+              !contextualStart && chat.id === currentChatId ? "true" : undefined
+            }
+            onMouseDown={(event) => {
+              // Keep the rows in place until the pending chat click completes.
+              if (renamingChatId && event.button === 0) event.preventDefault();
+            }}
+            onClick={(event) => {
+              isMobileWindow
+                ? selectMobileChat(chat.id)
+                : handleChatRowClick(chat.id);
+              if (renamingChatId) event.currentTarget.focus();
+            }}
+          >
+            <div
+              className="flex w-full min-w-0 items-center gap-2"
+              data-agent-chat-title
+            >
+              {chat.status === "running" && (
+                <LoaderCircle
+                  className="size-3.5 shrink-0 animate-spin text-accent"
+                  role="img"
+                  aria-label={t("common.running")}
+                />
+              )}
+              <span className="min-w-0 truncate">
+                {getEditableChatTitle(chat)}
+              </span>
+            </div>
+          </Button>
+          <ChatRowMenu
+            title={getEditableChatTitle(chat)}
+            archived={chat.archived}
+            onRename={() => beginRenameChat(chat.id)}
+            onArchive={() => archiveChat(chat.id)}
+            onRestore={() => unarchiveChat(chat.id)}
+            onDelete={() => setPendingDeleteChatId(chat.id)}
+          />
+        </>
+      )}
+    </div>
   );
 
   const renderConversation = () =>
     contextualStart ? (
       <AgentContextualStart
         page={contextualStart}
+        draft={contextualDraft}
+        onDraftChange={setContextualDraft}
+        context={contextualChatScope?.context}
+        contextTitle={
+          contextualChatScope
+            ? getContextLabel(contextualChatScope.context)
+            : undefined
+        }
+        workspace={
+          workspace
+            ? { name: workspace.name, title: workspace.title }
+            : undefined
+        }
+        canMentionResources={!contextualPageHelp?.onStart}
         title={contextualTitle}
         reference={
           canReferenceContextualResource ? contextualReference : undefined
         }
         loading={canReferenceContextualResource && contextualLoading}
-        canStart
-        hasCurrentChat={canContinueCurrentChat}
+        maskingRuleEditor={contextualPageHelp?.maskingRuleEditor}
+        canStart={canStartPageHelp}
+        hasCurrentChat={!contextualPageHelp?.onStart && !!continuableChat}
         showAIConfigurationRecovery={
           aiEnabled === false || currentChat?.requiresAIConfiguration === true
         }
@@ -1414,23 +2122,105 @@ export function AgentWindow() {
       />
     ) : (
       <>
-        <AgentChat
-          className="min-h-0 flex-1"
-          contextLabel={
-            currentChat?.context
-              ? getContextLabel(currentChat.context)
-              : workspace?.title || t("agent.context-workspace")
-          }
-          onRetry={retryLastTurn}
-          onSelectSuggestion={selectEmptyChatSuggestion}
-          onContinueAction={continueResponseAction}
-        />
-        <AgentInput
-          retryActionRef={retryLastTurnRef}
-          focusActionRef={focusInputRef}
-        />
+        {waitingForChatProtection && (
+          <div
+            role="status"
+            aria-busy="true"
+            className="flex min-h-0 flex-1 items-center justify-center gap-2 p-4 text-sm text-control-light"
+          >
+            <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+            {t("common.loading")}
+          </div>
+        )}
+        {keepConversationMounted && (
+          <div
+            hidden={waitingForChatProtection}
+            inert={waitingForChatProtection}
+            className={cn(
+              "min-h-0 flex-1 flex-col",
+              waitingForChatProtection ? "hidden" : "flex"
+            )}
+          >
+            <AgentChat
+              onOpenAccessGrantDraft={openAccessGrantDraft}
+              className="min-h-0 flex-1"
+              context={conversationContext}
+              contextLabel={
+                conversationContext
+                  ? getContextLabel(conversationContext)
+                  : workspace?.title || t("agent.context-workspace")
+              }
+              onRetry={retryLastTurn}
+              onFreeSpaceAndRetry={
+                currentChat && !currentChat.archived
+                  ? freeSpaceAndRetry
+                  : undefined
+              }
+              onResend={resendMessage}
+              onSelectSuggestion={
+                showArchivedOnly ? undefined : selectEmptyChatSuggestion
+              }
+              onContinueAction={continueResponseAction}
+            />
+            {currentChat?.archived ? (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-block-border p-3">
+                <p role="status" className="text-sm text-control-light">
+                  {t("agent.chat-archived-notice")}
+                </p>
+                <Button
+                  appearance="secondary"
+                  size="sm"
+                  onClick={restoreCurrentChat}
+                >
+                  <Undo2 className="size-4" aria-hidden="true" />
+                  {t("agent.unarchive-chat")}
+                </Button>
+              </div>
+            ) : (
+              <AgentInput
+                retryActionRef={retryLastTurnRef}
+                freeSpaceAndRetryActionRef={freeSpaceAndRetryRef}
+                resendActionRef={resendMessageRef}
+                focusActionRef={focusInputRef}
+              />
+            )}
+          </div>
+        )}
       </>
     );
+
+  const renderHistoryRetentionInfo = () => (
+    <AgentPopover>
+      <AgentTooltip content={t("agent.storage.retention-info")}>
+        <AgentPopoverTrigger
+          render={
+            <Button
+              appearance="secondary"
+              size="xs"
+              data-agent-window-action
+              className="shrink-0 text-control-light hover:bg-control-bg-hover"
+              aria-label={t("agent.storage.retention-info")}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <Info className="size-3.5" aria-hidden="true" />
+            </Button>
+          }
+        />
+      </AgentTooltip>
+      <AgentPopoverContent
+        side="bottom"
+        align="start"
+        className="w-64 max-w-[var(--available-width)] p-3"
+      >
+        <AgentPopoverTitle className="sr-only">
+          {t("agent.storage.retention-info")}
+        </AgentPopoverTitle>
+        <p className="text-xs text-control-light">
+          {t("agent.storage.retention-policy")}
+        </p>
+      </AgentPopoverContent>
+    </AgentPopover>
+  );
 
   const renderRail = () => (
     <nav
@@ -1512,65 +2302,119 @@ export function AgentWindow() {
 
   // --- Render ---
 
+  if (!visible || !userEmail) {
+    return null;
+  }
   if (
-    !visible ||
-    !userEmail ||
     storedWorkspaceName !== workspace?.name ||
     storedUserEmail !== userEmail
   ) {
-    return null;
-  }
-
-  if (minimized) {
-    return createPortal(
-      <div
-        data-agent-window
-        className="fixed bottom-4 right-4 flex size-10 cursor-pointer items-center justify-center rounded-full bg-accent text-accent-text shadow-lg hover:bg-accent-hover"
-        onClick={() => useAgentStore.getState().restore()}
+    if (
+      minimized ||
+      !currentOwnerIdentity ||
+      initializationFailure !== currentOwnerIdentity
+    ) {
+      return null;
+    }
+    return (
+      <AgentDialog
+        open
+        onOpenChange={(open) => {
+          if (!open) useAgentStore.getState().toggle();
+        }}
       >
-        <Bot className="size-5" aria-hidden="true" />
-      </div>,
-      getLayerRoot("agent")
+        <AgentDialogContent className="flex max-w-md flex-col gap-4 p-6">
+          <div className="flex flex-col gap-2">
+            <AgentDialogTitle>
+              {t("agent.storage.load-unavailable")}
+            </AgentDialogTitle>
+            <AgentDialogDescription>
+              {t("agent.storage.load-unavailable-description")}
+            </AgentDialogDescription>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <AgentDialogClose
+              render={<Button appearance="outline">{t("common.close")}</Button>}
+            />
+            <Button
+              onClick={() => setInitializationAttempt((attempt) => attempt + 1)}
+            >
+              <RefreshCw aria-hidden="true" />
+              {t("agent.storage.retry-loading")}
+            </Button>
+          </div>
+        </AgentDialogContent>
+      </AgentDialog>
     );
   }
 
-  return createPortal(
+  const accessGrantDrawer = accessGrantDraft &&
+    accessGrantDraft.workspace === workspace?.name &&
+    accessGrantDraft.userEmail === userEmail && (
+      <Suspense fallback={null}>
+        <AgentAccessGrantRequestDrawer
+          key={accessGrantDraft.id}
+          project={accessGrantDraft.draft.project}
+          targets={accessGrantDraft.draft.targets}
+          query={accessGrantDraft.draft.statement}
+          schema={accessGrantDraft.draft.schema}
+          container={accessGrantDraft.draft.container}
+          unmask={accessGrantDraft.draft.unmask}
+          reason={accessGrantDraft.draft.reason}
+          onCreated={(grant) => {
+            const owner = useAppStore.getState();
+            if (
+              owner.workspace?.name !== accessGrantDraft.workspace ||
+              owner.currentUser?.workspace !== accessGrantDraft.workspace ||
+              owner.currentUser?.email !== accessGrantDraft.userEmail
+            )
+              return;
+            useAgentStore
+              .getState()
+              .recordSubmittedAccessGrant(
+                accessGrantDraft.source.chatId,
+                accessGrantDraft.source.messageId,
+                grant,
+                {
+                  workspaceName: accessGrantDraft.workspace,
+                  userEmail: accessGrantDraft.userEmail,
+                  draft: accessGrantDraft.source.draft,
+                }
+              );
+          }}
+          onClose={() =>
+            setAccessGrantDraft((current) =>
+              current?.id === accessGrantDraft.id ? undefined : current
+            )
+          }
+        />
+      </Suspense>
+    );
+  if (minimized) {
+    return (
+      <>
+        {accessGrantDrawer}
+        {createPortal(
+          <AgentMinimizedLauncher
+            initialPosition={launcherPositionRef.current}
+            onPositionChange={(position) => {
+              launcherPositionRef.current = position;
+            }}
+            onOpen={() => useAgentStore.getState().open()}
+          />,
+          getLayerRoot("agent")
+        )}
+      </>
+    );
+  }
+
+  const agentWindow = createPortal(
     <div
       ref={windowRef}
       data-agent-window
       className="fixed overflow-visible"
       style={windowStyle}
     >
-      <AgentDialog
-        open={isDeleteAllArchivedChatsDialogOpen}
-        onOpenChange={setIsDeleteAllArchivedChatsDialogOpen}
-      >
-        <AgentDialogContent className="max-w-sm p-6">
-          <AgentDialogTitle className="sr-only">
-            {t("common.confirm")}
-          </AgentDialogTitle>
-          <AgentDialogDescription>
-            {t("agent.delete-all-chats-confirmation")}
-          </AgentDialogDescription>
-          <div className="mt-6 flex justify-end gap-x-2">
-            <AgentDialogClose
-              render={
-                <Button appearance="outline" type="button">
-                  {t("common.cancel")}
-                </Button>
-              }
-            />
-            <AgentDialogClose
-              render={
-                <Button type="button" variant="destructive">
-                  {t("common.confirm")}
-                </Button>
-              }
-              onClick={deleteAllArchivedChats}
-            />
-          </div>
-        </AgentDialogContent>
-      </AgentDialog>
       <AgentDialog
         open={pendingDeleteChatId !== null}
         onOpenChange={(open) => {
@@ -1583,8 +2427,12 @@ export function AgentWindow() {
           </AgentDialogTitle>
           <AgentDialogDescription>
             {t("agent.delete-chat-confirmation")}
+            {!!archivedChats.find((chat) => chat.id === pendingDeleteChatId)
+              ?.apiAttempts?.length && (
+              <> {t("agent.api-recovery.delete-warning")}</>
+            )}
           </AgentDialogDescription>
-          <div className="mt-6 flex justify-end gap-x-2">
+          <AgentActionGroup className="mt-6">
             <AgentDialogClose
               render={
                 <Button appearance="outline" type="button">
@@ -1602,7 +2450,7 @@ export function AgentWindow() {
                 if (pendingDeleteChatId) deleteChat(pendingDeleteChatId);
               }}
             />
-          </div>
+          </AgentActionGroup>
         </AgentDialogContent>
       </AgentDialog>
       <BaseDialog.Root
@@ -1621,104 +2469,165 @@ export function AgentWindow() {
             className="relative flex select-none items-center justify-between border-b bg-control-bg px-3 py-2"
           >
             <div className="flex min-w-0 items-center gap-x-2">
-              {isMobileWindow && mobileScreen === "conversation" && (
-                <Button
-                  appearance="secondary"
-                  size="xs"
-                  data-agent-window-action
-                  className="-ml-1 text-control-light hover:bg-control-bg-hover"
-                  aria-label={t("agent.chat-list-label")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    returnToMobileChatList();
-                  }}
-                >
-                  <ChevronLeft className="size-4" aria-hidden="true" />
-                </Button>
+              {preferencesOpen && (
+                <AgentTooltip content={t("agent.preferences.back")}>
+                  <Button
+                    appearance="secondary"
+                    size="xs"
+                    data-agent-window-action
+                    className="text-control-light hover:bg-control-bg-hover pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                    aria-label={t("agent.preferences.back")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      preferencesReturnFocusRef.current = true;
+                      setPreferencesOpen(false);
+                    }}
+                  >
+                    <ChevronLeft className="size-3.5" aria-hidden="true" />
+                  </Button>
+                </AgentTooltip>
               )}
-              {isMobileWindow && mobileScreen === "archived" && (
-                <Button
-                  appearance="secondary"
-                  size="xs"
-                  data-agent-window-action
-                  className="-ml-1 text-control-light hover:bg-control-bg-hover"
-                  aria-label={t("agent.chat-list-label")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openMobileChatList();
-                  }}
-                >
-                  <ChevronLeft className="size-4" aria-hidden="true" />
-                </Button>
-              )}
-              <span className="truncate text-sm font-medium">
-                {isMobileWindow && mobileScreen === "chats"
+              {!preferencesOpen &&
+                isMobileWindow &&
+                mobileScreen === "conversation" && (
+                  <Button
+                    appearance="secondary"
+                    size="xs"
+                    data-agent-window-action
+                    className="-ml-1 text-control-light hover:bg-control-bg-hover"
+                    aria-label={t("agent.chat-list-label")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      returnToMobileChatList();
+                    }}
+                  >
+                    <ChevronLeft className="size-4" aria-hidden="true" />
+                  </Button>
+                )}
+              {!preferencesOpen &&
+                isMobileWindow &&
+                mobileScreen === "archived" && (
+                  <Button
+                    appearance="secondary"
+                    size="xs"
+                    data-agent-window-action
+                    className="-ml-1 text-control-light hover:bg-control-bg-hover"
+                    aria-label={t("agent.chat-list-label")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openMobileChatList();
+                    }}
+                  >
+                    <ChevronLeft className="size-4" aria-hidden="true" />
+                  </Button>
+                )}
+              <h2 className="truncate text-sm font-medium">
+                {!preferencesOpen && isMobileWindow && mobileScreen === "chats"
                   ? t("agent.chat-list-label")
-                  : isMobileWindow && mobileScreen === "archived"
+                  : !preferencesOpen &&
+                      isMobileWindow &&
+                      mobileScreen === "archived"
                     ? t("agent.archived-only-chats")
                     : t("agent.assistant-title")}
-              </span>
+              </h2>
+              {!preferencesOpen &&
+                isMobileWindow &&
+                mobileScreen !== "conversation" &&
+                renderHistoryRetentionInfo()}
             </div>
-            <div className="flex items-center gap-x-1">
-              {isMobileWindow && mobileScreen === "chats" && (
-                <>
-                  <AgentTooltip content={t("agent.archived-only-chats")}>
-                    <Button
-                      appearance="secondary"
-                      size="xs"
-                      data-agent-window-action
-                      className="text-control-light hover:bg-control-bg-hover"
-                      aria-label={t("agent.archived-only-chats")}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openMobileArchivedChats();
-                      }}
-                    >
-                      <Archive className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  </AgentTooltip>
-                  <AgentTooltip content={t("agent.new-chat")}>
-                    <Button
-                      appearance="secondary"
-                      size="xs"
-                      data-agent-window-action
-                      className="text-control-light hover:bg-control-bg-hover"
-                      aria-label={t("agent.new-chat")}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        createMobileChat();
-                      }}
-                    >
-                      <Plus className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  </AgentTooltip>
-                </>
-              )}
+            <div className="flex shrink-0 items-center gap-x-1">
+              {!preferencesOpen &&
+                isMobileWindow &&
+                mobileScreen === "chats" && (
+                  <>
+                    <AgentTooltip content={t("agent.archived-only-chats")}>
+                      <Button
+                        appearance="secondary"
+                        size="xs"
+                        data-agent-window-action
+                        className="text-control-light hover:bg-control-bg-hover"
+                        aria-label={t("agent.archived-only-chats")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openMobileArchivedChats();
+                        }}
+                      >
+                        <Archive className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </AgentTooltip>
+                    <AgentTooltip content={t("agent.new-chat")}>
+                      <Button
+                        appearance="secondary"
+                        size="xs"
+                        data-agent-window-action
+                        className="text-control-light hover:bg-control-bg-hover"
+                        aria-label={t("agent.new-chat")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          createMobileChat();
+                        }}
+                      >
+                        <Plus className="size-3.5" aria-hidden="true" />
+                      </Button>
+                    </AgentTooltip>
+                  </>
+                )}
+              <AgentTooltip content={t("agent.preferences.title")}>
+                <Button
+                  ref={preferencesTriggerRef}
+                  appearance="secondary"
+                  size="xs"
+                  data-agent-window-action
+                  className={cn(
+                    "text-control-placeholder hover:bg-control-bg-hover hover:text-control-light",
+                    preferencesOpen && "hidden"
+                  )}
+                  hidden={preferencesOpen}
+                  aria-label={t("agent.preferences.title")}
+                  aria-pressed={preferencesOpen}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setCompactPanel(null);
+                    setPreferencesOpen((open) => !open);
+                  }}
+                >
+                  <Settings className="size-3.5" aria-hidden="true" />
+                </Button>
+              </AgentTooltip>
               <Button
                 appearance="secondary"
                 size="xs"
                 data-agent-window-action
-                className="flex items-center justify-center rounded-xs text-control-placeholder hover:bg-control-bg-hover hover:text-control-light"
+                className={cn(
+                  "flex items-center justify-center rounded-xs text-control-placeholder hover:bg-control-bg-hover hover:text-control-light",
+                  preferencesOpen &&
+                    "pointer-coarse:min-h-11 pointer-coarse:min-w-11",
+                  preferencesOpen && isMobileWindow && "pointer-coarse:hidden"
+                )}
                 title={t("agent.minimize")}
                 onClick={(e) => {
                   e.stopPropagation();
                   useAgentStore.getState().minimize();
                 }}
               >
-                &#8722;
+                <Minus className="size-3.5" aria-hidden="true" />
               </Button>
               <Button
                 appearance="secondary"
                 size="xs"
                 data-agent-window-action
-                className="flex items-center justify-center rounded-xs text-control-placeholder hover:bg-control-bg-hover hover:text-control-light"
+                className={cn(
+                  "flex items-center justify-center rounded-xs text-control-placeholder hover:bg-control-bg-hover hover:text-control-light",
+                  preferencesOpen &&
+                    "pointer-coarse:min-h-11 pointer-coarse:min-w-11"
+                )}
                 title={t("agent.close")}
                 onClick={(e) => {
                   e.stopPropagation();
                   useAgentStore.getState().toggle();
                 }}
               >
-                &#10005;
+                <X className="size-3.5" aria-hidden="true" />
               </Button>
             </div>
           </div>
@@ -1732,14 +2641,24 @@ export function AgentWindow() {
             {isMobileWindow ? (
               mobileScreen === "conversation" ? (
                 <div
-                  className="flex size-full flex-col bg-background"
+                  className={cn(
+                    "flex size-full flex-col bg-background",
+                    preferencesOpen && "hidden"
+                  )}
+                  hidden={preferencesOpen}
+                  inert={preferencesOpen || undefined}
                   data-agent-mobile-conversation
                 >
                   {renderConversation()}
                 </div>
               ) : (
                 <div
-                  className="size-full overflow-y-auto bg-control-bg"
+                  className={cn(
+                    "size-full overflow-y-auto bg-control-bg",
+                    preferencesOpen && "hidden"
+                  )}
+                  hidden={preferencesOpen}
+                  inert={preferencesOpen || undefined}
                   data-agent-mobile-chat-list
                 >
                   <div className="flex flex-col" data-agent-chat-list>
@@ -1823,90 +2742,7 @@ export function AgentWindow() {
                               group.context ?? "unscoped"
                             }
                           >
-                            {group.chats.map((chat) => (
-                              <div
-                                key={chat.id}
-                                className={cn(
-                                  "flex w-full items-center gap-x-2 py-2 pr-3 pl-5 text-sm transition-colors",
-                                  !contextualStart && chat.id === currentChatId
-                                    ? "bg-accent/10 text-accent"
-                                    : "text-control hover:bg-control-bg-hover"
-                                )}
-                                data-agent-chat-row={chat.id}
-                              >
-                                <Button
-                                  appearance="secondary"
-                                  size="md"
-                                  type="button"
-                                  className="h-auto min-w-0 flex-1 justify-start p-0 text-left font-normal hover:bg-transparent"
-                                  title={getChatLabel(chat)}
-                                  disabled={
-                                    !useAgentStore
-                                      .getState()
-                                      .canSelectChat(chat.id)
-                                  }
-                                  aria-current={
-                                    !contextualStart &&
-                                    chat.id === currentChatId
-                                      ? "true"
-                                      : undefined
-                                  }
-                                  onClick={() => selectMobileChat(chat.id)}
-                                >
-                                  {chat.status === "running" && (
-                                    <LoaderCircle
-                                      className="size-3.5 shrink-0 animate-spin text-accent"
-                                      role="img"
-                                      aria-label={t("common.running")}
-                                    />
-                                  )}
-                                  <span className="truncate">
-                                    {getChatLabel(chat)}
-                                  </span>
-                                </Button>
-                                {chat.archived ? (
-                                  <>
-                                    <SidebarIconButton
-                                      tooltip={t("agent.unarchive-chat")}
-                                      ariaLabel={t("agent.unarchive-chat")}
-                                      dataAttr="data-agent-unarchive-chat"
-                                      onClick={() => unarchiveChat(chat.id)}
-                                    >
-                                      <Undo2
-                                        className="size-3.5"
-                                        aria-hidden="true"
-                                      />
-                                    </SidebarIconButton>
-                                    <ConfirmDialog
-                                      message={t(
-                                        "agent.delete-chat-confirmation"
-                                      )}
-                                      onConfirm={() => deleteChat(chat.id)}
-                                      triggerLabel={t("agent.delete-chat")}
-                                      triggerDataAttr="data-agent-delete-chat"
-                                      triggerVariant="icon"
-                                    >
-                                      <Trash2
-                                        className="size-3.5"
-                                        aria-hidden="true"
-                                      />
-                                    </ConfirmDialog>
-                                  </>
-                                ) : (
-                                  <SidebarIconButton
-                                    tooltip={t("agent.archive-chat")}
-                                    ariaLabel={t("agent.archive-chat")}
-                                    dataAttr="data-agent-archive-chat"
-                                    onClick={() => archiveChat(chat.id)}
-                                  >
-                                    <Archive
-                                      className="size-3.5"
-                                      aria-hidden="true"
-                                    />
-                                  </SidebarIconButton>
-                                )}
-                              </div>
-                            ))}
+                            {group.chats.map(renderChatRow)}
                           </CollapsiblePanel>
                         </Collapsible>
                       );
@@ -1915,7 +2751,12 @@ export function AgentWindow() {
                 </div>
               )
             ) : (
-              <div className="flex size-full" data-agent-desktop-layout>
+              <div
+                className={cn("flex size-full", preferencesOpen && "hidden")}
+                hidden={preferencesOpen}
+                inert={preferencesOpen || undefined}
+                data-agent-desktop-layout
+              >
                 <div className="w-12 shrink-0">{renderRail()}</div>
                 <PanelGroup
                   orientation="horizontal"
@@ -1965,18 +2806,21 @@ export function AgentWindow() {
                           {/* Sidebar header */}
                           <div className="border-b border-block-border px-3 py-3">
                             <div className="flex items-center justify-between gap-x-2">
-                              <h2 className="text-xs font-semibold uppercase tracking-wide text-control-light">
-                                {showArchivedOnly
-                                  ? t("agent.archived-only-chats")
-                                  : t("agent.chat-list-label")}
-                              </h2>
+                              <div className="flex min-w-0 items-center gap-x-1">
+                                <h2 className="truncate text-xs font-semibold uppercase text-control-light">
+                                  {showArchivedOnly
+                                    ? t("agent.archived-only-chats")
+                                    : t("agent.chat-list-label")}
+                                </h2>
+                                {renderHistoryRetentionInfo()}
+                              </div>
                               {isCompactWindow ? (
                                 <AgentDialogClose
                                   render={
                                     <Button
                                       appearance="secondary"
                                       size="xs"
-                                      className="text-control-light hover:bg-control-bg-hover"
+                                      className="shrink-0 text-control-light hover:bg-control-bg-hover"
                                       aria-label={t("agent.close")}
                                     >
                                       &#10005;
@@ -1985,7 +2829,7 @@ export function AgentWindow() {
                                 />
                               ) : (
                                 <div
-                                  className="flex items-center gap-x-1"
+                                  className="flex shrink-0 items-center gap-x-1"
                                   data-agent-chat-sidebar-actions
                                 >
                                   {!showArchivedOnly && (
@@ -2004,63 +2848,28 @@ export function AgentWindow() {
                                       </Button>
                                     </AgentTooltip>
                                   )}
-                                  <AgentDropdownMenu>
-                                    <AgentTooltip content={t("common.more")}>
-                                      <AgentDropdownMenuTrigger
-                                        className="inline-flex size-6 items-center justify-center rounded-xs text-control-light outline-hidden hover:bg-control-bg-hover focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-50"
-                                        aria-label={t("common.more")}
-                                        onClick={(event) =>
-                                          event.stopPropagation()
-                                        }
-                                      >
-                                        <EllipsisVertical
-                                          className="size-3.5"
-                                          aria-hidden="true"
-                                        />
-                                      </AgentDropdownMenuTrigger>
-                                    </AgentTooltip>
-                                    <AgentDropdownMenuContent>
-                                      {showArchivedOnly ? (
-                                        <>
-                                          <AgentDropdownMenuItem
-                                            data-agent-unarchive-all-chats
-                                            disabled={isUnarchiveAllDisabled}
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              unarchiveAllChats();
-                                            }}
-                                          >
-                                            {t("agent.unarchive-all-chats")}
-                                          </AgentDropdownMenuItem>
-                                          <AgentDropdownMenuItem
-                                            data-agent-delete-all-chats
-                                            className="text-error data-highlighted:bg-error/10"
-                                            disabled={isDeleteAllDisabled}
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              setIsDeleteAllArchivedChatsDialogOpen(
-                                                true
-                                              );
-                                            }}
-                                          >
-                                            {t("agent.delete-all-chats")}
-                                          </AgentDropdownMenuItem>
-                                        </>
-                                      ) : (
-                                        <AgentDropdownMenuItem
-                                          data-agent-archive-all-chats
-                                          className="text-error data-highlighted:bg-error/10"
-                                          disabled={isArchiveAllDisabled}
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            archiveAllChats();
-                                          }}
-                                        >
-                                          {t("agent.archive-all-chats")}
-                                        </AgentDropdownMenuItem>
-                                      )}
-                                    </AgentDropdownMenuContent>
-                                  </AgentDropdownMenu>
+                                  <ChatListMenu
+                                    key={
+                                      showArchivedOnly ? "archived" : "active"
+                                    }
+                                    archived={showArchivedOnly}
+                                    hasRecoveryEvidence={archivedChats.some(
+                                      (chat) => chat.apiAttempts?.length
+                                    )}
+                                    chatCount={
+                                      showArchivedOnly
+                                        ? archivedChats.length
+                                        : activeChats.length
+                                    }
+                                    disabled={
+                                      showArchivedOnly
+                                        ? isDeleteAllDisabled
+                                        : isArchiveAllDisabled
+                                    }
+                                    onArchiveAll={archiveAllChats}
+                                    onUnarchiveAll={unarchiveAllChats}
+                                    onDeleteAll={deleteAllArchivedChats}
+                                  />
                                 </div>
                               )}
                             </div>
@@ -2154,158 +2963,7 @@ export function AgentWindow() {
                                         group.context ?? "unscoped"
                                       }
                                     >
-                                      {group.chats.map((chat) => (
-                                        <div
-                                          key={chat.id}
-                                          className={cn(
-                                            "group w-full py-2 pr-3 pl-5 text-left text-sm transition-colors",
-                                            !contextualStart &&
-                                              chat.id === currentChatId
-                                              ? "bg-accent/10 text-accent"
-                                              : "text-control hover:bg-control-bg-hover"
-                                          )}
-                                          data-agent-chat-row={chat.id}
-                                        >
-                                          {!contextualStart &&
-                                          chat.id === currentChatId &&
-                                          isRenamingCurrentChat ? (
-                                            <Input
-                                              ref={renameInputRef}
-                                              value={renamingTitle}
-                                              onChange={(e) =>
-                                                setRenamingTitle(e.target.value)
-                                              }
-                                              className="h-7 text-sm"
-                                              placeholder={t(
-                                                "agent.rename-chat-placeholder"
-                                              )}
-                                              data-agent-inline-rename-input
-                                              onBlur={commitRenameCurrentChat}
-                                              onKeyDown={onRenameKeydown}
-                                            />
-                                          ) : (
-                                            <div className="relative flex min-w-0 items-center">
-                                              <Button
-                                                appearance="secondary"
-                                                size="md"
-                                                type="button"
-                                                title={getChatLabel(chat)}
-                                                className={cn(
-                                                  "h-auto min-w-0 flex-1 flex-col items-start p-0 text-left font-normal hover:bg-transparent disabled:cursor-not-allowed disabled:opacity-60",
-                                                  chat.archived
-                                                    ? "pr-7"
-                                                    : "group-hover:pr-7 group-focus-within:pr-7"
-                                                )}
-                                                disabled={
-                                                  !useAgentStore
-                                                    .getState()
-                                                    .canSelectChat(chat.id)
-                                                }
-                                                aria-current={
-                                                  !contextualStart &&
-                                                  chat.id === currentChatId
-                                                    ? "true"
-                                                    : undefined
-                                                }
-                                                onClick={() =>
-                                                  handleChatRowClick(chat.id)
-                                                }
-                                              >
-                                                <div
-                                                  className="flex w-full min-w-0 items-center gap-2"
-                                                  data-agent-chat-title
-                                                >
-                                                  {chat.status ===
-                                                    "running" && (
-                                                    <LoaderCircle
-                                                      className="size-3.5 shrink-0 animate-spin text-accent"
-                                                      role="img"
-                                                      aria-label={t(
-                                                        "common.running"
-                                                      )}
-                                                    />
-                                                  )}
-                                                  <span className="min-w-0 truncate">
-                                                    {getChatLabel(chat)}
-                                                  </span>
-                                                </div>
-                                              </Button>
-                                              {chat.archived ? (
-                                                <AgentDropdownMenu>
-                                                  <AgentDropdownMenuTrigger
-                                                    className="absolute top-1/2 right-0 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-xs text-control-light outline-hidden hover:bg-control-bg-hover focus-visible:ring-2 focus-visible:ring-accent"
-                                                    aria-label={t(
-                                                      "common.more"
-                                                    )}
-                                                    data-agent-archived-chat-menu
-                                                    onClick={(event) =>
-                                                      event.stopPropagation()
-                                                    }
-                                                  >
-                                                    <EllipsisVertical
-                                                      className="size-3.5"
-                                                      aria-hidden="true"
-                                                    />
-                                                  </AgentDropdownMenuTrigger>
-                                                  <AgentDropdownMenuContent>
-                                                    <AgentDropdownMenuItem
-                                                      data-agent-unarchive-chat
-                                                      onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        unarchiveChat(chat.id);
-                                                      }}
-                                                    >
-                                                      <Undo2
-                                                        className="size-4"
-                                                        aria-hidden="true"
-                                                      />
-                                                      {t(
-                                                        "agent.unarchive-chat"
-                                                      )}
-                                                    </AgentDropdownMenuItem>
-                                                    <AgentDropdownMenuItem
-                                                      data-agent-delete-chat
-                                                      className="text-error data-highlighted:bg-error/10"
-                                                      onClick={(event) => {
-                                                        event.stopPropagation();
-                                                        setPendingDeleteChatId(
-                                                          chat.id
-                                                        );
-                                                      }}
-                                                    >
-                                                      <Trash2
-                                                        className="size-4"
-                                                        aria-hidden="true"
-                                                      />
-                                                      {t("agent.delete-chat")}
-                                                    </AgentDropdownMenuItem>
-                                                  </AgentDropdownMenuContent>
-                                                </AgentDropdownMenu>
-                                              ) : (
-                                                <div className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
-                                                  <SidebarIconButton
-                                                    tooltip={t(
-                                                      "agent.archive-chat"
-                                                    )}
-                                                    ariaLabel={t(
-                                                      "agent.archive-chat"
-                                                    )}
-                                                    dataAttr="data-agent-archive-chat"
-                                                    onClick={() =>
-                                                      archiveChat(chat.id)
-                                                    }
-                                                  >
-                                                    <Archive
-                                                      className="size-3.5"
-                                                      aria-hidden="true"
-                                                    />
-                                                  </SidebarIconButton>
-                                                </div>
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                      ))}
+                                      {group.chats.map(renderChatRow)}
                                     </CollapsiblePanel>
                                   </Collapsible>
                                 );
@@ -2335,6 +2993,7 @@ export function AgentWindow() {
                 </PanelGroup>
               </div>
             )}
+            {preferencesOpen && <AgentPreferences />}
           </div>
         </div>
       </BaseDialog.Root>
@@ -2357,6 +3016,12 @@ export function AgentWindow() {
         )}
     </div>,
     getLayerRoot("agent")
+  );
+  return (
+    <>
+      {accessGrantDrawer}
+      {agentWindow}
+    </>
   );
 }
 
@@ -2417,127 +3082,284 @@ function CompactDrawerModal({
   );
 }
 
-// --- Confirmation Dialog ---
-
-function ConfirmDialog({
-  children,
-  message,
-  onConfirm,
-  triggerLabel,
-  triggerDataAttr,
-  triggerVariant = "text",
-}: {
-  children?: ReactNode;
-  message: string;
-  onConfirm: () => void;
-  triggerLabel: string;
-  triggerDataAttr?: string;
-  triggerVariant?: "icon" | "text";
-}) {
+function ChatListMenu({
+  archived,
+  hasRecoveryEvidence,
+  chatCount,
+  disabled,
+  onArchiveAll,
+  onUnarchiveAll,
+  onDeleteAll,
+}: Readonly<{
+  archived: boolean;
+  hasRecoveryEvidence: boolean;
+  chatCount: number;
+  disabled: boolean;
+  onArchiveAll: () => void;
+  onUnarchiveAll: () => void;
+  onDeleteAll: () => void;
+}>) {
   const { t } = useTranslation();
-  const triggerProps: Record<string, unknown> = {};
-  if (triggerDataAttr) triggerProps[triggerDataAttr] = true;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<
+    "archive" | "delete" | null
+  >(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const skipMenuFinalFocusRef = useRef(false);
 
   return (
-    <AgentDialog>
-      <AgentDialogTrigger
-        render={
-          triggerVariant === "icon" ? (
-            <Button
-              appearance="secondary"
-              size="xs"
-              className="text-control-light hover:bg-background"
-              aria-label={triggerLabel}
-              onClick={(event) => event.stopPropagation()}
-              {...triggerProps}
-            />
-          ) : (
-            <Button
-              appearance="secondary"
-              size="sm"
-              className="rounded-xs border px-2 py-1.5 text-xs font-medium text-control-light hover:bg-background"
-              onClick={(event) => event.stopPropagation()}
-              {...triggerProps}
-            />
-          )
-        }
+    <>
+      <AgentDropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          if (open) skipMenuFinalFocusRef.current = false;
+          setMenuOpen(open);
+        }}
       >
-        {triggerVariant === "icon" ? (
-          <AgentTooltip content={triggerLabel}>{children}</AgentTooltip>
-        ) : (
-          triggerLabel
-        )}
-      </AgentDialogTrigger>
-      <AgentDialogContent className="max-w-sm p-6">
-        <AgentDialogTitle className="sr-only">
-          {t("common.confirm")}
-        </AgentDialogTitle>
-        <AgentDialogDescription className="mb-4">
-          {message}
-        </AgentDialogDescription>
-        <div className="flex justify-end gap-x-2">
-          <AgentDialogClose
-            render={
-              <Button
-                appearance="secondary"
-                size="md"
-                className="h-auto rounded-xs border px-3 py-1.5 text-sm font-medium text-control-light hover:bg-control-bg"
-              >
-                {t("common.cancel")}
-              </Button>
-            }
-          />
-          <AgentDialogClose
-            render={
-              <Button
-                appearance="secondary"
-                size="md"
-                className="h-auto rounded-xs bg-accent px-3 py-1.5 text-sm font-medium text-accent-text hover:bg-accent-hover"
-                onClick={onConfirm}
-              >
-                {t("common.confirm")}
-              </Button>
-            }
-          />
-        </div>
-      </AgentDialogContent>
-    </AgentDialog>
+        <AgentTooltip content={t("common.more")}>
+          <AgentDropdownMenuTrigger
+            ref={triggerRef}
+            className="inline-flex size-6 items-center justify-center rounded-xs text-control-light outline-hidden hover:bg-control-bg-hover focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-50"
+            aria-label={t("common.more")}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <EllipsisVertical className="size-3.5" aria-hidden="true" />
+          </AgentDropdownMenuTrigger>
+        </AgentTooltip>
+        <AgentDropdownMenuContent
+          finalFocus={() =>
+            skipMenuFinalFocusRef.current ? false : triggerRef.current
+          }
+        >
+          {archived && (
+            <AgentDropdownMenuItem
+              data-agent-unarchive-all-chats
+              disabled={disabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onUnarchiveAll();
+              }}
+            >
+              {t("agent.unarchive-all-chats")}
+            </AgentDropdownMenuItem>
+          )}
+          <AgentDropdownMenuItem
+            data-agent-archive-all-chats={archived ? undefined : true}
+            data-agent-delete-all-chats={archived ? true : undefined}
+            className="text-error data-highlighted:bg-error/10"
+            disabled={disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              skipMenuFinalFocusRef.current = true;
+              setMenuOpen(false);
+              setPendingAction(archived ? "delete" : "archive");
+            }}
+          >
+            {archived
+              ? t("agent.delete-all-chats")
+              : t("agent.archive-all-chats")}
+          </AgentDropdownMenuItem>
+        </AgentDropdownMenuContent>
+      </AgentDropdownMenu>
+      <AgentPopover
+        open={pendingAction !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingAction(null);
+        }}
+      >
+        <AgentPopoverContent
+          anchor={triggerRef}
+          finalFocus={triggerRef}
+          side="bottom"
+          align="end"
+          className="w-64 p-3"
+          data-agent-archive-all-chats-confirmation={
+            pendingAction === "archive" || undefined
+          }
+          data-agent-delete-all-chats-confirmation={
+            pendingAction === "delete" || undefined
+          }
+          onClick={(event) => event.stopPropagation()}
+        >
+          <AgentPopoverTitle className="mb-3 font-normal">
+            {archived
+              ? t("agent.delete-all-chats-confirmation", { count: chatCount })
+              : t("agent.archive-all-chats-confirmation", { count: chatCount })}
+            {archived && hasRecoveryEvidence && (
+              <> {t("agent.api-recovery.delete-warning")}</>
+            )}
+          </AgentPopoverTitle>
+          <AgentActionGroup>
+            <Button
+              appearance="outline"
+              size="sm"
+              onClick={() => setPendingAction(null)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              disabled={disabled}
+              onClick={() => {
+                setPendingAction(null);
+                if (archived) onDeleteAll();
+                else onArchiveAll();
+              }}
+            >
+              {archived ? t("common.delete") : t("common.archive")}
+            </Button>
+          </AgentActionGroup>
+        </AgentPopoverContent>
+      </AgentPopover>
+    </>
   );
 }
 
-type SidebarIconButtonProps = Readonly<{
-  ariaLabel: string;
-  children: ReactNode;
-  dataAttr?: string;
-  onClick: () => void;
-  tooltip: string;
-}>;
-
-function SidebarIconButton({
-  ariaLabel,
-  children,
-  dataAttr,
-  onClick,
-  tooltip,
-}: SidebarIconButtonProps) {
-  const dataProps: Record<string, unknown> = {};
-  if (dataAttr) dataProps[dataAttr] = true;
+function ChatRowMenu({
+  title,
+  archived,
+  onRename,
+  onArchive,
+  onRestore,
+  onDelete,
+}: Readonly<{
+  title: string;
+  archived: boolean;
+  onRename: () => void;
+  onArchive: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+}>) {
+  const { t } = useTranslation();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const skipMenuFinalFocusRef = useRef(false);
 
   return (
-    <AgentTooltip content={tooltip} delayDuration={500}>
-      <Button
-        appearance="secondary"
-        size="xs"
-        className="text-control-light hover:bg-control-bg-hover"
-        aria-label={ariaLabel}
-        onClick={(event) => {
-          event.stopPropagation();
-          onClick();
+    <>
+      <AgentDropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          if (open) skipMenuFinalFocusRef.current = false;
+          setMenuOpen(open);
         }}
-        {...dataProps}
       >
-        {children}
-      </Button>
-    </AgentTooltip>
+        <AgentTooltip content={t("common.more")}>
+          <AgentDropdownMenuTrigger
+            ref={triggerRef}
+            render={
+              <Button
+                appearance="secondary"
+                size="xs"
+                className={cn(
+                  "pointer-events-none shrink-0 text-control-light opacity-0 transition-opacity group-hover/agent-chat:pointer-events-auto group-hover/agent-chat:opacity-100 group-has-[:focus-visible]/agent-chat:pointer-events-auto group-has-[:focus-visible]/agent-chat:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100",
+                  (menuOpen || archiveOpen) &&
+                    "pointer-events-auto bg-control-bg-hover opacity-100"
+                )}
+                aria-label={`${t("common.more")}: ${title}`}
+                data-agent-chat-menu
+                data-agent-archived-chat-menu={archived || undefined}
+                onClick={(event) => event.stopPropagation()}
+              />
+            }
+          >
+            <Ellipsis className="size-3.5" aria-hidden="true" />
+          </AgentDropdownMenuTrigger>
+        </AgentTooltip>
+        <AgentDropdownMenuContent
+          finalFocus={() =>
+            skipMenuFinalFocusRef.current ? false : triggerRef.current
+          }
+        >
+          <AgentDropdownMenuItem
+            data-agent-rename-chat
+            onClick={(event) => {
+              event.stopPropagation();
+              skipMenuFinalFocusRef.current = true;
+              onRename();
+            }}
+          >
+            <Pencil className="size-4" aria-hidden="true" />
+            {t("agent.rename-chat")}
+          </AgentDropdownMenuItem>
+          {archived ? (
+            <>
+              <AgentDropdownMenuItem
+                data-agent-unarchive-chat
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onRestore();
+                }}
+              >
+                <Undo2 className="size-4" aria-hidden="true" />
+                {t("agent.unarchive-chat")}
+              </AgentDropdownMenuItem>
+              <AgentDropdownMenuItem
+                data-agent-delete-chat
+                className="text-error data-highlighted:bg-error/10"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  skipMenuFinalFocusRef.current = true;
+                  onDelete();
+                }}
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+                {t("agent.delete-chat")}
+              </AgentDropdownMenuItem>
+            </>
+          ) : (
+            <AgentDropdownMenuItem
+              data-agent-archive-chat
+              className="text-error data-highlighted:bg-error/10"
+              onClick={(event) => {
+                event.stopPropagation();
+                skipMenuFinalFocusRef.current = true;
+                setMenuOpen(false);
+                setArchiveOpen(true);
+              }}
+            >
+              <Archive className="size-4" aria-hidden="true" />
+              {t("agent.archive-chat")}
+            </AgentDropdownMenuItem>
+          )}
+        </AgentDropdownMenuContent>
+      </AgentDropdownMenu>
+      <AgentPopover open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <AgentPopoverContent
+          anchor={triggerRef}
+          finalFocus={triggerRef}
+          side="bottom"
+          align="end"
+          className="w-56 p-3"
+          data-agent-archive-chat-confirmation
+          onClick={(event) => event.stopPropagation()}
+        >
+          <AgentPopoverTitle className="mb-3 font-normal">
+            {t("agent.archive-chat-confirmation")}
+          </AgentPopoverTitle>
+          <AgentActionGroup>
+            <Button
+              appearance="outline"
+              size="sm"
+              onClick={() => setArchiveOpen(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => {
+                setArchiveOpen(false);
+                onArchive();
+              }}
+            >
+              {t("common.archive")}
+            </Button>
+          </AgentActionGroup>
+        </AgentPopoverContent>
+      </AgentPopover>
+    </>
   );
 }

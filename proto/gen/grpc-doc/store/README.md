@@ -37,6 +37,7 @@
   
 - [store/audit_log.proto](#store_audit_log-proto)
     - [AuditLog](#bytebase-store-AuditLog)
+    - [FederatedIdentity](#bytebase-store-FederatedIdentity)
     - [MCPDelegation](#bytebase-store-MCPDelegation)
     - [RequestMetadata](#bytebase-store-RequestMetadata)
   
@@ -108,6 +109,7 @@
     - [DataSourceExternalSecret.SecretType](#bytebase-store-DataSourceExternalSecret-SecretType)
     - [DataSourceExternalSecret.TokenType](#bytebase-store-DataSourceExternalSecret-TokenType)
     - [DataSourceType](#bytebase-store-DataSourceType)
+    - [Vendor](#bytebase-store-Vendor)
   
 - [store/issue.proto](#store_issue-proto)
     - [Issue](#bytebase-store-Issue)
@@ -124,13 +126,6 @@
   
 - [store/review_rule.proto](#store_review_rule-proto)
     - [ReviewRuleType](#bytebase-store-ReviewRuleType)
-  
-- [store/review_run.proto](#store_review_run-proto)
-    - [ReviewRun](#bytebase-store-ReviewRun)
-    - [ReviewRunPayload](#bytebase-store-ReviewRunPayload)
-  
-    - [ReviewRun.Status](#bytebase-store-ReviewRun-Status)
-    - [ReviewRun.Type](#bytebase-store-ReviewRun-Type)
   
 - [store/issue_comment.proto](#store_issue_comment-proto)
     - [IssueCommentPayload](#bytebase-store-IssueCommentPayload)
@@ -200,6 +195,7 @@
     - [ReleasePayload](#bytebase-store-ReleasePayload)
     - [ReleasePayload.File](#bytebase-store-ReleasePayload-File)
     - [ReleasePayload.VCSSource](#bytebase-store-ReleasePayload-VCSSource)
+    - [ReleasePayload.VCSSource.PullRequest](#bytebase-store-ReleasePayload-VCSSource-PullRequest)
   
 - [store/review_config.proto](#store_review_config-proto)
     - [ReviewConfigPayload](#bytebase-store-ReviewConfigPayload)
@@ -213,6 +209,12 @@
   
     - [SQLReviewRule.Level](#bytebase-store-SQLReviewRule-Level)
     - [SQLReviewRule.Type](#bytebase-store-SQLReviewRule-Type)
+  
+- [store/review_run.proto](#store_review_run-proto)
+    - [ReviewRun](#bytebase-store-ReviewRun)
+    - [ReviewRunPayload](#bytebase-store-ReviewRunPayload)
+  
+    - [ReviewRun.Status](#bytebase-store-ReviewRun-Status)
   
 - [store/revision.proto](#store_revision-proto)
     - [RevisionPayload](#bytebase-store-RevisionPayload)
@@ -299,6 +301,9 @@
   
 - [store/task.proto](#store_task-proto)
     - [Task](#bytebase-store-Task)
+    - [Task.ReleaseState](#bytebase-store-Task-ReleaseState)
+    - [Task.ReleaseState.DeletedRevision](#bytebase-store-Task-ReleaseState-DeletedRevision)
+    - [Task.ReleaseState.Range](#bytebase-store-Task-ReleaseState-Range)
   
     - [Task.Type](#bytebase-store-Task-Type)
   
@@ -617,6 +622,7 @@ StatementType represents the type of SQL statement.
 | UPDATE | 61 |  |
 | DELETE | 62 |  |
 | MERGE | 63 |  |
+| EXECUTE | 70 | A statement that runs procedural or dynamic code: a procedure call (CALL, T-SQL EXEC), a prepared or dynamic statement (EXECUTE, EXECUTE IMMEDIATE, EXEC of a SQL string), or an anonymous block (PostgreSQL DO, Oracle BEGIN ... END). |
 
 
 
@@ -834,6 +840,24 @@ Status represents the approver&#39;s decision state.
 | service_data | [google.protobuf.Any](#google-protobuf-Any) |  | The service-specific data about the request, response, and other activities. |
 | request_metadata | [RequestMetadata](#bytebase-store-RequestMetadata) |  | Metadata about the operation. |
 | mcp_delegation | [MCPDelegation](#bytebase-store-MCPDelegation) |  | MCP delegation provenance. Present exactly when the entry belongs to MCP: the audited call arrived through the MCP server&#39;s delegated credential, or it is one of the two MCP doors that sit outside the API — the /mcp connection gate and the OAuth2 consent that mints the credential it checks. Never set for public API calls. Presence of this message is the MCP-origin marker. |
+| federated_identity | [FederatedIdentity](#bytebase-store-FederatedIdentity) |  | The external workload behind a workload identity. Set on a successful token exchange and on every call made with the token it issued. |
+
+
+
+
+
+
+<a name="bytebase-store-FederatedIdentity"></a>
+
+### FederatedIdentity
+The verified OIDC identity a workload identity token was exchanged for.
+Recorded for audit and never read for authorization.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| issuer | [string](#string) |  | The token&#39;s &#34;iss&#34; claim, e.g. &#34;https://token.actions.githubusercontent.com&#34;. |
+| subject | [string](#string) |  | The token&#39;s &#34;sub&#34; claim, e.g. &#34;repo:my-org/app:ref:refs/heads/main&#34;. |
 
 
 
@@ -1714,6 +1738,7 @@ Instance is the proto for instances.
 | last_sync_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  |  |
 | roles | [InstanceRole](#bytebase-store-InstanceRole) | repeated |  |
 | labels | [Instance.LabelsEntry](#bytebase-store-Instance-LabelsEntry) | repeated | Labels are key-value pairs that can be attached to the instance. For example, { &#34;org_group&#34;: &#34;infrastructure&#34;, &#34;environment&#34;: &#34;production&#34; } |
+| vendor | [Vendor](#bytebase-store-Vendor) |  |  |
 
 
 
@@ -1915,6 +1940,18 @@ CloudSQLIPType selects which Cloud SQL IP to dial for Google Cloud SQL IAM conne
 | DATA_SOURCE_UNSPECIFIED | 0 |  |
 | ADMIN | 1 |  |
 | READ_ONLY | 2 |  |
+
+
+
+<a name="bytebase-store-Vendor"></a>
+
+### Vendor
+Database service variant, independent of engine and registration method.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| VENDOR_UNSPECIFIED | 0 |  |
+| NEON | 1 |  |
 
 
  
@@ -2141,79 +2178,6 @@ on every stored comment that used it.
 
 
 
-<a name="store_review_run-proto"></a>
-<p align="right"><a href="#top">Top</a></p>
-
-## store/review_run.proto
-
-
-
-<a name="bytebase-store-ReviewRun"></a>
-
-### ReviewRun
-ReviewRun is the status slot of one reviewer (rule engine or AI) on one
-issue. Results live in issue comments; the run carries none.
-
-
-
-
-
-
-<a name="bytebase-store-ReviewRunPayload"></a>
-
-### ReviewRunPayload
-
-
-
-| Field | Type | Label | Description |
-| ----- | ---- | ----- | ----------- |
-| error | [string](#string) |  | Fatal execution error for the FAILED status, e.g. &#34;metadata not synced: instances/prod/databases/db1, db2, db3 (&#43;497 more)&#34;. Written by the executor or by the reaper. |
-| approval_input_version | [int64](#int64) |  | The plan&#39;s PlanConfig.approval_input_version when the slot was reset: the version of the plan&#39;s SQL this run reviews. Completion keeps it. |
-
-
-
-
-
- 
-
-
-<a name="bytebase-store-ReviewRun-Status"></a>
-
-### ReviewRun.Status
-Strictly 1:1 with the status CHECK constraint — no unpersisted values.
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| STATUS_UNSPECIFIED | 0 |  |
-| AVAILABLE | 1 |  |
-| RUNNING | 2 |  |
-| DONE | 3 |  |
-| FAILED | 4 |  |
-
-
-
-<a name="bytebase-store-ReviewRun-Type"></a>
-
-### ReviewRun.Type
-The reviewer. Stored by name in review_run.type, which has no CHECK:
-like Issue.Type and Task.Type, the enum is the source of truth and a
-new reviewer is a new value, not a migration.
-
-| Name | Number | Description |
-| ---- | ------ | ----------- |
-| TYPE_UNSPECIFIED | 0 |  |
-| RULE | 1 | Review against the standard rules. |
-| AI | 2 | Review against the natural-language AI review policy, performed by a model. |
-
-
- 
-
- 
-
- 
-
-
-
 <a name="store_issue_comment-proto"></a>
 <p align="right"><a href="#top">Top</a></p>
 
@@ -2303,21 +2267,20 @@ add/remove/update from the snapshot pair.
 
 ### IssueCommentPayload.ReviewMetadata
 ReviewMetadata is what a review result carries beyond its text: which
-reviewer posted it, what it was judged against, its priority, the
+reviewer found it, what it was judged against, its priority, the
 databases it applies to, and for an AI result, its title. When a run
-completes, an earlier result of its type whose fingerprint the run
-reports again keeps its thread, and the run posts no new result for it;
-every other earlier root of its type is resolved and marked superseded,
-in the transaction that posts the new results.
+completes, an earlier result whose fingerprint the run reports again
+keeps its thread, and the run posts no new result for it; every other
+earlier result on the issue is resolved and marked superseded, in the
+transaction that posts the new results.
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| run_type | [ReviewRun.Type](#bytebase-store-ReviewRun-Type) |  | The reviewer slot that posted the result; review_run.type stores the same enum by name. |
-| rule_type | [ReviewRuleType](#bytebase-store-ReviewRuleType) |  | The rule judged against. Set if and only if run_type is RULE. |
+| rule_type | [ReviewRuleType](#bytebase-store-ReviewRuleType) |  | The rule judged against. Set on a result of a standard rule, and on no result that the AI review posts on its own. |
 | priority | [IssueCommentPayload.ReviewMetadata.Priority](#bytebase-store-IssueCommentPayload-ReviewMetadata-Priority) |  | A result merged across databases carries the highest priority among them. |
 | targets | [string](#string) | repeated | Every database the result applies to, sorted. Always complete; the renderer collapses it when it equals the spec&#39;s target set. Format: instances/{instance}/databases/{database} |
-| superseded | [bool](#bool) |  | A later run of the same reviewer has completed without reporting the result again, so the latest review does not hold it. Set by that run whatever the thread state, and never cleared. |
+| superseded | [bool](#bool) |  | A later run has completed without reporting the result again, so the latest review does not hold it. Set by that run whatever the thread state, and never cleared. |
 | fingerprint | [string](#string) |  | Identifies the finding across runs: equal fingerprints are the same finding on the same SQL. The rule review derives it from what it judged. The AI review starts it with a hash of its statement and ends it at random, and a later run carries it over to the finding its merge matches to the result. Unique among the results of one run. Empty on a result that predates it, and an empty fingerprint matches nothing. |
 | attempt | [int64](#int64) |  | The review_run.attempt of the run that posted the result. A result a later run reports again keeps its attempt. |
 | codes | [string](#string) | repeated | The conditions a RULE result reports, as omni finding codes such as &#34;WT101&#34;, one per reason. Empty for other reviewers. |
@@ -2332,13 +2295,12 @@ in the transaction that posts the new results.
 
 ### IssueCommentPayload.ReviewRunCompletion
 ReviewRunCompletion records that a review run completed DONE, and what
-it did to the results of its reviewer. Posted with no creator, in the
+it did to the earlier results. Posted with no creator, in the
 transaction that posts the run&#39;s results.
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
-| run_type | [ReviewRun.Type](#bytebase-store-ReviewRun-Type) |  |  |
 | attempt | [int64](#int64) |  | The run&#39;s review_run.attempt; its new results carry the same ReviewMetadata.attempt. |
 | posted_count | [int32](#int32) |  | Results the run posted as new threads. |
 | kept_count | [int32](#int32) |  | Earlier results the run reported again, which kept their threads. |
@@ -2941,7 +2903,7 @@ Project contains settings and configuration for a Bytebase project.
 | postgres_database_tenant_mode | [bool](#bool) |  | Whether to enable the database tenant mode for PostgreSQL. If enabled, the issue will be created with the prepend &#34;set role &lt;db_owner&gt;&#34; statement. |
 | allow_self_approval | [bool](#bool) |  | Whether to allow the issue creator to self-approve the issue. |
 | execution_retry_policy | [Project.ExecutionRetryPolicy](#bytebase-store-Project-ExecutionRetryPolicy) |  | Configuration for automatic retry on task execution failures. |
-| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation and AI review. If not specified, sampling is disabled, resulting in a full validation. |
+| ci_sampling_size | [int32](#int32) |  | The maximum number of databases to sample during CI data validation and SQL review. If not specified, sampling is disabled, resulting in a full validation. |
 | parallel_tasks_per_rollout | [int32](#int32) |  | The maximum number of parallel tasks to run during the rollout. |
 | labels | [Project.LabelsEntry](#bytebase-store-Project-LabelsEntry) | repeated | Labels are key-value pairs that can be attached to the project. For example, { &#34;environment&#34;: &#34;production&#34;, &#34;team&#34;: &#34;backend&#34; } |
 | enforce_sql_review | [bool](#bool) |  | Whether to enforce SQL review checks to pass before issue creation. If enabled, issues cannot be created when SQL review finds errors. |
@@ -3173,6 +3135,29 @@ Activity type enumeration.
 | ----- | ---- | ----- | ----------- |
 | vcs_type | [VCSType](#bytebase-store-VCSType) |  |  |
 | url | [string](#string) |  |  |
+| commit_sha | [string](#string) |  |  |
+| branch | [string](#string) |  |  |
+| commit_title | [string](#string) |  |  |
+| author_name | [string](#string) |  |  |
+| author_login | [string](#string) |  |  |
+| pull_request | [ReleasePayload.VCSSource.PullRequest](#bytebase-store-ReleasePayload-VCSSource-PullRequest) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-ReleasePayload-VCSSource-PullRequest"></a>
+
+### ReleasePayload.VCSSource.PullRequest
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| url | [string](#string) |  |  |
+| number | [int64](#int64) |  |  |
+| title | [string](#string) |  |  |
 
 
 
@@ -3453,6 +3438,65 @@ The severity level for SQL review rules.
 | BUILTIN_WALK_THROUGH_CHECK | 110 |  |
 | STATEMENT_DISALLOW_TRUNCATE | 111 |  |
 | BUILTIN_STATEMENT_MAXIMUM_SQL_SIZE | 112 |  |
+
+
+ 
+
+ 
+
+ 
+
+
+
+<a name="store_review_run-proto"></a>
+<p align="right"><a href="#top">Top</a></p>
+
+## store/review_run.proto
+
+
+
+<a name="bytebase-store-ReviewRun"></a>
+
+### ReviewRun
+ReviewRun is the status slot of the review on one issue. Results live in
+issue comments; the run carries none.
+
+
+
+
+
+
+<a name="bytebase-store-ReviewRunPayload"></a>
+
+### ReviewRunPayload
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| error | [string](#string) |  | Fatal execution error for the FAILED status, e.g. &#34;metadata not synced: instances/prod/databases/db1, db2, db3 (&#43;497 more)&#34;. Written by the executor or by the reaper. |
+| approval_input_version | [int64](#int64) |  | The plan&#39;s PlanConfig.approval_input_version when the slot was reset: the version of the plan&#39;s SQL this run reviews. Completion keeps it. |
+| code | [google.rpc.Code](#google-rpc-Code) |  | The kind of failure behind `error`, for the FAILED status. Unset when the failure fits no more specific code. |
+
+
+
+
+
+ 
+
+
+<a name="bytebase-store-ReviewRun-Status"></a>
+
+### ReviewRun.Status
+Strictly 1:1 with the status CHECK constraint — no unpersisted values.
+
+| Name | Number | Description |
+| ---- | ------ | ----------- |
+| STATUS_UNSPECIFIED | 0 |  |
+| AVAILABLE | 1 |  |
+| RUNNING | 2 |  |
+| DONE | 3 |  |
+| FAILED | 4 |  |
 
 
  
@@ -4679,6 +4723,60 @@ Task is the metadata for database operation tasks.
 | sheet_sha256 | [string](#string) |  | The SHA256 hash of a single sheet content (hex-encoded). Used for non-release tasks. |
 | release | [string](#string) |  | The release resource name: projects/{project}/releases/{release}. Used for GitOps release-based tasks that execute multiple files. |
 | enable_prior_backup | [bool](#bool) |  | Whether to create an automatic backup before applying changes. |
+| skipper | [string](#string) |  | The email of the user who skipped the task. |
+| skip_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the task was skipped. |
+| release_state | [Task.ReleaseState](#bytebase-store-Task-ReleaseState) |  | The release&#39;s file state on the task&#39;s database when the task was created. Set only for tasks of a versioned release. |
+
+
+
+
+
+
+<a name="bytebase-store-Task-ReleaseState"></a>
+
+### Task.ReleaseState
+A preview: the run reads the database&#39;s revisions again when it starts.
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| pending_ranges | [Task.ReleaseState.Range](#bytebase-store-Task-ReleaseState-Range) | repeated | The release&#39;s files the task will apply, as half-open ranges of positions in the release&#39;s file list, ascending. Every other file&#39;s version was applied: the database had a live VERSIONED revision with it. |
+| applied_count | [int32](#int32) |  | The number of the release&#39;s versions already applied. |
+| compute_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | When the state was computed. |
+| deleted_revisions | [Task.ReleaseState.DeletedRevision](#bytebase-store-Task-ReleaseState-DeletedRevision) | repeated | The versions to apply that had a deleted revision, in release order. |
+
+
+
+
+
+
+<a name="bytebase-store-Task-ReleaseState-DeletedRevision"></a>
+
+### Task.ReleaseState.DeletedRevision
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| version | [string](#string) |  |  |
+| delete_time | [google.protobuf.Timestamp](#google-protobuf-Timestamp) |  | The newest deletion&#39;s time and the deleter&#39;s email. |
+| deleter | [string](#string) |  |  |
+
+
+
+
+
+
+<a name="bytebase-store-Task-ReleaseState-Range"></a>
+
+### Task.ReleaseState.Range
+
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| start | [int32](#int32) |  |  |
+| end | [int32](#int32) |  |  |
 
 
 

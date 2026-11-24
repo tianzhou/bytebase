@@ -1,89 +1,176 @@
 package mysql
 
 import (
-	"errors"
-	"fmt"
+	"context"
 
-	mysqlomniparser "github.com/bytebase/omni/mysql/parser"
+	"github.com/bytebase/omni/mysql/analysis"
+	"github.com/bytebase/omni/mysql/ast"
+	omnicompletion "github.com/bytebase/omni/mysql/completion"
+	mysqlparser "github.com/bytebase/omni/mysql/parser"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	"github.com/bytebase/bytebase/backend/store/model"
 )
 
 func init() {
-	base.RegisterParseStatementsFunc(storepb.Engine_MYSQL, parseMySQLStatements)
-	base.RegisterGetStatementTypes(storepb.Engine_MYSQL, GetStatementTypes)
+	base.Register(base.Engine{
+		Split:                SplitSQL,
+		Parse:                parseStatements,
+		StatementTypes:       GetStatementTypes,
+		Diagnose:             Diagnose,
+		Complete:             Completion,
+		ValidateQuery:        validateQuery,
+		QuerySpan:            GetQuerySpan,
+		Explain:              explainStatement,
+		ResultLimit:          statementWithResultLimit,
+		ExtractChanged:       extractChangedResources,
+		TransformDMLToSelect: TransformDMLToSelect,
+		GenerateRestoreSQL:   GenerateRestoreSQL,
+	}, storepb.Engine_MYSQL)
+	// ClickHouse, StarRocks, and Doris reuse MySQL completion; ClickHouse also reuses MySQL diagnose.
+	base.Register(base.Engine{Complete: Completion, Diagnose: Diagnose}, storepb.Engine_CLICKHOUSE)
+	base.Register(base.Engine{Complete: Completion}, storepb.Engine_STARROCKS, storepb.Engine_DORIS)
 }
 
-// parseMySQLStatements is the ParseStatementsFunc for MySQL.
-// Returns []ParsedStatement with both text and AST populated.
-func parseMySQLStatements(statement string) ([]base.ParsedStatement, error) {
-	return parseStatements(statement)
+// AST wraps an omni AST node and implements the base.AST interface.
+type AST = base.NodeAST[ast.Node]
+
+// GetNode extracts the omni AST node from a base.AST interface.
+func GetNode(a base.AST) (ast.Node, bool) {
+	return base.ExtractNode[ast.Node](a)
+}
+
+// SplitSQL splits the given SQL statement into multiple SQL statements.
+// It uses omni's lexical splitter which handles quotes, comments, compound
+// statements (BEGIN...END, IF...END IF, etc.) and DELIMITER without
+// requiring valid SQL.
+func SplitSQL(statement string) ([]base.Statement, error) {
+	return base.BuildStatements(statement, mysqlparser.Split(statement), func(s mysqlparser.Segment) (int, int, bool) {
+		return s.ByteStart, s.ByteEnd, s.Empty()
+	}, true), nil
 }
 
 func parseStatements(statement string) ([]base.ParsedStatement, error) {
-	// Split once to get Statement with text and positions
-	stmts, err := SplitSQL(statement)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []base.ParsedStatement
-	for _, stmt := range stmts {
-		if stmt.Empty {
-			continue
+	return base.ParseNonEmptyMultiNodeStatements(statement, SplitSQL, func(stmt base.Statement) ([]base.AST, error) {
+		list, err := mysqlparser.Parse(stmt.Text)
+		if err != nil {
+			return nil, convertError(err, stmt)
 		}
-
-		list, omniErr := ParseMySQL(stmt.Text)
-		if omniErr != nil {
-			return nil, convertOmniError(omniErr, stmt)
-		}
-
 		if list == nil || len(list.Items) == 0 {
-			continue
+			return nil, nil
 		}
-
-		for _, node := range list.Items {
-			result = append(result, base.ParsedStatement{
-				Statement: stmt,
-				AST: &OmniAST{
-					Node:          node,
-					Text:          stmt.Text,
-					StartPosition: stmt.Start,
-				},
-			})
+		asts := make([]base.AST, len(list.Items))
+		for i, node := range list.Items {
+			asts[i] = &AST{Node: node, Text: stmt.Text, StartPosition: stmt.Start}
 		}
-	}
-
-	return result, nil
+		return asts, nil
+	})
 }
 
-// convertOmniError converts an omni MySQL parser error to a base.SyntaxError with proper line:column position.
-func convertOmniError(err error, stmt base.Statement) error {
-	var parseErr *mysqlomniparser.ParseError
-	if !errors.As(err, &parseErr) {
-		return err
-	}
-	message, position, relatedText := parseErr.Message, parseErr.Position, parseErr.RelatedText
+func GetStatementTypes(asts []base.AST) ([]storepb.StatementType, error) {
+	return base.CollectOmniStatementTypes(asts, GetNode, "expected AST for MySQL", analysis.StatementTypeOf)
+}
 
-	pos := ByteOffsetToRunePosition(stmt.Text, position)
+// StatementTypeWithPosition contains a statement type and its position information.
+type StatementTypeWithPosition = base.StatementTypeWithPosition
 
-	// Offset by the statement's 1-based start; its column applies only to the statement's first line.
-	if stmt.Start != nil {
-		if pos.Line == 1 {
-			pos.Column += stmt.Start.Column - 1
+// GetStatementTypesWithPositions returns statement types with position information,
+// preserving statement order. Line numbers are one-based.
+func GetStatementTypesWithPositions(asts []base.AST) ([]StatementTypeWithPosition, error) {
+	// STATEMENT_TYPE_UNSPECIFIED entries are included so the SDL gate fails closed.
+	return base.CollectSingleStatementTypesWithPosition(asts, "expected AST for MySQL", true, func(a *AST) (storepb.StatementType, string, bool) {
+		if a == nil || a.Node == nil {
+			return 0, "", false
 		}
-		pos.Line += stmt.Start.Line - 1
-	}
+		return base.OmniStatementType(analysis.StatementTypeOf(a.Node)), a.Text, true
+	})
+}
 
-	msg := fmt.Sprintf("Syntax error at line %d:%d: %s", pos.Line, pos.Column, message)
-	if relatedText != "" {
-		msg += "\nrelated text: " + relatedText
-	}
+// Diagnose returns the script's first syntax error as a diagnostic.
+func Diagnose(_ context.Context, _ base.DiagnoseContext, statement string) ([]base.Diagnostic, error) {
+	return base.DiagnoseFirstError(statement, analysis.Diagnose(statement), func(e *analysis.SyntaxError) (string, int, string) {
+		return e.Text, e.Offset, e.Message
+	}), nil
+}
 
-	return &base.SyntaxError{
-		Position:   pos,
-		Message:    msg,
-		RawMessage: message,
+// Completion provides auto-complete candidates for MySQL statements using the
+// omni MySQL completion engine.
+func Completion(ctx context.Context, cCtx base.CompletionContext, statement string, caretLine int, caretOffset int) ([]base.Candidate, error) {
+	loadDB, listDBs := base.MySQLFamilyDatabaseLoaders(cCtx)
+	raw := omnicompletion.CompleteSession(ctx, omnicompletion.SessionConfig{
+		ReadOnly:          cCtx.Scene == base.SceneTypeQuery,
+		DefaultDatabase:   cCtx.DefaultDatabase,
+		LoadDatabase:      loadDB,
+		ListDatabaseNames: listDBs,
+	}, statement, caretLine, caretOffset)
+	return base.ConvertOmniCandidates(raw, func(c omnicompletion.Candidate) (string, omnicompletion.CandidateType, string, string) {
+		return c.Text, c.Type, c.Definition, c.Comment
+	}, base.CompareCandidate), nil
+}
+
+func validateQuery(statement string) (bool, bool, error) {
+	stmts, err := mysqlparser.Parse(statement)
+	if err != nil {
+		return false, false, convertError(err, base.Statement{Text: statement})
 	}
+	readOnly, returnsData := analysis.ValidateQuery(stmts.Items)
+	return readOnly, returnsData, nil
+}
+
+// GetQuerySpan returns the query span for the given statement.
+func GetQuerySpan(
+	ctx context.Context,
+	gCtx base.GetQuerySpanContext,
+	stmt base.Statement,
+	database, _ string,
+	ignoreCaseSensitive bool,
+) (*base.QuerySpan, error) {
+	listDBs, getDB := base.UnnamedSchemaQuerySpanCatalog(ctx, gCtx, wrapDatabase)
+	querySpan, err := base.OmniResolvedSpanResult(analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultDatabase:     database,
+		IgnoreCaseSensitive: ignoreCaseSensitive,
+		Catalog:             analysis.Catalog{ListDatabaseNames: listDBs, GetDatabase: getDB},
+	}))
+	if err != nil {
+		return nil, convertError(err, stmt)
+	}
+	return querySpan, nil
+}
+
+// explainStatement implements base.ExplainStatement. Only the JSON format has
+// a reader downstream; any other format gets the engine's default plan.
+func explainStatement(statement string, format base.ExplainFormat) (string, error) {
+	explain, err := analysis.ExplainStatement(statement, format == base.ExplainFormatJSON)
+	return base.ExplainStatementResult(explain, err, func(e error) error {
+		return convertError(e, base.Statement{Text: statement})
+	})
+}
+
+// DescribeExplain returns the output format of an EXPLAIN statement and whether
+// it executes the statement it plans.
+func DescribeExplain(statement string) (format string, executed bool, ok bool) {
+	return analysis.DescribeExplain(statement)
+}
+
+// statementWithResultLimit implements base.ResultLimitFunc for MySQL, which
+// takes no engineVersion. MySQL 5.7 does not support WITH, so the fallback
+// wraps in a derived table.
+func statementWithResultLimit(statement string, limit int, _ string) string {
+	return base.RewriteResultLimit(statement, limit, analysis.RewriteResultLimit, "SELECT * FROM (%s) result LIMIT %d;")
+}
+
+func extractChangedResources(currentDatabase string, _ string, dbMetadata *model.DatabaseMetadata, asts []base.AST, _ string) (*base.ChangeSummary, error) {
+	return base.ExtractTypedChangedResources(dbMetadata, asts, "expected AST for MySQL", false, func(node *AST) (analysis.StatementChanges, bool) {
+		return analysis.ExtractChangedResources(node.Node, currentDatabase, node.Text), true
+	})
+}
+
+func convertError(err error, stmt base.Statement) error {
+	return base.ConvertSyntaxError(stmt, err, true,
+		func(pe *mysqlparser.ParseError) (int, string) { return pe.Position, pe.Message },
+		func(pe *mysqlparser.ParseError, pos *storepb.Position) string {
+			return base.FormatLineColSyntaxError(pos, pe.Message, pe.RelatedText)
+		},
+	)
 }

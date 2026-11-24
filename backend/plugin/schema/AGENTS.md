@@ -6,11 +6,14 @@ adds to it.
 
 ## What these packages test
 
-Each engine package owns three conversions, and a test covers exactly one:
+Each engine package owns two conversions, and a test covers exactly one:
 
 - `GetDatabaseMetadata` — schema text to metadata.
 - `GetDatabaseDefinition` — metadata to DDL.
-- `schema.GetDatabaseSchemaDiff` plus the package's `generateMigration`.
+
+A metadata diff is not one of them. `schema.DiffMigration` dispatches to the
+engine's registered metadata diff, and every engine that supports one runs on its
+own omni catalog; Bytebase has no shared differ to test.
 
 Do not call `driver.SyncDBSchema` here, and never use a live server's answer as
 the expected value: whether our output matches what an engine stores is engine
@@ -37,7 +40,7 @@ const (
 To regenerate, set `record` to `true`, run that one test, and set it back:
 
 ```bash
-go test ./backend/plugin/schema/tidb/ -run '^TestGetDatabaseDefinition$' -count=1
+go test ./backend/plugin/schema/mssql/ -run '^TestGetDatabaseDefinition$' -count=1
 ```
 
 - Commit the fixture and the restored `record = false` together. A `record = true`
@@ -50,22 +53,24 @@ go test ./backend/plugin/schema/tidb/ -run '^TestGetDatabaseDefinition$' -count=
 
 - YAML block scalars cannot carry tabs, trailing whitespace, or a leading
   newline. A value with any of them is stored as one unreadable quoted line.
-  Indent fixture SQL with spaces; trim a leading newline before comparing, as
-  the PostgreSQL definition test does. Trailing whitespace usually arrives from
+  Indent fixture SQL with spaces; trim a leading newline before comparing when
+  the header opens with a blank line. Trailing whitespace usually arrives from
   a `definition`/`body` field, not the generator — strip it in the fixture.
 - yaml.v3 escapes astral-plane characters, so a golden containing an emoji is
   always a quoted line. Two are, deliberately: they cover 4-byte UTF-8.
 - Generated DDL must be byte-stable before it can be pinned. Walk maps in sorted
   key order in the generators.
 
-## Two deviations
+## Deviations
 
-Oracle's migration inputs are `oldMetadata`/`newMetadata`, protojson captured
-from a real Oracle, where every other engine's are `oldSchema`/`newSchema`
-schema text. Converting them would rewrite all 34 cases: a metadata/DDL/metadata
-round trip is lossless for 0 of its 68 blobs.
+Oracle, PostgreSQL (including CockroachDB), MySQL, OceanBase, and TiDB run
+their metadata extraction, definition rendering, simulation, and metadata
+migrations on their omni catalogs, so their golden YAML corpora live in
+`omni/{oracle,pg,mysql,oceanbase,tidb}/catalog/testdata/` under omni's own
+gates. Bytebase keeps focused seam tests in `backend/plugin/schema/<engine>/`
+for registry wiring, backup/scratch filtering, `stripUnrenderedFacts` /
+`SkipDump`, `legacy_normalize.go`, `omnicatalog` prechecks, and error-to-advice
+mapping.
 
-PostgreSQL registers neither `GenerateMigration` nor `GetDatabaseMetadata`, so it
-has no fixture for either. Its migration generation is covered by
-`metadata_migration_test.go`, whose hand-written assertions carry intent a golden
-cannot. Do not convert those.
+`mariadb/testdata/cutover_parity.yaml` records what the deleted Bytebase
+generator wrote for MariaDB and OceanBase and why each group of cases moved.

@@ -2,7 +2,6 @@ package v1
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"math"
@@ -78,15 +77,9 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 		return connect.NewError(connect.CodePermissionDenied, err)
 	}
 	var driver db.Driver
-	var conn *sql.Conn
 	var connectionName string
 
 	clean := func() {
-		if conn != nil {
-			if err := conn.Close(); err != nil {
-				slog.Warn("failed to close connection", log.BBError(err))
-			}
-		}
 		if driver != nil {
 			driver.Close(ctx)
 		}
@@ -114,13 +107,6 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 			if err != nil {
 				return connect.NewError(connect.CodeInternal, errors.Errorf("failed to get database driver: %v", err))
 			}
-			sqlDB := driver.GetDB()
-			if sqlDB != nil {
-				conn, err = sqlDB.Conn(ctx)
-				if err != nil {
-					return connect.NewError(connect.CodeInternal, errors.Errorf("failed to get database connection: %v", err))
-				}
-			}
 		}
 
 		queryRestriction := getEffectiveQueryDataPolicy(
@@ -146,7 +132,6 @@ func (s *SQLService) AdminExecute(ctx context.Context, stream *connect.BidiStrea
 		result, duration, queryErr := executeWithTimeout(
 			ctx,
 			driver,
-			conn,
 			request.Statement,
 			queryContext,
 		)
@@ -401,16 +386,6 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 	}
 	defer driver.Close(ctx)
 
-	sqlDB := driver.GetDB()
-	var conn *sql.Conn
-	if sqlDB != nil {
-		conn, err = sqlDB.Conn(ctx)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.Errorf("failed to get database connection: %v", err))
-		}
-		defer conn.Close()
-	}
-
 	startTime := time.Now()
 	queryContext := db.QueryContext{
 		Explain:              request.Explain,
@@ -442,7 +417,6 @@ func (s *SQLService) Query(ctx context.Context, req *connect.Request[v1pb.QueryR
 		instance,
 		database,
 		driver,
-		conn,
 		statement,
 		queryContext,
 		s.licenseService,
@@ -680,9 +654,10 @@ func generateNewColumn(engine storepb.Engine, column parserbase.ColumnResource, 
 }
 
 // privateDatabaseLinkOwner is implemented by a driver whose session account can own
-// private database links (Oracle).
+// private database links (Oracle). It takes no connection: the driver asks with a session
+// of its own, because a driver over omni's contract has no *sql.DB to hand out one from.
 type privateDatabaseLinkOwner interface {
-	OwnsPrivateDatabaseLink(ctx context.Context, conn *sql.Conn) (bool, error)
+	OwnsPrivateDatabaseLink(ctx context.Context) (bool, error)
 }
 
 // refuseLinkedReadsShadowedByPrivateLinks refuses a linked read when the executing account
@@ -691,10 +666,10 @@ type privateDatabaseLinkOwner interface {
 // private link on another account can shadow the synced definition. No link name is
 // compared: Oracle expands a bare name with the database domain and accepts connection
 // qualifiers, and the synced list cannot settle either. The admin data source is the synced
-// account and is exempt. Runs on the executing connection right before execution, so a link
-// created by an earlier statement of the same request is seen. A failed check refuses.
+// account and is exempt. Runs right before execution, so a link created by an earlier
+// statement of the same request is seen. A failed check refuses.
 // BYT-10239 replaces this with resolution from the executing session's own links.
-func refuseLinkedReadsShadowedByPrivateLinks(ctx context.Context, driver db.Driver, conn *sql.Conn, instance *store.InstanceMessage, queryContext db.QueryContext, spans []*parserbase.QuerySpan) error {
+func refuseLinkedReadsShadowedByPrivateLinks(ctx context.Context, driver db.Driver, instance *store.InstanceMessage, queryContext db.QueryContext, spans []*parserbase.QuerySpan) error {
 	if instance.Metadata.GetEngine() != storepb.Engine_ORACLE || queryContext.DataSourceType == storepb.DataSourceType_ADMIN {
 		return nil
 	}
@@ -703,10 +678,10 @@ func refuseLinkedReadsShadowedByPrivateLinks(ctx context.Context, driver db.Driv
 		return nil
 	}
 	owner, ok := driver.(privateDatabaseLinkOwner)
-	if !ok || conn == nil {
-		return privateLinkRefusal(ctx, linked, false, errors.New("the driver exposes no session connection"))
+	if !ok {
+		return privateLinkRefusal(ctx, linked, false, errors.New("the driver cannot report the executing account's private database links"))
 	}
-	owns, err := owner.OwnsPrivateDatabaseLink(ctx, conn)
+	owns, err := owner.OwnsPrivateDatabaseLink(ctx)
 	return privateLinkRefusal(ctx, linked, owns, err)
 }
 
@@ -846,7 +821,6 @@ func queryRetry(
 	instance *store.InstanceMessage,
 	database *store.DatabaseMessage,
 	driver db.Driver,
-	conn *sql.Conn,
 	statements []parserbase.Statement,
 	originalStatement string,
 	queryContext db.QueryContext,
@@ -897,7 +871,7 @@ func queryRetry(
 			return nil, nil, time.Duration(0), err
 		}
 	}
-	if err := refuseLinkedReadsShadowedByPrivateLinks(ctx, driver, conn, instance, queryContext, spans); err != nil {
+	if err := refuseLinkedReadsShadowedByPrivateLinks(ctx, driver, instance, queryContext, spans); err != nil {
 		return nil, nil, time.Duration(0), err
 	}
 
@@ -905,7 +879,6 @@ func queryRetry(
 	results, duration, queryErr := executeWithTimeout(
 		ctx,
 		driver,
-		conn,
 		originalStatement,
 		queryContext,
 	)
@@ -1084,7 +1057,6 @@ func queryRetryStopOnError(
 	instance *store.InstanceMessage,
 	database *store.DatabaseMessage,
 	driver db.Driver,
-	conn *sql.Conn,
 	statement string,
 	queryContext db.QueryContext,
 	licenseService *enterprise.LicenseService,
@@ -1100,7 +1072,7 @@ func queryRetryStopOnError(
 		if err != nil {
 			return nil, nil, 0, err
 		}
-		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, conn, statements, statement, queryContext, licenseService, optionalAccessCheck, schemaSyncer, hasMultipleStatements(statements))
+		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, statements, statement, queryContext, licenseService, optionalAccessCheck, schemaSyncer, hasMultipleStatements(statements))
 		if len(results) == 0 {
 			results = resultForTimeout(statement, err)
 		}
@@ -1115,7 +1087,7 @@ func queryRetryStopOnError(
 		// statement as a single unit. Where GetQuerySpan is supported (e.g. MongoDB),
 		// it re-parses the raw text and surfaces the parse error; otherwise
 		// queryRetry returns nil spans (old behavior).
-		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, conn, []parserbase.Statement{{Text: statement}}, statement, queryContext, licenseService, optionalAccessCheck, schemaSyncer, false)
+		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, []parserbase.Statement{{Text: statement}}, statement, queryContext, licenseService, optionalAccessCheck, schemaSyncer, false)
 		if len(results) == 0 {
 			results = resultForTimeout(statement, err)
 		}
@@ -1137,7 +1109,7 @@ func queryRetryStopOnError(
 			continue
 		}
 
-		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, conn, []parserbase.Statement{stmt}, stmt.Text, queryContext, licenseService, optionalAccessCheck, schemaSyncer, multiStatement)
+		results, spans, duration, err := queryRetry(ctx, stores, user, instance, database, driver, []parserbase.Statement{stmt}, stmt.Text, queryContext, licenseService, optionalAccessCheck, schemaSyncer, multiStatement)
 		totalDuration += duration
 
 		if err != nil {
@@ -1198,7 +1170,6 @@ func resultForTimeout(statement string, err error) []*v1pb.QueryResult {
 func executeWithTimeout(
 	ctx context.Context,
 	driver db.Driver,
-	conn *sql.Conn,
 	statement string,
 	queryContext db.QueryContext,
 ) ([]*v1pb.QueryResult, time.Duration, error) {
@@ -1215,7 +1186,7 @@ func executeWithTimeout(
 	}
 
 	start := time.Now()
-	result, err := driver.QueryConn(queryCtx, conn, statement, queryContext)
+	result, err := driver.QueryConn(queryCtx, statement, queryContext)
 	if ctxErr := queryCtx.Err(); ctxErr != nil {
 		return nil, time.Since(start), interruptedQueryError(ctxErr, timeout)
 	}
@@ -1344,15 +1315,6 @@ func doExport(
 	}
 	defer driver.Close(ctx)
 
-	sqlDB := driver.GetDB()
-	var conn *sql.Conn
-	if sqlDB != nil {
-		conn, err = sqlDB.Conn(ctx)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer conn.Close()
-	}
 	queryRestriction := getEffectiveQueryDataPolicy(
 		ctx,
 		stores,
@@ -1378,7 +1340,6 @@ func doExport(
 		instance,
 		database,
 		driver,
-		conn,
 		statements,
 		request.Statement,
 		queryContext,

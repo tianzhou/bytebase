@@ -13,7 +13,6 @@ import {
   IssueComment_ReviewMetadata_Priority,
   IssueCommentSchema,
   IssueSchema,
-  ReviewRun_Type,
 } from "@/types/proto-es/v1/issue_service_pb";
 import { ReviewRuleType } from "@/types/proto-es/v1/review_rule_pb";
 import {
@@ -75,6 +74,7 @@ vi.mock("@/components/UserAvatar", () => ({ UserAvatar: () => null }));
 
 vi.mock("@/hooks/useAppState", () => ({
   useCurrentUser: () => ({ email: "me@example.com", title: "Me" }),
+  usePlanFeature: () => false,
 }));
 
 vi.mock("@/hooks/usePrincipal", () => ({
@@ -90,7 +90,12 @@ vi.mock("@/stores", () => ({ pushNotification: vi.fn() }));
 
 vi.mock("@/stores/app", () => {
   const state = {
+    batchGetOrFetchDatabases: vi.fn(async () => []),
     batchGetOrFetchUsers: vi.fn(async () => undefined),
+    databasesByName: {},
+    dbGroupsByName: {},
+    dbGroupViewByName: {},
+    environmentList: [],
     fetchIssueCommentTimeline: mocks.fetchIssueCommentTimeline,
     getIssueComments: () => mocks.comments,
     projectsByName: {},
@@ -138,7 +143,6 @@ const comment = (name: string, reviewMetadata?: boolean) =>
     comment: TEXT,
     reviewMetadata: reviewMetadata
       ? {
-          runType: ReviewRun_Type.AI,
           priority: IssueComment_ReviewMetadata_Priority.P1,
           targets: ["instances/i/databases/d"],
           title: "Keep the table",
@@ -175,7 +179,7 @@ describe("IssueDetailCommentList", () => {
 
     expect(screen.queryByTestId("comment-row")).toBeNull();
     const header = screen.getByTestId("row-header");
-    expect(header.textContent).toContain("sql-review.ai-review.self");
+    expect(header.textContent).toContain("sql-review.reviewer");
     expect(header.querySelector("[data-testid='review-priority']")).toBeNull();
     expect(screen.getByTestId("review-targets").textContent).toContain(
       "instances/i/databases/d"
@@ -187,10 +191,9 @@ describe("IssueDetailCommentList", () => {
     );
   });
 
-  test("names the standard rule and codes of a RULE result", () => {
+  test("names the standard rule and codes of a rule result", () => {
     const rule = comment("rule", true);
     if (rule.reviewMetadata) {
-      rule.reviewMetadata.runType = ReviewRun_Type.RULE;
       rule.reviewMetadata.ruleType = ReviewRuleType.REQUIRE_WHERE;
       rule.reviewMetadata.codes = ["WH101"];
     }
@@ -198,7 +201,7 @@ describe("IssueDetailCommentList", () => {
     render(<IssueDetailCommentList />);
 
     expect(screen.getByTestId("row-header").textContent).toContain(
-      "sql-review.standard-rules.self"
+      "sql-review.reviewer"
     );
     const heading = screen.getByTestId("review-heading");
     expect(heading.querySelector("[data-testid='review-rule']")?.textContent).toBe(

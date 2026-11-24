@@ -1,8 +1,49 @@
 package base
 
 import (
+	omnianalysis "github.com/bytebase/omni/analysis"
+
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 )
+
+// AST is the interface that all parser AST types must implement.
+// Each parser package defines its own concrete AST type with parser-specific fields.
+type AST interface {
+	// ASTStartPosition returns the 1-based position where this SQL statement starts
+	// in the original multi-statement input. Used for error position reporting.
+	// Returns nil if position is unknown.
+	// Named to avoid collision with protobuf-generated GetStartPosition methods.
+	ASTStartPosition() *storepb.Position
+}
+
+// NodeAST wraps an engine-specific AST node with its original SQL text and
+// 1-based start position, implementing AST and the schema walk-through's
+// ASTSource accessor.
+type NodeAST[N any] struct {
+	Node          N
+	Text          string
+	StartPosition *storepb.Position
+}
+
+// ASTSource returns the statement's original SQL text.
+func (a *NodeAST[N]) ASTSource() string {
+	return a.Text
+}
+
+// ASTStartPosition implements AST.
+func (a *NodeAST[N]) ASTStartPosition() *storepb.Position {
+	return a.StartPosition
+}
+
+// ExtractNode unwraps the engine-specific AST node from a *NodeAST[N].
+func ExtractNode[N any](a AST) (N, bool) {
+	var zero N
+	wrapped, ok := a.(*NodeAST[N])
+	if !ok || wrapped == nil {
+		return zero, false
+	}
+	return wrapped.Node, true
+}
 
 // Statement is the result of splitting SQL (text + positions, no AST).
 type Statement struct {
@@ -32,28 +73,16 @@ func (s *Statement) BaseLine() int {
 	return int(s.Start.Line) - 1
 }
 
-// TruncateAtSemicolonToken returns sql[start:end], where end is the Loc of
-// the first token at or after start whose type is ';' (the end of the
-// statement containing start), or len(sql) when there is none. Scanning the
-// token stream rather than raw bytes means a ';' inside a string literal,
-// comment, or quoted identifier never counts as a statement boundary.
-// Completers use this to bound clause fragments to the current statement so
-// fragment re-parsing cannot scale with the size of the whole sheet
-// (BYT-9886). loc and typ adapt the engine-specific token type.
-func TruncateAtSemicolonToken[T any](sql string, start int, tokens []T, loc func(T) int, typ func(T) int) string {
-	for _, tok := range tokens {
-		if loc(tok) >= start && typ(tok) == ';' {
-			return sql[start:loc(tok)]
-		}
-	}
-	return sql[start:]
-}
-
-// NewStatementFromRange builds a Statement from a split segment range.
+// NewStatementFromRange builds a Statement from a split segment range, including an immediately following semicolon.
 func NewStatementFromRange(sql string, mapper *ByteOffsetPositionMapper, byteStart, byteEnd int, empty bool) Statement {
 	if byteEnd < len(sql) && sql[byteEnd] == ';' {
 		byteEnd++
 	}
+	return NewExactStatement(sql, mapper, byteStart, byteEnd, empty)
+}
+
+// NewExactStatement builds a Statement from an exact [byteStart, byteEnd) slice of sql.
+func NewExactStatement(sql string, mapper *ByteOffsetPositionMapper, byteStart, byteEnd int, empty bool) Statement {
 	return Statement{
 		Text:  sql[byteStart:byteEnd],
 		Empty: empty,
@@ -64,6 +93,32 @@ func NewStatementFromRange(sql string, mapper *ByteOffsetPositionMapper, byteSta
 			End:   int32(byteEnd),
 		},
 	}
+}
+
+// BuildStatements converts split segments into []Statement using a single linear pass for positions.
+// When includeTrailingSemi is true, segments ending right before ';' extend by one byte to include it.
+func BuildStatements[T any](sql string, segs []T, bounds func(T) (start, end int, empty bool), includeTrailingSemi bool) []Statement {
+	if len(segs) == 0 {
+		return nil
+	}
+	result := make([]Statement, 0, len(segs))
+	mapper := NewByteOffsetPositionMapper(sql)
+	for _, seg := range segs {
+		start, end, empty := bounds(seg)
+		if includeTrailingSemi {
+			result = append(result, NewStatementFromRange(sql, mapper, start, end, empty))
+		} else {
+			result = append(result, NewExactStatement(sql, mapper, start, end, empty))
+		}
+	}
+	return result
+}
+
+// OmniStatements converts omni split statements into []Statement with 1-based line and rune column positions.
+func OmniStatements(sql string, stmts []omnianalysis.Statement) []Statement {
+	return BuildStatements(sql, stmts, func(s omnianalysis.Statement) (int, int, bool) {
+		return s.Start, s.End, s.Empty
+	}, false)
 }
 
 // ParsedStatement is the result of parsing SQL (Statement + AST).

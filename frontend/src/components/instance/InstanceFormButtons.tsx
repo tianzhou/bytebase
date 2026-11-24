@@ -1,7 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { cloneDeep, isEqual } from "lodash-es";
-import { MessageCircleQuestion } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createBehaviorMetric } from "@/app/analytics/behavior";
@@ -16,6 +15,8 @@ import {
   PRODUCT_INTRO_QUERY_KEY,
   PRODUCT_INTRO_TIP_QUERY_KEY,
 } from "@/lib/productIntro";
+import { cn } from "@/lib/utils";
+import { AgentHelpButton } from "@/modules/agent/components/AgentHelpButton";
 import { buildInstanceConnectionHelpPrompt } from "@/modules/agent/logic/instanceConnectionHelp";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
@@ -63,6 +64,7 @@ interface InstanceFormButtonsProps {
   onUpdated?: (instance: Instance) => void;
   onAskAgent?: (prompt?: string) => void;
   className?: string;
+  contentClassName?: string;
 }
 
 type ConnectionFailureDialogState = {
@@ -100,6 +102,7 @@ export function InstanceFormButtons({
   onUpdated,
   onAskAgent,
   className,
+  contentClassName,
 }: InstanceFormButtonsProps) {
   const { t } = useTranslation();
 
@@ -408,6 +411,7 @@ export function InstanceFormButtons({
       });
       const updateMask: string[] = [];
       if (instancePatch.title !== inst.title) updateMask.push("title");
+      if (instancePatch.vendor !== inst.vendor) updateMask.push("vendor");
       if (instancePatch.externalLink !== inst.externalLink)
         updateMask.push("external_link");
       if (instancePatch.activation !== inst.activation)
@@ -577,50 +581,49 @@ export function InstanceFormButtons({
   };
 
   const testConnectionFeedback = testConnectionFailure && (
-    <div className="border-t border-block-border px-4 py-3 sm:px-6">
-      <ConnectionRecovery
-        category={testConnectionFailure.failureCategory}
-        className="max-w-3xl"
-      />
-      <p
-        className="mt-2 whitespace-pre-wrap break-all text-sm text-error"
-        data-agent-sensitive
-      >
-        {testConnectionFailure.message}
-      </p>
-      {onAskAgent && (
-        <Button
-          appearance="outline"
-          size="md"
-          className="mt-3 border-accent text-accent"
-          onClick={() =>
-            askAgentAboutFailure(
-              "connection test",
-              testConnectionFailure.failureCategory,
-              undefined,
-              testConnectionFailure.message
-            )
-          }
+    <div className="border-t border-block-border bg-background py-3">
+      <div className={cn("px-4 sm:px-6", contentClassName)}>
+        <ConnectionRecovery
+          category={testConnectionFailure.failureCategory}
+          className="max-w-3xl"
+        />
+        <p
+          className="mt-2 whitespace-pre-wrap break-all text-sm text-error"
+          data-agent-sensitive
         >
-          <MessageCircleQuestion size={16} />
-          {t("instance.ask-agent-about-error")}
-        </Button>
-      )}
+          {testConnectionFailure.message}
+        </p>
+        {onAskAgent && (
+          <AgentHelpButton
+            size="md"
+            className="mt-3"
+            onClick={() =>
+              askAgentAboutFailure(
+                "connection test",
+                testConnectionFailure.failureCategory,
+                undefined,
+                testConnectionFailure.message
+              )
+            }
+          >
+            {t("instance.ask-agent-about-error")}
+          </AgentHelpButton>
+        )}
+      </div>
     </div>
   );
 
   const createFailureFeedback = createFailure && (
-    <div className="px-4 py-3 sm:px-6">
+    <div className={cn("px-4 py-3 sm:px-6", contentClassName)}>
       <Alert
         variant="error"
         title={t("instance.create-failed")}
         description={<span data-agent-sensitive>{createFailure.message}</span>}
       >
         {onAskAgent && (
-          <Button
-            appearance="outline"
+          <AgentHelpButton
             size="md"
-            className="mt-3 border-accent text-accent"
+            className="mt-3"
             onClick={() =>
               askAgentAboutFailure(
                 "instance creation",
@@ -630,9 +633,8 @@ export function InstanceFormButtons({
               )
             }
           >
-            <MessageCircleQuestion size={16} />
             {t("instance.ask-agent-about-error")}
-          </Button>
+          </AgentHelpButton>
         )}
       </Alert>
     </div>
@@ -667,10 +669,8 @@ export function InstanceFormButtons({
         </AlertDialogDescription>
         <AlertDialogFooter>
           {onAskAgent && (
-            <Button
-              appearance="outline"
+            <AgentHelpButton
               size="md"
-              className="border-accent text-accent"
               onClick={() => {
                 closeConnectionFailureDialog(false);
                 askAgentAboutFailure(
@@ -681,9 +681,8 @@ export function InstanceFormButtons({
                 );
               }}
             >
-              <MessageCircleQuestion size={16} />
               {t("instance.ask-agent-about-error")}
-            </Button>
+            </AgentHelpButton>
           )}
           <Button
             appearance="outline"
@@ -707,6 +706,7 @@ export function InstanceFormButtons({
         {testConnectionFeedback}
         <StickyActionFooter
           className={className}
+          contentClassName={contentClassName}
           left={
             <>
               {allowCancel && (
@@ -768,6 +768,7 @@ export function InstanceFormButtons({
       {testConnectionFeedback}
       <StickyActionFooter
         className={className}
+        contentClassName={contentClassName}
         left={
           <Button
             appearance="outline"

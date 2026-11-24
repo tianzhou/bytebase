@@ -136,6 +136,7 @@ vi.mock("../ui/button", () => ({
     disabled,
     onClick,
     appearance,
+    variant,
     size,
     className,
   }: {
@@ -143,11 +144,13 @@ vi.mock("../ui/button", () => ({
     disabled?: boolean;
     onClick?: () => void;
     appearance?: string;
+    variant?: string;
     size?: string;
     className?: string;
   }) => (
     <button
       data-appearance={appearance}
+      data-variant={variant}
       data-size={size}
       className={className}
       disabled={disabled}
@@ -161,13 +164,18 @@ vi.mock("../ui/button", () => ({
 
 vi.mock("../ui/sticky-action-footer", () => ({
   StickyActionFooter: ({
+    contentClassName,
     left,
     right,
   }: {
+    contentClassName?: string;
     left?: React.ReactNode;
     right?: React.ReactNode;
   }) => (
-    <div>
+    <div
+      data-testid="sticky-action-footer"
+      data-content-class={contentClassName}
+    >
       {left}
       {right}
     </div>
@@ -663,13 +671,10 @@ describe("InstanceFormButtons", () => {
       button.textContent?.includes("instance.ask-agent-about-error")
     );
     expect(askAgentButton).toBeDefined();
-    expect(askAgentButton).toHaveAttribute("data-appearance", "outline");
+    expect(askAgentButton).toHaveAttribute("data-appearance", "ghost");
     expect(askAgentButton).toHaveAttribute("data-size", "md");
-    expect(askAgentButton).toHaveClass("border-accent", "text-accent");
-    expect(askAgentButton?.querySelector("svg")).toHaveAttribute(
-      "width",
-      "16"
-    );
+    expect(askAgentButton).not.toHaveClass("border-accent");
+    expect(askAgentButton?.querySelector(".lucide-bot")).not.toBeNull();
 
     await act(async () => {
       askAgentButton?.click();
@@ -718,6 +723,10 @@ describe("InstanceFormButtons", () => {
       button.textContent?.includes("instance.ask-agent-about-error")
     );
     expect(askAgentButton).toBeDefined();
+
+    expect(askAgentButton).toHaveAttribute("data-appearance", "ghost");
+    expect(askAgentButton).toHaveAttribute("data-size", "md");
+    expect(askAgentButton?.querySelector(".lucide-bot")).not.toBeNull();
 
     await act(async () => {
       askAgentButton?.click();
@@ -844,6 +853,9 @@ describe("InstanceFormButtons", () => {
       button.textContent?.includes("instance.ask-agent-about-error")
     );
     expect(askAgentButton).toBeDefined();
+    expect(askAgentButton).toHaveAttribute("data-appearance", "ghost");
+    expect(askAgentButton).toHaveAttribute("data-size", "md");
+    expect(askAgentButton?.querySelector(".lucide-bot")).not.toBeNull();
 
     await act(async () => {
       askAgentButton?.click();
@@ -921,6 +933,49 @@ describe("InstanceFormButtons", () => {
     });
 
     expect(context.testConnection).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("aligns sticky footer and failure banners with contentClassName", async () => {
+    const context = mocks.context as {
+      testConnection: ReturnType<typeof vi.fn>;
+    };
+    context.testConnection.mockResolvedValue({
+      success: false,
+      message: "connection refused",
+      failureCategory: "network_unreachable",
+    });
+    mocks.createInstance.mockRejectedValue(
+      new ConnectError("permission denied", Code.PermissionDenied)
+    );
+
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <InstanceFormButtons contentClassName="mx-auto w-full max-w-5xl" />
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="sticky-action-footer"]')
+    ).toHaveAttribute("data-content-class", "mx-auto w-full max-w-5xl");
+
+    const testButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("instance.test-connection")
+    );
+    await act(async () => {
+      testButton?.click();
+      await flushPromises();
+    });
+
+    expect(
+      container.querySelector("p.text-error")?.parentElement
+    ).toHaveClass("mx-auto", "w-full", "max-w-5xl");
 
     await act(async () => {
       root.unmount();

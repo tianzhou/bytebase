@@ -20,9 +20,6 @@ import {
 } from "@/lib/plan/workflow";
 import { invalidateProjectPlansPagedDataCache } from "@/lib/projectPagedDataCache";
 import { cn } from "@/lib/utils";
-import { openAgentWithPrompt } from "@/modules/agent/logic/instanceConnectionHelp";
-import { buildPlanReviewPrompt } from "@/modules/agent/logic/planIssueAssistance";
-import { getPlanMentionLabel } from "@/modules/agent/logic/resourceMention";
 import { pushNotification } from "@/stores";
 import { useAppStore } from "@/stores/app";
 import { IssueStatus, State } from "@/types/proto-es/v1/common_pb";
@@ -92,18 +89,6 @@ export function PlanDetailHeader() {
   const canUpdatePlan =
     page.plan.creator === currentUser.name ||
     hasProjectPermissionV2(project, "bb.plans.update");
-
-  const openPlanReview = () => {
-    if (!project || !page.plan.name || page.isCreating) return;
-    openAgentWithPrompt(buildPlanReviewPrompt(), [
-      {
-        kind: "plan",
-        name: page.plan.name,
-        project: project.name,
-        label: getPlanMentionLabel(page.plan),
-      },
-    ]);
-  };
 
   useEffect(() => {
     setTitle(persistedTitle);
@@ -601,6 +586,7 @@ export function PlanDetailHeader() {
           <Input
             size="md"
             ref={titleInputRef}
+            data-plan-title-input={page.plan.name}
             className={cn(
               "h-9 min-w-0 flex-1 bg-transparent text-xl! font-bold text-main outline-hidden",
               editingTitle
@@ -635,19 +621,6 @@ export function PlanDetailHeader() {
         </div>
 
         <div className="ml-auto flex w-full min-w-0 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-2 sm:w-auto">
-          {!page.isCreating &&
-            page.plan.state === State.ACTIVE &&
-            project &&
-            page.plan.name && (
-              <Button
-                className="max-w-full whitespace-normal text-left"
-                onClick={openPlanReview}
-                size="md"
-                appearance="outline"
-              >
-                {t("agent.plan-assistance.review")}
-              </Button>
-            )}
           {/* Lifecycle slot: one primary advance/status per state. Create and
               ready-for-review stay here (coupled to the title/create flow); all
               other states render through PlanLifecycleSlot. */}

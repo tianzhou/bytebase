@@ -1,9 +1,11 @@
 package cassandra
 
 import (
-	"errors"
-	"fmt"
+	"context"
 
+	omnicassandra "github.com/bytebase/omni/cassandra"
+	"github.com/bytebase/omni/cassandra/analysis"
+	"github.com/bytebase/omni/cassandra/ast"
 	omniparser "github.com/bytebase/omni/cassandra/parser"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
@@ -11,57 +13,59 @@ import (
 )
 
 func init() {
-	base.RegisterParseStatementsFunc(storepb.Engine_CASSANDRA, parseCassandraStatements)
+	base.Register(base.Engine{
+		Split:         SplitSQL,
+		Parse:         parseCassandraStatements,
+		ValidateQuery: analysis.ValidateQuery,
+		QuerySpan:     GetQuerySpan,
+	}, storepb.Engine_CASSANDRA)
+}
+
+// AST wraps an omni AST node and implements the base.AST interface.
+type AST = base.NodeAST[ast.Node]
+
+// GetNode extracts the omni AST node from a base.AST interface.
+func GetNode(a base.AST) (ast.Node, bool) {
+	return base.ExtractNode[ast.Node](a)
+}
+
+func SplitSQL(statement string) ([]base.Statement, error) {
+	return base.BuildStatements(statement, omnicassandra.Split(statement), func(s omnicassandra.Segment) (int, int, bool) {
+		return s.ByteStart, s.ByteEnd, s.Empty
+	}, false), nil
 }
 
 func parseCassandraStatements(statement string) ([]base.ParsedStatement, error) {
-	stmts, err := SplitSQL(statement)
-	if err != nil {
-		return nil, err
-	}
-
-	var result []base.ParsedStatement
-	for _, stmt := range stmts {
-		if stmt.Empty {
-			continue
+	return base.ParseNonEmptyMultiNodeStatements(statement, SplitSQL, func(stmt base.Statement) ([]base.AST, error) {
+		parsed, err := omnicassandra.Parse(stmt.Text)
+		if err != nil {
+			return nil, convertError(err, stmt)
 		}
-
-		omniStmts, omniErr := ParseCQL(stmt.Text)
-		if omniErr != nil {
-			return nil, convertOmniError(omniErr, stmt)
+		asts := make([]base.AST, len(parsed))
+		for i, os := range parsed {
+			asts[i] = &AST{Node: os.AST, Text: stmt.Text, StartPosition: stmt.Start}
 		}
-
-		for _, os := range omniStmts {
-			result = append(result, base.ParsedStatement{
-				Statement: stmt,
-				AST: &OmniAST{
-					Node:          os.AST,
-					Text:          stmt.Text,
-					StartPosition: stmt.Start,
-				},
-			})
-		}
-	}
-	return result, nil
+		return asts, nil
+	})
 }
 
-func convertOmniError(err error, stmt base.Statement) error {
-	var parseErr *omniparser.ParseError
-	if !errors.As(err, &parseErr) {
-		return err
+// GetQuerySpan returns the query span for the given CQL statement.
+func GetQuerySpan(ctx context.Context, gCtx base.GetQuerySpanContext, stmt base.Statement, database, _ string, _ bool) (*base.QuerySpan, error) {
+	span, err := analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultKeyspace:     database,
+		GetDatabaseMetadata: base.QuerySpanProtoMetadataFunc(ctx, gCtx, false),
+	})
+	if err != nil {
+		return nil, convertError(err, base.Statement{Text: stmt.Text})
 	}
+	return base.OmniResolvedSpan(span), nil
+}
 
-	pos := byteOffsetToPosition(stmt.Text, parseErr.Position)
-	if stmt.Start != nil {
-		if pos.Line == 1 {
-			pos.Column += stmt.Start.Column - 1
-		}
-		pos.Line += stmt.Start.Line - 1
-	}
-
-	return &base.SyntaxError{
-		Position:   pos,
-		Message:    fmt.Sprintf("Syntax error at line %d: %s", pos.Line, parseErr.Message),
-		RawMessage: parseErr.Message,
-	}
+func convertError(err error, stmt base.Statement) error {
+	return base.ConvertSyntaxError(stmt, err, true,
+		func(pe *omniparser.ParseError) (int, string) { return pe.Position, pe.Message },
+		func(pe *omniparser.ParseError, pos *storepb.Position) string {
+			return base.FormatLineSyntaxError(pos, pe.Message)
+		},
+	)
 }

@@ -3,7 +3,7 @@ import { useProjectByName } from "@/hooks/useProjectByName";
 import type { PlanCheckSummary } from "@/lib/plan/check";
 import {
   type ReviewRun,
-  ReviewRun_Status,
+  ReviewRun_State,
 } from "@/types/proto-es/v1/issue_service_pb";
 import { hasProjectPermissionV2 } from "@/utils";
 import { sqlReviewV2Enabled } from "@/utils/featureGates";
@@ -13,77 +13,141 @@ import {
 } from "../components/threads/useUnresolvedThreadCounts";
 import { PROJECT_NAME_PREFIX } from "../shell/constants";
 import { usePlanDetailContext } from "../shell/PlanDetailContext";
-import { type RuleReviewRunState, useRuleReviewRun } from "./useRuleReviewRun";
+import { useAIReviewOn } from "./useAIReviewOn";
+import {
+  type EffectiveStandardRules,
+  useEffectiveStandardRules,
+} from "./useEffectiveStandardRules";
+import { type ReviewRunState, useReviewRun } from "./useReviewRun";
 
-// What SQL Review V2 changes on the plan page: the standard rule review is one
-// of the checks, and every open thread holds the automatic rollout, as the
-// server's rollout creator does.
+// What SQL Review V2 changes on the plan page: the review is one of the
+// checks, and every open thread holds the automatic rollout, as the server's
+// rollout creator does.
 export type SqlReviewV2State = {
   unresolvedThreads: number;
   // False until the issue's threads have loaded; `unresolvedThreads` reads
   // zero until then.
   threadsLoaded: boolean;
   // Undefined without permission to read the review run.
-  ruleReview?: RuleReviewRunState;
+  review?: ReviewRunState;
+  // The standard rules the review applies to the project; undefined until
+  // known. An empty list means the rules are switched off.
+  standardRules?: EffectiveStandardRules;
 };
 
-const SqlReviewV2Context = createContext<SqlReviewV2State | undefined>(
-  undefined
-);
+// What holds the automatic rollout besides approval and the plan checks: the
+// issue's open threads, and under SQL Review V2 the review's run of the
+// current SQL. `reviewHolds` says whether the run holds; `review` is
+// undefined beside V1's plan checks, and without permission to read it.
+export type ReviewHold = Pick<
+  SqlReviewV2State,
+  "unresolvedThreads" | "threadsLoaded" | "review"
+> & { reviewHolds: boolean };
 
-// Provides one rule review poll for the whole page. The value is undefined
-// where SQL Review V2 is off or before the plan has an issue.
-export function SqlReviewV2Provider({ children }: { children: ReactNode }) {
+type PlanReviewContextValue = {
+  // Undefined where SQL Review V2 is off or before the plan has an issue.
+  v2?: SqlReviewV2State;
+  // Undefined before the plan has an issue.
+  hold?: ReviewHold;
+  // The issue's review run wherever the page shows it: under SQL Review V2,
+  // and beside V1's plan checks, where the review is the AI review alone.
+  // Undefined elsewhere and without permission to read it.
+  review?: ReviewRunState;
+};
+
+const PlanReviewContext = createContext<PlanReviewContextValue>({});
+
+// Provides one review run poll for the whole page. Beside V1's plan checks the
+// run is the AI review's, from the draft onward as under SQL Review V2.
+export function PlanReviewProvider({ children }: { children: ReactNode }) {
   const page = usePlanDetailContext();
-  const project = useProjectByName(`${PROJECT_NAME_PREFIX}${page.projectId}`);
-  const enabled = sqlReviewV2Enabled() && !!page.issue;
+  const projectName = `${PROJECT_NAME_PREFIX}${page.projectId}`;
+  const project = useProjectByName(projectName);
+  const aiReviewOn = useAIReviewOn();
+  const v2 = sqlReviewV2Enabled();
+  const enabled = v2 && !!page.issue;
+  const aiBesideV1 = !v2 && aiReviewOn && !!page.issue;
   const canReadReview =
-    enabled && hasProjectPermissionV2(project, "bb.reviewRuns.get");
+    (enabled || aiBesideV1) &&
+    hasProjectPermissionV2(project, "bb.reviewRuns.get");
   const updateTime = page.plan.updateTime;
-  // The server starts the rule review whenever the plan's SQL changes.
-  const ruleReview = useRuleReviewRun({
+  // The server starts the review whenever the plan's SQL changes.
+  const review = useReviewRun({
     enabled: canReadReview,
     issueName: page.issue?.name,
     reloadKey: `${updateTime?.seconds ?? ""}:${updateTime?.nanos ?? ""}`,
   });
+  const standardRules = useEffectiveStandardRules(projectName, enabled);
   const unresolvedThreads = useUnresolvedThreadTotal(page.issue?.name);
   const threadsLoaded = useIssueThreadsLoaded(page.issue?.name);
   const value = useMemo(
-    () =>
-      enabled
+    () => ({
+      v2: enabled
         ? {
             unresolvedThreads,
             threadsLoaded,
-            ruleReview: canReadReview ? ruleReview : undefined,
+            review: canReadReview ? review : undefined,
+            standardRules,
           }
         : undefined,
-    [canReadReview, enabled, ruleReview, threadsLoaded, unresolvedThreads]
+      review: canReadReview ? review : undefined,
+      hold: enabled
+        ? {
+            unresolvedThreads,
+            threadsLoaded,
+            review: canReadReview ? review : undefined,
+            reviewHolds: true,
+          }
+        : page.issue
+          ? { unresolvedThreads, threadsLoaded, reviewHolds: false }
+          : undefined,
+    }),
+    [
+      canReadReview,
+      enabled,
+      page.issue,
+      review,
+      standardRules,
+      threadsLoaded,
+      unresolvedThreads,
+    ]
   );
   return (
-    <SqlReviewV2Context.Provider value={value}>
+    <PlanReviewContext.Provider value={value}>
       {children}
-    </SqlReviewV2Context.Provider>
+    </PlanReviewContext.Provider>
   );
 }
 
 export const useSqlReviewV2 = (): SqlReviewV2State | undefined =>
-  useContext(SqlReviewV2Context);
+  useContext(PlanReviewContext).v2;
 
-// The plan checks with the rule review counted among them: a queued or running
+export const usePlanReviewRun = (): ReviewRunState | undefined =>
+  useContext(PlanReviewContext).review;
+
+export const useReviewHold = (): ReviewHold | undefined =>
+  useContext(PlanReviewContext).hold;
+
+// Whether the plan checks show among the reviewers in the Review section
+// instead of under the changes: under SQL Review V2, and beside the AI review
+// once V1's page reads its run.
+export const useChecksInReview = (): boolean =>
+  sqlReviewV2Enabled() || usePlanReviewRun() !== undefined;
+
+// The plan checks with the review run counted among them: a queued or running
 // review is a running check, and a failed one a failed check.
-export function withRuleReview(
+export function withReviewRun(
   checks: PlanCheckSummary,
   run: ReviewRun | null | undefined
 ): PlanCheckSummary {
-  switch (run?.status) {
-    case ReviewRun_Status.AVAILABLE:
-    case ReviewRun_Status.RUNNING:
+  switch (run?.state) {
+    case ReviewRun_State.RUNNING:
       return {
         ...checks,
         total: checks.total + 1,
         running: checks.running + 1,
       };
-    case ReviewRun_Status.FAILED:
+    case ReviewRun_State.FAILED:
       return { ...checks, total: checks.total + 1, error: checks.error + 1 };
     default:
       return checks;

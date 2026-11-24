@@ -2,204 +2,102 @@ package mariadb
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"os"
-	"slices"
+	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	metadatapb "github.com/bytebase/omni/metadata"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
-	"github.com/bytebase/bytebase/backend/common/yamltest"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/store/model"
 )
 
-type candidatesTest struct {
-	Input string
-	Want  []base.Candidate
-}
-
-func TestCompletion(t *testing.T) {
-	tests := []candidatesTest{}
-
-	const (
-		record = false
-	)
-	var (
-		filepath = "test-data/test_completion.yaml"
-	)
-
-	a := require.New(t)
-	yamlFile, err := os.Open(filepath)
-	a.NoError(err)
-
-	byteValue, err := io.ReadAll(yamlFile)
-	a.NoError(yamlFile.Close())
-	a.NoError(err)
-	a.NoError(yaml.Unmarshal(byteValue, &tests))
-
-	for i, t := range tests {
-		text, caretLine, caretCol := catchCaretLineColumn(t.Input)
-		result, err := base.Completion(context.Background(), storepb.Engine_MARIADB, base.CompletionContext{
-			Scene:             base.SceneTypeAll,
-			DefaultDatabase:   "db",
-			Metadata:          getMetadataForTest,
-			ListDatabaseNames: listDatabaseNamesForTest,
-		}, text, caretLine, caretCol)
-		a.NoError(err)
-		filteredResult := []base.Candidate{}
-		for _, r := range result {
-			switch r.Type {
-			case base.CandidateTypeKeyword, base.CandidateTypeFunction:
-				continue
-			default:
-				filteredResult = append(filteredResult, r)
-			}
-		}
-		slices.SortFunc(filteredResult, func(x, y base.Candidate) int {
-			if x.Type != y.Type {
-				if x.Type < y.Type {
-					return -1
-				}
-				return 1
-			}
-			if x.Text != y.Text {
-				if x.Text < y.Text {
-					return -1
-				}
-				return 1
-			}
-			if x.Definition < y.Definition {
-				return -1
-			} else if x.Definition > y.Definition {
-				return 1
-			}
-			return 0
-		})
-
-		if record {
-			tests[i].Want = filteredResult
-		} else {
-			a.Equal(t.Want, filteredResult, t.Input)
+func hasCandidate(cands []base.Candidate, typ base.CandidateType, text string) bool {
+	for _, c := range cands {
+		if c.Type == typ && c.Text == text {
+			return true
 		}
 	}
-
-	if record {
-		yamltest.Record(t, filepath, tests)
-	}
+	return false
 }
 
-// Completion cost must be bounded by the caret's statement, not the whole
-// sheet: a broken statement anywhere after the caret must not make the
-// FROM-clause re-parse loop shrink through the entire trailing document
-// (BYT-9886).
-func TestCompletionWithBrokenTrailingStatementScalesLinearly(t *testing.T) {
-	a := require.New(t)
-
-	// The caret completes through the JOIN alias a2: resolving a2 to t2's
-	// columns requires parseTableReferences to actually extract the FROM
-	// clause, so an over-truncated (empty) fragment cannot pass this test.
-	var sheet strings.Builder
-	sheet.WriteString("SELECT a2. FROM t1 JOIN t2 a2 ON t1.c1 = a2.c1;\n")
-	sheet.WriteString("SELEC broken FROM oops;\n")
-	for i := range 800 {
-		fmt.Fprintf(&sheet, "SELECT col_a, col_b, col_c FROM table_%04d WHERE col_a = %d AND col_b LIKE 'pattern%%' ORDER BY col_c LIMIT 100;\n", i, i)
-	}
-
-	started := time.Now()
-	result, err := base.Completion(context.Background(), storepb.Engine_MARIADB, base.CompletionContext{
-		Scene:             base.SceneTypeAll,
-		DefaultDatabase:   "db",
-		Metadata:          getMetadataForTest,
-		ListDatabaseNames: listDatabaseNamesForTest,
-	}, sheet.String(), 1, 10 /* caret right after "SELECT a2." */)
-	elapsed := time.Since(started)
-
-	a.NoError(err)
-	var texts []string
-	for _, candidate := range result {
-		if candidate.Type == base.CandidateTypeColumn {
-			texts = append(texts, candidate.Text)
+func hasKeyword(cands []base.Candidate, text string) bool {
+	for _, c := range cands {
+		if c.Type == base.CandidateTypeKeyword && strings.EqualFold(c.Text, text) {
+			return true
 		}
 	}
-	a.Contains(texts, "c1")
-	a.Contains(texts, "c2")
-	a.Less(elapsed, 2*time.Second)
+	return false
 }
 
-func listDatabaseNamesForTest(_ context.Context, _ string) ([]string, error) {
-	return []string{"db"}, nil
-}
-
-func getMetadataForTest(_ context.Context, _, databaseName string) (string, *model.DatabaseMetadata, error) {
-	if databaseName != "db" {
-		return "", nil, nil
+func TestCompletion_Seam(t *testing.T) {
+	meta := &metadatapb.DatabaseSchemaMetadata{
+		Name: "appdb",
+		Schemas: []*metadatapb.SchemaMetadata{{
+			Tables: []*metadatapb.TableMetadata{
+				{Name: "users", Columns: []*metadatapb.ColumnMetadata{{Name: "id", Type: "int"}}},
+				{Name: "order", Columns: []*metadatapb.ColumnMetadata{{Name: "select", Type: "varchar"}}},
+			},
+			Views: []*metadatapb.ViewMetadata{
+				{Name: "active_users", Definition: "SELECT id FROM users"},
+			},
+		}},
+	}
+	cCtx := base.CompletionContext{
+		Scene:           base.SceneTypeAll,
+		DefaultDatabase: "appdb",
+		Metadata: func(_ context.Context, _, db string) (string, *model.DatabaseMetadata, error) {
+			if db != "appdb" {
+				return "", nil, nil
+			}
+			return db, model.NewDatabaseMetadata(meta, nil, nil, storepb.Engine_MARIADB, true), nil
+		},
+		ListDatabaseNames: func(context.Context, string) ([]string, error) {
+			return []string{"appdb", "otherdb"}, nil
+		},
 	}
 
-	return "db", model.NewDatabaseMetadata(&metadatapb.DatabaseSchemaMetadata{
-		Name: databaseName,
-		Schemas: []*metadatapb.SchemaMetadata{
-			{
-				Name: "",
-				Tables: []*metadatapb.TableMetadata{
-					{
-						Name: "t1",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "c1",
-							},
-						},
-					},
-					{
-						Name: "t2",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "c1",
-							},
-							{
-								Name: "c2",
-							},
-						},
-					},
-				},
-				Views: []*metadatapb.ViewMetadata{
-					{
-						Name: "v1",
-						Definition: `CREATE VIEW v1 AS
-						SELECT *
-						FROM t1
-						`,
-					},
-				},
+	// Registry dispatch, metadata callbacks, quoting, and candidate type mapping.
+	stmt := "SELECT * FROM "
+	got, err := base.Completion(context.Background(), storepb.Engine_MARIADB, cCtx, stmt, 1, len(stmt))
+	require.NoError(t, err)
+	require.True(t, hasCandidate(got, base.CandidateTypeTable, "users"), "got %v", got)
+	require.True(t, hasCandidate(got, base.CandidateTypeTable, "`order`"), "got %v", got)
+	require.True(t, hasCandidate(got, base.CandidateTypeView, "active_users"), "got %v", got)
+	require.True(t, hasCandidate(got, base.CandidateTypeDatabase, "otherdb"), "got %v", got)
+
+	colStmt := "SELECT  FROM users"
+	gotCols, err := base.Completion(context.Background(), storepb.Engine_MARIADB, cCtx, colStmt, 1, len("SELECT "))
+	require.NoError(t, err)
+	require.True(t, hasCandidate(gotCols, base.CandidateTypeColumn, "id"), "got %v", gotCols)
+	require.True(t, hasCandidate(gotCols, base.CandidateTypeFunction, "COUNT()"), "got %v", gotCols)
+
+	// Scene wiring: SceneTypeQuery maps to omni ReadOnly mode.
+	queryCtx := cCtx
+	queryCtx.Scene = base.SceneTypeQuery
+	gotAll, err := base.Completion(context.Background(), storepb.Engine_MARIADB, cCtx, "SELECT 1; ", 1, len("SELECT 1; "))
+	require.NoError(t, err)
+	gotQuery, err := base.Completion(context.Background(), storepb.Engine_MARIADB, queryCtx, "SELECT 1; ", 1, len("SELECT 1; "))
+	require.NoError(t, err)
+	require.True(t, hasKeyword(gotAll, "INSERT"))
+	require.False(t, hasKeyword(gotQuery, "INSERT"))
+	require.True(t, hasKeyword(gotQuery, "SELECT"))
+
+	// Nil or failing metadata callback degrades cleanly.
+	for _, badCtx := range []base.CompletionContext{
+		{Scene: base.SceneTypeAll, DefaultDatabase: "appdb"},
+		{
+			Scene:           base.SceneTypeAll,
+			DefaultDatabase: "appdb",
+			Metadata: func(context.Context, string, string) (string, *model.DatabaseMetadata, error) {
+				return "", nil, errors.New("metadata unavailable")
 			},
 		},
-	}, nil, nil, storepb.Engine_MARIADB, true /* isObjectCaseSensitive */), nil
-}
-
-// catchCaretLineColumn returns the SQL without the caret marker and the
-// 1-based line + 0-based column of the caret position. Handles multiline input.
-func catchCaretLineColumn(s string) (string, int, int) {
-	for i, c := range s {
-		if c == '|' {
-			text := s[:i] + s[i+1:]
-			line := 1
-			col := 0
-			for _, ch := range s[:i] {
-				if ch == '\n' {
-					line++
-					col = 0
-				} else {
-					col++
-				}
-			}
-			return text, line, col
-		}
+	} {
+		got, err := base.Completion(context.Background(), storepb.Engine_MARIADB, badCtx, "SELECT * FROM ", 1, len("SELECT * FROM "))
+		require.NoError(t, err)
+		require.False(t, hasCandidate(got, base.CandidateTypeTable, "users"))
 	}
-	return s, 1, -1
 }

@@ -1,426 +1,385 @@
 package spanner
 
 import (
+	"bytes"
 	"context"
-	"fmt"
-	"math"
-	"os"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
-	"cloud.google.com/go/spanner"
-	spannerdb "cloud.google.com/go/spanner/admin/database/apiv1"
-	"cloud.google.com/go/spanner/admin/database/apiv1/databasepb"
-	sppb "cloud.google.com/go/spanner/apiv1/spannerpb"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	odriver "github.com/bytebase/omni/driver"
+	metadatapb "github.com/bytebase/omni/metadata"
+	spannerdriver "github.com/bytebase/omni/spanner/driver"
+
+	"github.com/bytebase/bytebase/backend/common"
+	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
 	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
-// testDatabase returns the database that SPANNER_TEST_DATABASE names, as
-// projects/default/instances/default/databases/d, in the Spanner that the client
-// reaches without TLS or credentials through SPANNER_EMULATOR_HOST. CI provides
-// no Spanner, so the test is skipped without them.
-func testDatabase(t *testing.T) string {
-	t.Helper()
-	database := os.Getenv("SPANNER_TEST_DATABASE")
-	if os.Getenv("SPANNER_EMULATOR_HOST") == "" || database == "" {
-		t.Skip("set SPANNER_EMULATOR_HOST and SPANNER_TEST_DATABASE to run against Spanner")
-	}
-	return database
-}
-
-// TestExplainDMLWithoutRunningIt needs a Spanner that plans queries, which the
-// emulator does not do and Spanner Omni does.
-func TestExplainDMLWithoutRunningIt(t *testing.T) {
-	database := testDatabase(t)
-	a := require.New(t)
-	ctx := context.Background()
-
-	admin, err := spannerdb.NewDatabaseAdminClient(ctx)
-	a.NoError(err)
-	defer admin.Close()
-	table := fmt.Sprintf("ExplainDML%d", time.Now().UnixNano())
-	updateDDL := func(statement string) {
-		op, err := admin.UpdateDatabaseDdl(ctx, &databasepb.UpdateDatabaseDdlRequest{
-			Database:   database,
-			Statements: []string{statement},
-		})
-		a.NoError(err)
-		a.NoError(op.Wait(ctx))
-	}
-	updateDDL(fmt.Sprintf("CREATE TABLE %s (Id INT64 NOT NULL, Total INT64) PRIMARY KEY (Id)", table))
-	defer updateDDL(fmt.Sprintf("DROP TABLE %s", table))
-
-	client, err := spanner.NewClient(ctx, database)
-	a.NoError(err)
-	defer client.Close()
-	_, err = client.Apply(ctx, []*spanner.Mutation{
-		spanner.Insert(table, []string{"Id", "Total"}, []any{int64(1), int64(10)}),
-	})
-	a.NoError(err)
-
-	driver := &Driver{client: client}
-	results, err := driver.explainStatement(ctx, fmt.Sprintf(
-		"UPDATE %[1]s SET Total = Total + 1 WHERE Id = 1; SELECT Total FROM %[1]s", table,
-	))
-	a.NoError(err)
-	a.Len(results, 2)
-	for _, result := range results {
-		a.Empty(result.Error, result.Statement)
-		a.Contains(result.Rows[0].Values[0].GetStringValue(), `"planNodes"`)
-	}
-
-	row, err := client.Single().ReadRow(ctx, table, spanner.Key{int64(1)}, []string{"Total"})
-	a.NoError(err)
-	var total int64
-	a.NoError(row.Column(0, &total))
-	a.Equal(int64(10), total)
-}
-
-func TestQueryConnLimitsQueryStartingWithWith(t *testing.T) {
-	a := require.New(t)
-	ctx := context.Background()
-	client, err := spanner.NewClient(ctx, testDatabase(t))
-	a.NoError(err)
-	defer client.Close()
-
-	driver := &Driver{client: client}
-	for _, statement := range []string{
-		"WITH n AS (SELECT x FROM UNNEST([3, 1, 2]) AS x) SELECT x FROM n ORDER BY x",
-		// The rewrite keeps a non-literal LIMIT, so the driver caps the rows.
-		"WITH n AS (SELECT x FROM UNNEST([3, 1, 2]) AS x) SELECT x FROM n ORDER BY x LIMIT CAST(3 AS INT64)",
-	} {
-		results, err := driver.QueryConn(ctx, nil, statement, db.QueryContext{
-			Limit:                2,
-			MaximumSQLResultSize: math.MaxInt64,
-		})
-		a.NoError(err)
-		a.Len(results, 1)
-		a.Empty(results[0].Error, results[0].Statement)
-		var values []int64
-		for _, row := range results[0].Rows {
-			values = append(values, row.Values[0].GetInt64Value())
-		}
-		a.Equal([]int64{1, 2}, values, results[0].Statement)
-	}
-}
-
-func TestGetDatabaseFromDSN(t *testing.T) {
+func TestToRowValue(t *testing.T) {
 	tests := []struct {
-		dsn   string
-		match bool
+		name  string
+		value odriver.Value
 		want  string
 	}{
+		{name: "null", value: odriver.Value{Kind: odriver.Null}, want: "null"},
+		{name: "bool", value: odriver.Value{Kind: odriver.Bool, Bool: true}, want: "bool"},
+		{name: "bytes", value: odriver.Value{Kind: odriver.Bytes, Bytes: []byte("hi")}, want: "bytes"},
+		{name: "double", value: odriver.Value{Kind: odriver.Float64, Float64: 1.5}, want: "double"},
+		{name: "int64", value: odriver.Value{Kind: odriver.Int64, Int64: 42}, want: "int64"},
+		{name: "text", value: odriver.Value{Kind: odriver.String, String: "x"}, want: "string"},
+		{name: "date is text", value: odriver.Value{Kind: odriver.String, String: "2024-01-15"}, want: "string"},
 		{
-			dsn:   "projects/p/instances/i/databases/d",
-			match: true,
-			want:  "d",
-		},
-		{
-			dsn:   "projects/p/instances/i/databases/",
-			match: false,
-			want:  "",
+			name:  "timestamp",
+			value: odriver.Value{Kind: odriver.Timestamp, Time: time.Date(2024, 1, 15, 10, 30, 45, 123456000, time.UTC), Precision: 6},
+			want:  "timestamp",
 		},
 	}
-	a := require.New(t)
-	for i := range tests {
-		test := tests[i]
-		got, err := getDatabaseFromDSN(test.dsn)
-		if test.match {
-			a.NoError(err)
-			a.Equal(test.want, got)
-		} else {
-			a.Error(err)
-		}
-	}
-}
-
-func TestGetColumnTypeName(t *testing.T) {
-	tests := []struct {
-		spannerType sppb.Type
-		want        string
-	}{
-		{
-			spannerType: sppb.Type{
-				Code: sppb.TypeCode_JSON,
-			},
-			want: "JSON",
-		},
-		{
-			spannerType: sppb.Type{
-				Code: sppb.TypeCode_DATE,
-			},
-			want: "DATE",
-		},
-		{
-			spannerType: sppb.Type{
-				Code: sppb.TypeCode_TIMESTAMP,
-			},
-			want: "TIMESTAMP",
-		},
-		{
-			spannerType: sppb.Type{
-				Code: sppb.TypeCode_ARRAY,
-				ArrayElementType: &sppb.Type{
-					Code: sppb.TypeCode_BYTES,
-				},
-			},
-			want: "[]BYTES",
-		},
-	}
-	a := require.New(t)
-	for i := range tests {
-		got, err := getColumnTypeName(&tests[i].spannerType)
-		a.NoError(err)
-		a.Equal(tests[i].want, got)
-	}
-}
-
-// Helper function to create expected timestamp RowValue for tests
-func timestampRowValue(rfc3339 string, accuracy int32) *v1pb.RowValue {
-	t, _ := time.Parse(time.RFC3339Nano, rfc3339)
-	return &v1pb.RowValue{Kind: &v1pb.RowValue_TimestampValue{
-		TimestampValue: &v1pb.RowValue_Timestamp{
-			GoogleTimestamp: timestamppb.New(t),
-			Accuracy:        accuracy,
-		},
-	}}
-}
-
-func TestConvertSpannerValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		colType  *sppb.Type
-		value    *structpb.Value
-		expected *v1pb.RowValue
-	}{
-		{
-			name:     "nil value",
-			colType:  nil,
-			value:    nil,
-			expected: util.NullRowValue,
-		},
-		{
-			name:     "null value",
-			colType:  &sppb.Type{Code: sppb.TypeCode_STRING},
-			value:    structpb.NewNullValue(),
-			expected: util.NullRowValue,
-		},
-		{
-			name:    "string value",
-			colType: &sppb.Type{Code: sppb.TypeCode_STRING},
-			value:   structpb.NewStringValue("hello"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "hello",
-			}},
-		},
-		{
-			name:    "bool value - true",
-			colType: &sppb.Type{Code: sppb.TypeCode_BOOL},
-			value:   structpb.NewBoolValue(true),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_BoolValue{
-				BoolValue: true,
-			}},
-		},
-		{
-			name:    "bool value - false",
-			colType: &sppb.Type{Code: sppb.TypeCode_BOOL},
-			value:   structpb.NewBoolValue(false),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_BoolValue{
-				BoolValue: false,
-			}},
-		},
-		{
-			name:    "float64 value",
-			colType: &sppb.Type{Code: sppb.TypeCode_FLOAT64},
-			value:   structpb.NewNumberValue(3.14159),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_DoubleValue{
-				DoubleValue: 3.14159,
-			}},
-		},
-		{
-			name:    "int64 small value",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewNumberValue(42),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: 42,
-			}},
-		},
-		{
-			name:    "int64 large value - near 2^53",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewNumberValue(9007199254740992), // 2^53
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: 9007199254740992,
-			}},
-		},
-		{
-			name:    "int64 large value - within float64 safe range",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewNumberValue(9007199254740991), // 2^53 - 1 (max safe int in float64)
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: 9007199254740991,
-			}},
-		},
-		{
-			name:    "int64 negative large value - within float64 safe range",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewNumberValue(-9007199254740991), // -(2^53 - 1)
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: -9007199254740991,
-			}},
-		},
-		{
-			name:    "int64 as string - small value",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewStringValue("42"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: 42,
-			}},
-		},
-		{
-			name:    "int64 as string - max value",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewStringValue("9223372036854775807"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: math.MaxInt64,
-			}},
-		},
-		{
-			name:    "int64 as string - min value",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewStringValue("-9223372036854775808"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_Int64Value{
-				Int64Value: math.MinInt64,
-			}},
-		},
-		{
-			name:    "int64 as string - invalid falls back to string",
-			colType: &sppb.Type{Code: sppb.TypeCode_INT64},
-			value:   structpb.NewStringValue("not-a-number"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "not-a-number",
-			}},
-		},
-		{
-			name:    "number without type metadata defaults to double",
-			colType: nil,
-			value:   structpb.NewNumberValue(42),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_DoubleValue{
-				DoubleValue: 42,
-			}},
-		},
-		{
-			name:    "array value",
-			colType: &sppb.Type{Code: sppb.TypeCode_ARRAY},
-			value:   structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{structpb.NewNumberValue(1), structpb.NewNumberValue(2), structpb.NewNumberValue(3)}}),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "[1,2,3]",
-			}},
-		},
-		{
-			name:    "struct value",
-			colType: &sppb.Type{Code: sppb.TypeCode_STRUCT},
-			value: structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{
-				"name": structpb.NewStringValue("Alice"),
-				"age":  structpb.NewNumberValue(30),
-			}}),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: `{"age":30,"name":"Alice"}`,
-			}},
-		},
-		{
-			name:    "nested array",
-			colType: &sppb.Type{Code: sppb.TypeCode_ARRAY},
-			value: structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{
-				structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{structpb.NewNumberValue(1), structpb.NewNumberValue(2)}}),
-				structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{structpb.NewNumberValue(3), structpb.NewNumberValue(4)}}),
-			}}),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "[[1,2],[3,4]]",
-			}},
-		},
-		{
-			name:    "array of structs",
-			colType: &sppb.Type{Code: sppb.TypeCode_ARRAY},
-			value: structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{
-				structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{"id": structpb.NewNumberValue(1)}}),
-				structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{"id": structpb.NewNumberValue(2)}}),
-			}}),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: `[{"id":1},{"id":2}]`,
-			}},
-		},
-		{
-			name:     "timestamp value",
-			colType:  &sppb.Type{Code: sppb.TypeCode_TIMESTAMP},
-			value:    structpb.NewStringValue("2024-01-15T10:30:45.123456Z"),
-			expected: timestampRowValue("2024-01-15T10:30:45.123456Z", 6),
-		},
-		{
-			name:     "timestamp with nanosecond precision",
-			colType:  &sppb.Type{Code: sppb.TypeCode_TIMESTAMP},
-			value:    structpb.NewStringValue("2024-01-15T10:30:45.123456789Z"),
-			expected: timestampRowValue("2024-01-15T10:30:45.123456789Z", 9),
-		},
-		{
-			name:     "timestamp without fractional seconds",
-			colType:  &sppb.Type{Code: sppb.TypeCode_TIMESTAMP},
-			value:    structpb.NewStringValue("2024-01-15T10:30:45Z"),
-			expected: timestampRowValue("2024-01-15T10:30:45Z", 6),
-		},
-		{
-			name:    "timestamp invalid format falls back to string",
-			colType: &sppb.Type{Code: sppb.TypeCode_TIMESTAMP},
-			value:   structpb.NewStringValue("not-a-timestamp"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "not-a-timestamp",
-			}},
-		},
-		{
-			name:    "bytes value",
-			colType: &sppb.Type{Code: sppb.TypeCode_BYTES},
-			value:   structpb.NewStringValue("SGVsbG8gV29ybGQ="), // "Hello World" in base64
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_BytesValue{
-				BytesValue: []byte("Hello World"),
-			}},
-		},
-		{
-			name:    "bytes invalid base64 falls back to string",
-			colType: &sppb.Type{Code: sppb.TypeCode_BYTES},
-			value:   structpb.NewStringValue("not-valid-base64!"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "not-valid-base64!",
-			}},
-		},
-		{
-			name:    "date value",
-			colType: &sppb.Type{Code: sppb.TypeCode_DATE},
-			value:   structpb.NewStringValue("2024-01-15"),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: "2024-01-15",
-			}},
-		},
-		{
-			name:    "json value",
-			colType: &sppb.Type{Code: sppb.TypeCode_JSON},
-			value:   structpb.NewStringValue(`{"name":"Alice","age":30}`),
-			expected: &v1pb.RowValue{Kind: &v1pb.RowValue_StringValue{
-				StringValue: `{"name":"Alice","age":30}`,
-			}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			a := require.New(t)
-			result := convertSpannerValue(tt.colType, tt.value)
-			a.Equal(tt.expected, result)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := toRowValue(test.value)
+			require.NotNil(t, got)
+			switch test.want {
+			case "null":
+				require.Equal(t, util.NullRowValue, got)
+			case "bool":
+				require.True(t, got.GetBoolValue())
+			case "bytes":
+				require.Equal(t, []byte("hi"), got.GetBytesValue())
+			case "double":
+				require.Equal(t, 1.5, got.GetDoubleValue())
+			case "int64":
+				require.Equal(t, int64(42), got.GetInt64Value())
+			case "string":
+				require.Equal(t, test.value.String, got.GetStringValue())
+			case "timestamp":
+				require.Equal(t, timestamppb.New(test.value.Time), got.GetTimestampValue().GetGoogleTimestamp())
+				require.Equal(t, int32(6), got.GetTimestampValue().GetAccuracy())
+			default:
+				t.Fatalf("unknown want %q", test.want)
+			}
 		})
 	}
+}
+
+// TestSpannerConfig checks what the adapter resolves into spanner/driver's
+// Config: the resource name's two parts, the credential document, the caller's
+// extra parameters and TLS.
+func TestSpannerConfig(t *testing.T) {
+	config := db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			ProjectId:  "p",
+			InstanceId: "i",
+			Host:       "10.0.0.1",
+			Port:       "443",
+			IamExtension: &storepb.DataSource_GcpCredential{
+				GcpCredential: &storepb.DataSource_GCPCredential{Content: `{"type":"authorized_user"}`},
+			},
+			ExtraConnectionParameters: map[string]string{"unknown": "x"},
+		},
+		ConnectionContext: db.ConnectionContext{DatabaseName: "d"},
+	}
+	got, err := spannerConfig(config)
+	require.NoError(t, err)
+	require.Equal(t, "p", got.Params[spannerdriver.ParamProject])
+	require.Equal(t, "i", got.Params[spannerdriver.ParamInstance])
+	require.Equal(t, "d", got.Database)
+	require.Equal(t, "10.0.0.1", got.Host)
+	require.Equal(t, "443", got.Port)
+	require.Equal(t, `{"type":"authorized_user"}`, got.Password, "the data source's credential is the driver's password")
+	require.Equal(t, "x", got.Params["unknown"])
+	require.Nil(t, got.TLS, "TLS stays the client's unless the caller asks for it")
+
+	// The emulator takes no credential, and the Google client refuses both at
+	// once, so naming the emulator drops it.
+	config.DataSource.ExtraConnectionParameters["emulator"] = "1"
+	got, err = spannerConfig(config)
+	require.NoError(t, err)
+	require.Empty(t, got.Password)
+	delete(config.DataSource.ExtraConnectionParameters, "emulator")
+
+	// A caller that resolved a credential itself passes it as the password.
+	config.Password = `{"type":"service_account"}`
+	got, err = spannerConfig(config)
+	require.NoError(t, err)
+	require.Equal(t, `{"type":"service_account"}`, got.Password)
+
+	// An SSL data source asks for TLS, bound to the host the driver dials.
+	config.DataSource.UseSsl = true
+	config.DataSource.VerifyTlsCertificate = true
+	got, err = spannerConfig(config)
+	require.NoError(t, err)
+	require.NotNil(t, got.TLS)
+	tlsConfig, err := got.TLS("10.0.0.1")
+	require.NoError(t, err)
+	require.Equal(t, "10.0.0.1", tlsConfig.ServerName)
+}
+
+func TestOpenRejectsInvalidCredentialJSON(t *testing.T) {
+	_, err := db.Open(context.Background(), storepb.Engine_SPANNER, db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			ProjectId:  "default",
+			InstanceId: "default",
+			Host:       "127.0.0.1",
+			Port:       "9010",
+		},
+		ConnectionContext: db.ConnectionContext{DatabaseName: "adapter"},
+		Password:          "not a document",
+	})
+	require.ErrorContains(t, err, "failed to parse GCP credential JSON")
+}
+
+func TestOpenPassesGoogleSQLOnlyOption(t *testing.T) {
+	var (
+		gotCfg  odriver.Config
+		gotOpts []spannerdriver.Options
+	)
+	fake := &fakeSpannerDriver{
+		instance: &odriver.Instance{
+			Databases: []*metadatapb.DatabaseSchemaMetadata{{Name: "gsql_db"}},
+		},
+	}
+	origOpen := openSpannerDriver
+	openSpannerDriver = func(_ context.Context, cfg odriver.Config, opts ...spannerdriver.Options) (odriver.Driver, error) {
+		gotCfg = cfg
+		gotOpts = opts
+		return fake, nil
+	}
+	t.Cleanup(func() { openSpannerDriver = origOpen })
+
+	ctx := context.Background()
+	opened, err := (&Driver{}).Open(ctx, storepb.Engine_SPANNER, db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			ProjectId:  "p",
+			InstanceId: "i",
+			Host:       "127.0.0.1",
+			Port:       "9010",
+			ExtraConnectionParameters: map[string]string{
+				spannerdriver.ParamEmulator: "1",
+			},
+		},
+		ConnectionContext: db.ConnectionContext{DatabaseName: "gsql_db"},
+		Password:          `{"type":"service_account"}`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "p", gotCfg.Params[spannerdriver.ParamProject])
+	require.Equal(t, "i", gotCfg.Params[spannerdriver.ParamInstance])
+	require.Equal(t, "gsql_db", gotCfg.Database)
+	require.Empty(t, gotCfg.Password)
+	require.Equal(t, []spannerdriver.Options{{GoogleSQLOnly: true}}, gotOpts)
+
+	inst, err := opened.SyncInstance(ctx)
+	require.NoError(t, err)
+	require.Nil(t, inst.Metadata)
+	require.Len(t, inst.Databases, 1)
+	require.Equal(t, "gsql_db", inst.Databases[0].Name)
+}
+
+func toQueryResult(result *odriver.Result, maxResultBytes int64) *v1pb.QueryResult {
+	return util.OmniResultToQueryResultWith(result, maxResultBytes, spannerQueryResultOptions(false))
+}
+
+func TestToQueryResult(t *testing.T) {
+	maxBytes := int64(1024 * 1024)
+	latency := time.Millisecond
+
+	query := toQueryResult(&odriver.Result{
+		Statement: "SELECT 1 AS n",
+		Columns:   []odriver.Column{{Name: "n", TypeName: "INT64"}},
+		Rows:      [][]odriver.Value{{{Kind: odriver.Int64, Int64: 1}}},
+		Latency:   latency,
+	}, maxBytes)
+	require.Equal(t, "SELECT 1 AS n", query.Statement)
+	require.Equal(t, []string{"n"}, query.ColumnNames)
+	require.Equal(t, []string{"INT64"}, query.ColumnTypeNames)
+	require.Equal(t, int64(1), query.RowsCount)
+	require.Equal(t, int64(1), query.Rows[0].Values[0].GetInt64Value())
+
+	affected := toQueryResult(&odriver.Result{
+		Statement:    "UPDATE Singers SET Rating = 5 WHERE Id = 1",
+		AffectedRows: func() *int64 { value := int64(1); return &value }(),
+		Latency:      latency,
+	}, maxBytes)
+	require.Equal(t, []string{"Affected Rows"}, affected.ColumnNames)
+	require.Equal(t, []string{"INT"}, affected.ColumnTypeNames)
+	require.Equal(t, int64(1), affected.RowsCount)
+	require.Equal(t, int64(1), affected.Rows[0].Values[0].GetInt64Value())
+
+	ddl := toQueryResult(&odriver.Result{Statement: "CREATE TABLE T (Id INT64) PRIMARY KEY (Id)", Latency: latency}, maxBytes)
+	require.Empty(t, ddl.ColumnNames)
+	require.Empty(t, ddl.Rows)
+	require.Equal(t, int64(0), ddl.RowsCount)
+
+	failed := toQueryResult(&odriver.Result{Statement: "SELECT * FROM Missing", Err: errors.New("Table not found"), Latency: latency}, maxBytes)
+	require.Equal(t, "Table not found", failed.Error)
+	require.Empty(t, failed.Rows)
+	require.Equal(t, int64(0), failed.RowsCount)
+
+	truncated := toQueryResult(&odriver.Result{
+		Statement: "SELECT Id FROM Singers",
+		Columns:   []odriver.Column{{Name: "Id", TypeName: "INT64"}},
+		Rows:      [][]odriver.Value{{{Kind: odriver.Int64, Int64: 1}}},
+		Truncated: true,
+	}, 300)
+	require.Equal(t, util.FormatMaximumSQLResultSizeMessage(300), truncated.Error)
+	require.Equal(t, int64(1), truncated.RowsCount)
+}
+
+type fakeSpannerSession struct {
+	gotScript string
+	gotOpts   odriver.QueryOptions
+	results   []*odriver.Result
+	closed    bool
+}
+
+func (s *fakeSpannerSession) Query(_ context.Context, script string, opts odriver.QueryOptions) ([]*odriver.Result, error) {
+	s.gotScript = script
+	s.gotOpts = opts
+	return s.results, nil
+}
+
+func (s *fakeSpannerSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+type fakeSpannerDriver struct {
+	session       *fakeSpannerSession
+	executeScript string
+	executeOpts   odriver.ExecuteOptions
+	executeFn     func(script string, opts odriver.ExecuteOptions) (int64, error)
+	instance      *odriver.Instance
+	instanceErr   error
+	schema        *metadatapb.DatabaseSchemaMetadata
+	schemaErr     error
+	dumpDDL       string
+}
+
+func (*fakeSpannerDriver) Ping(context.Context) error { return nil }
+func (*fakeSpannerDriver) Close() error               { return nil }
+func (f *fakeSpannerDriver) Session(context.Context) (odriver.Session, error) {
+	return f.session, nil
+}
+
+func (f *fakeSpannerDriver) Execute(_ context.Context, script string, opts odriver.ExecuteOptions) (int64, error) {
+	f.executeScript = script
+	f.executeOpts = opts
+	if f.executeFn != nil {
+		return f.executeFn(script, opts)
+	}
+	return 0, nil
+}
+
+func (f *fakeSpannerDriver) SyncInstance(context.Context) (*odriver.Instance, error) {
+	if f.instanceErr != nil {
+		return nil, f.instanceErr
+	}
+	if f.instance != nil {
+		return f.instance, nil
+	}
+	return &odriver.Instance{}, nil
+}
+
+func (f *fakeSpannerDriver) SyncDatabase(context.Context) (*metadatapb.DatabaseSchemaMetadata, error) {
+	return f.schema, f.schemaErr
+}
+
+func (f *fakeSpannerDriver) Dump(_ context.Context, w io.Writer, _ *metadatapb.DatabaseSchemaMetadata) error {
+	_, err := io.WriteString(w, f.dumpDDL)
+	return err
+}
+
+func TestSpannerAdapterSeam(t *testing.T) {
+	ctx := context.Background()
+	sess := &fakeSpannerSession{
+		results: []*odriver.Result{{
+			Statement: "SELECT 1",
+			Columns:   []odriver.Column{{Name: "n", TypeName: "INT64"}},
+			Rows:      [][]odriver.Value{{{Kind: odriver.Int64, Int64: 1}}},
+			Plan:      &odriver.Plan{Format: "JSON"},
+		}},
+	}
+	var logs []*storepb.TaskRunLog
+	impl := &fakeSpannerDriver{
+		session: sess,
+		executeFn: func(script string, opts odriver.ExecuteOptions) (int64, error) {
+			opts.Log.TransactionControl(odriver.Begin, nil)
+			opts.Log.CommandExecute(odriver.Command{Text: script, ByteStart: 0, ByteEnd: len(script)})
+			opts.Log.CommandResponse(1, []int64{1}, nil)
+			opts.Log.TransactionControl(odriver.Commit, nil)
+			return 1, nil
+		},
+		instance: &odriver.Instance{
+			Databases: []*metadatapb.DatabaseSchemaMetadata{{Name: "app"}},
+		},
+		schema:  &metadatapb.DatabaseSchemaMetadata{Name: "app"},
+		dumpDDL: "CREATE TABLE Singers (SingerId INT64 NOT NULL) PRIMARY KEY (SingerId);\n",
+	}
+	d := &Driver{
+		OmniAdapter: util.OmniAdapter{
+			Driver:           impl,
+			NotFoundResource: "database",
+			DatabaseName:     "app",
+		},
+	}
+
+	// SyncInstance delegates to omni/spanner/driver via OmniAdapter.
+	inst, err := d.SyncInstance(ctx)
+	require.NoError(t, err)
+	require.Nil(t, inst.Metadata)
+	require.Len(t, inst.Databases, 1)
+	require.Equal(t, "app", inst.Databases[0].Name)
+
+	impl.instanceErr = errors.New("permission denied")
+	_, err = d.SyncInstance(ctx)
+	require.ErrorContains(t, err, "permission denied")
+	impl.instanceErr = nil
+
+	// QueryConn forwards options, clears QueryPlan when Explain is true, and closes ephemeral session.
+	got, err := d.QueryConn(ctx, "SELECT 1", db.QueryContext{Limit: 2, Explain: true, MaximumSQLResultSize: 2048})
+	require.NoError(t, err)
+	require.True(t, sess.closed)
+	require.Equal(t, odriver.QueryOptions{Limit: 2, Explain: true, MaxResultBytes: 2048}, sess.gotOpts)
+	require.Len(t, got, 1)
+	require.Nil(t, got[0].QueryPlan)
+
+	// Execute parses transaction directive and suppresses per-statement command logs.
+	affected, err := d.Execute(ctx, "-- txn-mode=off\nUPDATE Singers SET FirstName = 'a' WHERE SingerId = 1", db.ExecuteOptions{
+		CreateDatabase: true,
+		MaximumRetries: 2,
+		CreateTaskRunLog: func(_ time.Time, entry *storepb.TaskRunLog) error {
+			logs = append(logs, entry)
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), affected)
+	require.Equal(t, odriver.AutoCommit, impl.executeOpts.Transaction)
+	require.True(t, impl.executeOpts.CreateDatabase)
+	require.Equal(t, 2, impl.executeOpts.MaxRetries)
+	require.Len(t, logs, 2, "Spanner logs transaction control entries only")
+	require.Equal(t, storepb.TaskRunLog_TransactionControl_BEGIN, logs[0].GetTransactionControl().GetType())
+	require.Equal(t, storepb.TaskRunLog_TransactionControl_COMMIT, logs[1].GetTransactionControl().GetType())
+
+	// SyncDBSchema translates ErrNotFound and Dump delegates.
+	schema, err := d.SyncDBSchema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "app", schema.GetName())
+
+	var out bytes.Buffer
+	require.NoError(t, d.Dump(ctx, &out, schema))
+	require.Contains(t, out.String(), "CREATE TABLE Singers")
+
+	impl.schemaErr = odriver.ErrNotFound
+	_, err = d.SyncDBSchema(ctx)
+	var bbErr *common.Error
+	require.ErrorAs(t, err, &bbErr)
+	require.Equal(t, common.NotFound, bbErr.Code)
+	require.Contains(t, err.Error(), `database "app" not found`)
 }

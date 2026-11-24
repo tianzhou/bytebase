@@ -1,164 +1,125 @@
 package starrocks
 
 import (
-	"errors"
-	"strings"
-	"unicode/utf8"
+	"context"
 
+	"github.com/bytebase/omni/starrocks/analysis"
 	"github.com/bytebase/omni/starrocks/ast"
 	"github.com/bytebase/omni/starrocks/parser"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+	"github.com/bytebase/bytebase/backend/store/model"
 )
 
 func init() {
-	base.RegisterParseStatementsFunc(storepb.Engine_STARROCKS, parseStarRocksStatements)
+	base.Register(base.Engine{
+		Split:           SplitSQL,
+		Parse:           parseStarRocksStatements,
+		StatementRanges: GetStatementRanges,
+		Diagnose:        Diagnose,
+		ValidateQuery:   validateQuery,
+		QuerySpan:       GetQuerySpan,
+		Explain:         explainStatement,
+		ResultLimit:     statementWithResultLimit,
+		ExtractChanged:  extractChangedResources,
+	}, storepb.Engine_STARROCKS)
 }
 
-// omniAST wraps an omni AST node to implement the base.AST interface.
-type omniAST struct {
-	node     ast.Node
-	text     string
-	startPos *storepb.Position
+type astNode = base.NodeAST[ast.Node]
+
+// SplitSQL splits the input into multiple SQL statements using omni's analysis
+// package, then attaches 1-based line and rune column positions.
+func SplitSQL(statement string) ([]base.Statement, error) {
+	return base.OmniStatements(statement, analysis.SplitStatements(statement)), nil
 }
 
-// ASTStartPosition implements base.AST.
-func (a *omniAST) ASTStartPosition() *storepb.Position {
-	return a.startPos
-}
-
-// Node returns the underlying omni AST node. May be nil if the segment
-// failed to parse cleanly but errors were tolerated by the caller.
-func (a *omniAST) Node() ast.Node {
-	return a.node
-}
-
-// parseStarRocksStatements is the ParseStatementsFunc for StarRocks.
-// Returns []ParsedStatement with both text and AST populated.
-//
-// For non-empty segments, the AST is an *omniAST wrapping the omni AST node.
-// The first parse error encountered (per-segment) is returned to the caller,
-// matching the prior behaviour of bailing out on the first syntax error.
 func parseStarRocksStatements(statement string) ([]base.ParsedStatement, error) {
-	stmts, err := SplitSQL(statement)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]base.ParsedStatement, 0, len(stmts))
-	for _, stmt := range stmts {
-		ps := base.ParsedStatement{
-			Statement: stmt,
-		}
-		if stmt.Empty || strings.TrimSpace(stmt.Text) == "" {
-			result = append(result, ps)
-			continue
-		}
-		// Parse the segment text on its own so byte offsets in any ParseError
-		// align with stmt.Text; convertParseError then shifts them into the
-		// coordinates of the original multi-statement script.
-		file, err := parser.Parse(stmt.Text)
-		if err != nil {
-			return nil, convertParseError(stmt.Text, err, stmt.Start)
-		}
-		var node ast.Node
-		if file != nil && len(file.Stmts) > 0 {
-			node = file.Stmts[0]
-		}
-		ps.AST = &omniAST{
-			node:     node,
-			text:     stmt.Text,
-			startPos: stmt.Start,
-		}
-		result = append(result, ps)
-	}
-
-	return result, nil
+	return base.ParseSegmentedStatements(statement, SplitSQL, parseSegment)
 }
 
-// parseStarRocksSQL parses the given SQL statement using the omni Doris parser.
-// Returns one *omniAST per non-empty segment (empty / comment-only segments
-// are skipped).
-//
-// This retains the historical signature shape used by other doris package
-// files; on the first parse error it returns a *base.SyntaxError with the
-// position translated into the coordinates of the original input.
-func parseStarRocksSQL(statement string) ([]*omniAST, error) {
-	stmts, err := SplitSQL(statement)
+func parseSegment(stmt base.Statement) (*astNode, error) {
+	// Parse each segment on its own so ParseError byte offsets align with stmt.Text
+	// before convertParseError shifts them into script coordinates.
+	file, err := parser.Parse(stmt.Text)
 	if err != nil {
-		return nil, err
+		return nil, convertParseError(stmt.Text, err, stmt.Start)
 	}
-
-	var result []*omniAST
-	for _, stmt := range stmts {
-		if stmt.Empty || strings.TrimSpace(stmt.Text) == "" {
-			continue
-		}
-		file, err := parser.Parse(stmt.Text)
-		if err != nil {
-			return nil, convertParseError(stmt.Text, err, stmt.Start)
-		}
-		var node ast.Node
-		if file != nil && len(file.Stmts) > 0 {
-			node = file.Stmts[0]
-		}
-		result = append(result, &omniAST{
-			node:     node,
-			text:     stmt.Text,
-			startPos: stmt.Start,
-		})
+	var node ast.Node
+	if file != nil && len(file.Stmts) > 0 {
+		node = file.Stmts[0]
 	}
-	return result, nil
+	return &astNode{Node: node, Text: stmt.Text, StartPosition: stmt.Start}, nil
 }
 
-// convertParseError converts the first omni *parser.ParseError carried by err
-// to a *base.SyntaxError that sql_service.go recognises for structured
-// error diagnostics. It converts the byte offset in ParseError.Position
-// to 1-based line and 1-based column (rune-based) matching the
-// storepb.Position convention used across other omni parser adapters.
-//
-// If basePos is non-nil, the computed position is offset by it so that
-// errors from parsing an isolated statement segment are reported in the
-// coordinates of the original multi-statement script.
+func GetStatementRanges(_ context.Context, _ base.StatementRangeContext, statement string) ([]base.Range, error) {
+	rawRanges := analysis.StatementRanges(statement)
+	if len(rawRanges) == 0 {
+		return nil, nil
+	}
+	return base.MapByteRangesToLSP(statement, rawRanges), nil
+}
+
+// Diagnose returns syntax diagnostics for the given StarRocks statement,
+// delegating parse and stub filtering to omni's analysis package.
+func Diagnose(_ context.Context, _ base.DiagnoseContext, statement string) ([]base.Diagnostic, error) {
+	return base.ConvertOffsetDiagnostics(statement, analysis.Diagnose(statement), func(d analysis.SyntaxError) (int, string) {
+		return d.Offset, d.Message
+	}), nil
+}
+
+func validateQuery(statement string) (bool, bool, error) {
+	readOnly, returnsData, err := analysis.ValidateQuery(statement)
+	if err != nil {
+		return false, false, convertParseError(statement, err, nil)
+	}
+	return readOnly, returnsData, nil
+}
+
+func GetQuerySpan(
+	_ context.Context,
+	_ base.GetQuerySpanContext,
+	stmt base.Statement,
+	database, _ string,
+	ignoreCaseSensitive bool,
+) (*base.QuerySpan, error) {
+	resolved, err := analysis.ResolveQuerySpan(stmt.Text, analysis.ResolveOptions{
+		DefaultDatabase:     database,
+		IgnoreCaseSensitive: ignoreCaseSensitive,
+	})
+	if err != nil {
+		if mixErr := base.ConvertOmniMixTablesError(err); mixErr != nil {
+			return nil, mixErr
+		}
+		return nil, convertParseError(stmt.Text, err, stmt.Start)
+	}
+
+	return base.OmniTableQuerySpan(resolved.Type, resolved.SourceColumns), nil
+}
+
+func explainStatement(statement string, _ base.ExplainFormat) (string, error) {
+	planned, err := analysis.ExplainStatement(statement)
+	if err != nil {
+		return "", convertParseError(statement, err, nil)
+	}
+	return planned, nil
+}
+
+func statementWithResultLimit(statement string, limit int, _ string) string {
+	return analysis.RewriteResultLimit(statement, limit)
+}
+
+func extractChangedResources(currentDatabase string, _ string, dbMetadata *model.DatabaseMetadata, asts []base.AST, _ string) (*base.ChangeSummary, error) {
+	return base.ExtractTypedChangedResources(dbMetadata, asts, "expected astNode for StarRocks", true, func(parsed *astNode) (analysis.StatementChanges, bool) {
+		if parsed.Node == nil {
+			return analysis.StatementChanges{}, false
+		}
+		return analysis.ExtractChangedResources(parsed.Node, currentDatabase, parsed.Text), true
+	})
+}
+
 func convertParseError(statement string, err error, basePos *storepb.Position) error {
-	var pe *parser.ParseError
-	if !errors.As(err, &pe) {
-		return err
-	}
-	line, col := byteOffsetToPosition(statement, pe.Position)
-	if basePos != nil {
-		// The first line of the segment shares a line with basePos, so
-		// column offsets only apply when the error is on that line.
-		if line == 1 {
-			col = int(basePos.Column) + col - 1
-		}
-		line = int(basePos.Line) + line - 1
-	}
-	return &base.SyntaxError{
-		Position: &storepb.Position{
-			Line:   int32(line),
-			Column: int32(col),
-		},
-		Message:    pe.Error(),
-		RawMessage: pe.Message,
-	}
-}
-
-// byteOffsetToPosition converts a 0-based byte offset to a 1-based line and
-// 1-based column (in runes).
-func byteOffsetToPosition(s string, offset int) (line, col int) {
-	line = 1
-	col = 1
-	for i := 0; i < offset && i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == '\n' {
-			line++
-			col = 1
-		} else {
-			col++
-		}
-		i += size
-	}
-	return line, col
+	return base.ConvertParseError(statement, err, basePos, func(pe *parser.ParseError) (int, string, string) {
+		return pe.Position, pe.Error(), pe.Message
+	})
 }

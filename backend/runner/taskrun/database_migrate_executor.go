@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytebase/omni/pg/ast"
 	ghostbase "github.com/github/gh-ost/go/base"
 	"github.com/github/gh-ost/go/logic"
 	gomysql "github.com/go-sql-driver/mysql"
@@ -21,9 +20,9 @@ import (
 	"github.com/bytebase/bytebase/backend/component/ghost"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/db"
-	"github.com/bytebase/bytebase/backend/plugin/db/oracle"
 	parserbase "github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/plugin/parser/pg"
+	plsqlparser "github.com/bytebase/bytebase/backend/plugin/parser/plsql"
 	"github.com/bytebase/bytebase/backend/plugin/schema"
 	"github.com/bytebase/bytebase/backend/runner/schemasync"
 	"github.com/bytebase/bytebase/backend/store"
@@ -306,7 +305,20 @@ func (exec *DatabaseMigrateExecutor) runStandardMigration(ctx context.Context, d
 	}, nil
 }
 
+// validateGhostEngine refuses engines gh-ost cannot drive.
+func validateGhostEngine(instance *store.InstanceMessage) error {
+	engine := instance.Metadata.GetEngine()
+	if !ghost.SupportsEngine(engine) {
+		return errors.Errorf("gh-ost migration is not supported for engine %v; gh-ost requires MySQL or MariaDB", engine.String())
+	}
+	return nil
+}
+
 func executeGhostMigration(ctx context.Context, driverCtx context.Context, task *store.TaskMessage, sheet *store.SheetMessage, instance *store.InstanceMessage, database *store.DatabaseMessage, driver db.Driver, opts *db.ExecuteOptions) error {
+	if err := validateGhostEngine(instance); err != nil {
+		return err
+	}
+
 	flags, err := ghost.ParseGhostDirective(sheet.Statement)
 	if err != nil {
 		return errors.Wrapf(err, "failed to parse ghost directive")
@@ -366,7 +378,7 @@ func executeGhostMigration(ctx context.Context, driverCtx context.Context, task 
 			migrationContext.GetChangelogTableName(),
 		)
 
-		if _, err := driver.GetDB().ExecContext(cleanupCtx, sql); err != nil {
+		if _, err := driver.Execute(cleanupCtx, sql, db.ExecuteOptions{}); err != nil {
 			slog.WarnContext(ctx, "failed to cleanup gh-ost temp tables", log.BBError(err))
 		}
 	}()
@@ -410,6 +422,12 @@ func (exec *DatabaseMigrateExecutor) runGhostMigration(ctx context.Context, driv
 		return nil, errors.Wrapf(err, "failed to get driver connection for instance %q", instance.ResourceID)
 	}
 	defer driver.Close(ctx)
+
+	// Refuse before the pending changelog is created, so a ghost directive on an
+	// unsupported engine leaves no partial run behind.
+	if err := validateGhostEngine(instance); err != nil {
+		return nil, err
+	}
 
 	// Set up execute options
 	opts := db.ExecuteOptions{}
@@ -814,18 +832,18 @@ func (exec *DatabaseMigrateExecutor) backupData(
 	defer driver.Close(driverCtx)
 
 	tc := parserbase.TransformContext{
-		InstanceID:              instance.ResourceID,
-		GetDatabaseMetadataFunc: buildGetDatabaseMetadataFunc(exec.store, instance.Workspace),
-		ListDatabaseNamesFunc:   buildListDatabaseNamesFunc(exec.store),
-		IsCaseSensitive:         store.IsObjectCaseSensitive(instance),
-		DatabaseName:            database.DatabaseName,
+		InstanceID:                   instance.ResourceID,
+		GetDatabaseMetadataFunc:      buildGetDatabaseMetadataFunc(exec.store, instance.Workspace),
+		ListDatabaseNamesFunc:        buildListDatabaseNamesFunc(exec.store),
+		ListReferencingDatabasesFunc: exec.store.ListDatabasesWithCrossDatabaseForeignKeys,
+		IsCaseSensitive:              store.IsObjectCaseSensitive(instance),
+		DatabaseName:                 database.DatabaseName,
 	}
 	if database.Engine == storepb.Engine_ORACLE {
-		oracleDriver, ok := driver.(*oracle.Driver)
-		if ok {
-			if version, err := oracleDriver.GetVersion(); err == nil {
-				tc.Version = version
-			}
+		// The transform takes the version from the instance metadata, which is what
+		// the driver was opened with; the driver has no version method of its own.
+		if version, err := plsqlparser.ParseVersion(instance.Metadata.GetVersion()); err == nil {
+			tc.Version = version
 		}
 	}
 
@@ -971,27 +989,7 @@ func getPrependStatements(engine storepb.Engine, statement string) (string, erro
 	if engine != storepb.Engine_POSTGRES {
 		return "", nil
 	}
-
-	stmts, err := pg.ParsePg(statement)
-	if err != nil {
-		return "", errors.Wrap(err, "failed to parse statement")
-	}
-
-	for _, stmt := range stmts {
-		varSet, ok := stmt.AST.(*ast.VariableSetStmt)
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(varSet.Name, "role") || strings.EqualFold(varSet.Name, "search_path") {
-			text := strings.TrimSpace(stmt.Text)
-			if !strings.HasSuffix(text, ";") {
-				text += ";"
-			}
-			return text, nil
-		}
-	}
-
-	return "", nil
+	return pg.ExtractPrependStatement(statement)
 }
 
 func diff(ctx context.Context, s *store.Store, instance *store.InstanceMessage, database *store.DatabaseMessage, sheetContent string) (string, error) {
@@ -1007,10 +1005,8 @@ func diff(ctx context.Context, s *store.Store, instance *store.InstanceMessage, 
 		return "", errors.Errorf("database schema %q not found", database.DatabaseName)
 	}
 
-	// instance.Metadata.GetVersion() is the synced server version (e.g. "5.7.25"); thread
-	// it so MySQL canonicalizes a 5.7 database's schema as 5.7 rather than the default 8.0
-	// stored form. model.DatabaseMetadata drops the version, so it is sourced here where the
-	// instance message still carries it. Other engines ignore the version.
+	// MySQL rejects a declarative change on a server older than 8.0, so it needs the
+	// synced server version, which model.DatabaseMetadata does not carry.
 	migrationSQL, err := schema.SDLMigration(instance.Metadata.GetEngine(), sheetContent, dbMetadata, instance.Metadata.GetVersion())
 	if err != nil {
 		return "", errors.Wrapf(err, "failed to compute SDL migration")

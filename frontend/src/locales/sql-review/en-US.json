@@ -2,18 +2,20 @@
   "add-or-remove-rules": "Add or remove rules",
   "add-rules": "Add rules",
   "ai-review": {
-    "ai-off": "AI is off for the workspace, so no AI review runs.",
+    "ai-off": "AI is off for the workspace, so no AI SQL review runs.",
+    "comments-description": "An AI model reviews the SQL of an issue, including a draft, and comments on the risks it finds. The rollout is blocked until every comment is resolved.",
     "description": "An AI model that reviews the SQL of an issue for risks the standard rules cannot see.",
     "enable": {
       "description": "Each review sends the statements as written to the AI provider, and can send the schema of the target databases and their table statistics. It reads no rows from the databases.",
       "self": "Review changes with AI"
     },
     "policy": {
+      "ai-review-policy": "AI SQL review policy",
       "cannot-clear": "Your role cannot delete policies, so this policy cannot be emptied.",
       "description": "This policy defines what the AI checks when reviewing database changes. It applies to every project in the workspace, and each project can add its own policy.",
       "load-failed": "The review policy could not be loaded.",
       "none": "No review policy.",
-      "paused": "This policy is paused, so AI review does not use it.",
+      "paused": "This policy is paused, so AI SQL review does not use it.",
       "placeholder": "For example:\nReport a schema change that blocks writes on a table with more than 1 million rows.\nEvery foreign key needs an index on its columns.\nNew tables need created_at and updated_at columns.",
       "project-description": "Optional project-specific policy. It is added to the workspace policy and takes precedence when they conflict.",
       "project-none": "No project policy.",
@@ -21,10 +23,11 @@
       "project-self": "Project additional policy",
       "remove-only": "You can remove this policy but not change it. Clear the text to remove it.",
       "self": "Review policy",
+      "standard-rules-hint": "AI SQL review does not repeat the standard rules, and skips the ones that are off. To have it check one anyway, name it in the policy, such as \"Every UPDATE needs a WHERE clause\".",
       "too-large": "The policy is {{size}} bytes, over the {{limit}}-byte limit. Shorten it to save."
     },
-    "project-description": "AI review is configured for the workspace. Add an optional project-specific policy below.",
-    "self": "AI review",
+    "project-description": "AI SQL review is configured for the workspace. Add an optional project-specific policy below.",
+    "self": "AI SQL review",
     "set-for-workspace": "Managed at the workspace level.",
     "turn-on-ai": "Turn on AI",
     "view-workspace-setting": "View workspace AI settings"
@@ -68,7 +71,8 @@
   },
   "delete": "Delete SQL review policy",
   "delete-description": "The SQL review policy and all its rules will be permanently removed. This cannot be undone.",
-  "description": "SQL review policies can define different sets of SQL lint rules for different environments. They help teams adopt SQL best practices and enforce schema consistency across different databases. Whenever you attempt a DDL/DML change or use SQL Editor to query data, the query will be checked against the configured SQL review policy.",
+  "delete-policy-title": "Delete {{name}}?",
+  "description": "Lint rules that check each SQL change and SQL Editor query. A policy applies to the environments or projects it is attached to.",
   "disable-description": "Disabling this policy will stop enforcing its rules on the attached resources. You can re-enable it later.",
   "disabled": "SQL review is disabled",
   "enable-description": "Enabling this policy will start enforcing its rules on the attached resources.",
@@ -144,17 +148,17 @@
   "input-then-press-enter": "Input the value then press enter to add",
   "level": {
     "disabled": "Disabled",
-    "error": "Error",
-    "name": "Error Level",
-    "warning": "Warning"
+    "name": "Priority"
   },
   "no-permission": "Only DBA or Admin has permission to create or update review policy.",
+  "policies": "Rule-based SQL review policies",
   "policy-create-failed": "Failed to create the review policy.",
   "policy-created": "Successfully created the review policy.",
   "policy-removed": "Successfully removed the review policy.",
   "policy-update-failed": "Failed to update the review policy.",
   "policy-updated": "Successfully updated the review policy.",
   "review-policy": "Review policy",
+  "reviewer": "SQL review",
   "rule": {
     "ADVICE_ONLINE_MIGRATION": {
       "component": {
@@ -882,8 +886,7 @@
     "string-array-required": "Add at least one value for {{rule}}."
   },
   "version-switch": {
-    "description": "Dev builds only. The server runs V1 for a project whose standard rules are all off, and V2 otherwise. This browser shows the pages of the version you choose.",
-    "self": "SQL Review version",
+    "description": "This badge shows the browser's selected UI version. Each project's effective standard rules determine which review version runs.",
     "to-v1": {
       "confirm": "Switch to V1",
       "description": "This turns every workspace standard rule off, so the plan checks run the V1 SQL review. Projects that customize their standard rules keep them.",
@@ -893,6 +896,8 @@
       "confirm": "Switch to V2",
       "description": "This turns every workspace standard rule on, so the standard rule review replaces the V1 SQL review.",
       "title": "Switch to SQL Review V2?"
-    }
+    },
+    "v1": "SQL Review V1",
+    "v2": "SQL Review V2"
   }
 }

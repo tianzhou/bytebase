@@ -201,8 +201,8 @@ func (a *asker) lastParams(t *testing.T) *mcp.ElicitParams {
 	return a.last
 }
 
-func confirmAnswer(checked any) *mcp.ElicitResult {
-	return &mcp.ElicitResult{Action: "accept", Content: map[string]any{confirmDecisionField: checked}}
+func confirmAnswer(choice any) *mcp.ElicitResult {
+	return &mcp.ElicitResult{Action: "accept", Content: map[string]any{confirmChoiceField: choice}}
 }
 
 func callDecideIssue(t *testing.T, session *mcp.ClientSession, decision string) (*mcp.CallToolResult, error) {
@@ -222,7 +222,7 @@ func callDecideIssue(t *testing.T, session *mcp.ClientSession, decision string) 
 func TestDecideIssueApprovesOnConfirmation(t *testing.T) {
 	mock := changeIssueMock()
 	endpoint, token := newDecideServer(t, mock)
-	user := &asker{answer: confirmAnswer(true)}
+	user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 	session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 	res, err := callDecideIssue(t, session, "approve")
@@ -236,15 +236,17 @@ func TestDecideIssueApprovesOnConfirmation(t *testing.T) {
 		`Approve issue "projects/hr/issues/42" titled "Add status column" as alice@example.com?`,
 		`Change on "instances/prod/databases/hr"`,
 		`SQL: "ALTER TABLE users\n  ADD COLUMN status VARCHAR(20);"`,
-		`Approval: step 2 of 2, role "roles/workspaceDBA". Requested by "bob@example.com". Comment: "checked the statement"`,
+		`Approval: step 2 of 2, role "roles/workspaceDBA". Requested by "bob@example.com".`,
 	}, "\n"), asked.Message, "Claude Code shows four lines of a form whole, and only three of a longer one")
 	require.NotContains(t, asked.Message, "https://", "a form must not carry a clickable URL")
 	schema, err := json.Marshal(asked.RequestedSchema)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"type":"object","required":["confirm"],"properties":{"confirm":{"type":"boolean",
-		"title":"Approve this issue",
-		"description":"Check to approve the issue described above. Leaving it unchecked, declining or cancelling changes nothing."}}}`,
-		string(schema))
+	require.JSONEq(t, `{"type":"object","required":["choice"],"properties":{"choice":{"type":"string",
+		"title":"Approve this issue?",
+		"description":"Comment: \"checked the statement\"",
+		"oneOf":[{"const":"apply","title":"Approve"},{"const":"change","title":"Change it in chat"}],
+		"default":"apply"}}}`,
+		string(schema), "the form's one choice, with the action set when it opens and the comment under it")
 
 	calls := mock.calls()
 	require.Len(t, calls, 1)
@@ -268,13 +270,21 @@ func TestDecideIssueApprovesOnConfirmation(t *testing.T) {
 func TestDecideIssueRejectsOnConfirmation(t *testing.T) {
 	mock := changeIssueMock()
 	endpoint, token := newDecideServer(t, mock)
-	user := &asker{answer: confirmAnswer(true)}
+	user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 	session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 	res, err := callDecideIssue(t, session, "REJECT")
 	require.NoError(t, err)
 	require.False(t, res.IsError, resultText(t, res))
 	require.Contains(t, user.lastParams(t).Message, `Reject issue "projects/hr/issues/42" titled "Add status column"`)
+	schema, err := json.Marshal(user.lastParams(t).RequestedSchema)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"object","required":["choice"],"properties":{"choice":{"type":"string",
+		"title":"Reject this issue?",
+		"description":"Comment: \"checked the statement\"",
+		"oneOf":[{"const":"apply","title":"Reject"},{"const":"change","title":"Change it in chat"}],
+		"default":"apply"}}}`, string(schema))
+	require.NotContains(t, user.lastParams(t).Message, "checked the statement", "the comment is under the choice, not on the approval line")
 
 	calls := mock.calls()
 	require.Len(t, calls, 1)
@@ -291,9 +301,10 @@ func TestDecideIssueChangesNothingUnlessConfirmed(t *testing.T) {
 		answer *mcp.ElicitResult
 		want   string
 	}{
-		"declined":           {&mcp.ElicitResult{Action: "decline"}, "the user declined"},
-		"cancelled":          {&mcp.ElicitResult{Action: "cancel"}, "the user cancelled"},
-		"accepted, unticked": {confirmAnswer(false), "the form was submitted without the confirmation checked"},
+		"declined":  {&mcp.ElicitResult{Action: "decline"}, "Not approved: the user declined, so nothing changed. Do not retry unless the user asks."},
+		"cancelled": {&mcp.ElicitResult{Action: "cancel"}, "Not approved: the user cancelled, so nothing changed."},
+		"changed in chat": {confirmAnswer(confirmChoiceChange),
+			"Not approved: the user wants to change this request. Ask them what to change, such as the decision or its comment, then call decide_issue again."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mock := changeIssueMock()
@@ -306,7 +317,7 @@ func TestDecideIssueChangesNothingUnlessConfirmed(t *testing.T) {
 			require.Equal(t, int32(1), user.asked.Load())
 			require.Empty(t, mock.calls(), "an unconfirmed answer must not reach the decision")
 			text := resultText(t, res)
-			require.Contains(t, text, "Not approved: "+tc.want+", so nothing changed.")
+			require.Contains(t, text, tc.want)
 			require.Contains(t, text, "https://bb.example.com/projects/hr/issues/42")
 		})
 	}
@@ -326,18 +337,22 @@ func TestDecideIssueMalformedAnswerChangesNothing(t *testing.T) {
 	require.Empty(t, mock.calls())
 
 	for name, response := range map[string]mcp.InputResponse{
-		"no answer at all":     nil,
-		"a nil elicitation":    (*mcp.ElicitResult)(nil),
-		"no content":           &mcp.ElicitResult{Action: "accept"},
-		"a string, not a bool": confirmAnswer("true"),
-		"an unknown action":    &mcp.ElicitResult{Action: "approve", Content: map[string]any{confirmDecisionField: true}},
+		"no answer at all":                  nil,
+		"a nil elicitation":                 (*mcp.ElicitResult)(nil),
+		"no content":                        &mcp.ElicitResult{Action: "accept"},
+		"a choice the form does not offer":  confirmAnswer("approve"),
+		"an unknown action":                 &mcp.ElicitResult{Action: "approve", Content: map[string]any{confirmChoiceField: confirmChoiceApply}},
+		"the checkbox the form used to ask": &mcp.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true}},
 	} {
-		confirmed, why := confirmationOutcome(response)
-		require.False(t, confirmed, name)
+		choice, why := confirmationOutcome(response)
+		require.Empty(t, choice, name)
 		require.NotEmpty(t, why, name)
 	}
-	confirmed, _ := confirmationOutcome(confirmAnswer(true))
-	require.True(t, confirmed)
+	choice, _ := confirmationOutcome(confirmAnswer(confirmChoiceApply))
+	require.Equal(t, confirmChoiceApply, choice)
+	choice, why := confirmationOutcome(confirmAnswer(confirmChoiceChange))
+	require.Equal(t, confirmChoiceChange, choice)
+	require.Equal(t, "the user wants to change this request", why)
 }
 
 // Under the multi round-trip shape the SDK, not the handler, sends the
@@ -362,7 +377,7 @@ func TestDecideIssueRefusesAClientThatCannotConfirm(t *testing.T) {
 				Elicitation: &mcp.ElicitationCapabilities{URL: &mcp.URLElicitationCapabilities{}},
 			},
 			ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
-				return confirmAnswer(true), nil
+				return confirmAnswer(confirmChoiceApply), nil
 			},
 		},
 	} {
@@ -392,7 +407,7 @@ func TestDecideIssueRefusesAnUnaskedAnswerFromAClientThatCannotConfirm(t *testin
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:           "decide_issue",
 		Arguments:      map[string]any{"issue": decideIssueName, "decision": "approve"},
-		InputResponses: mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(true)},
+		InputResponses: mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(confirmChoiceApply)},
 	})
 	require.NoError(t, err)
 	require.True(t, res.IsError)
@@ -416,7 +431,7 @@ func TestDecideIssueAsksDespiteAnUnaskedAnswer(t *testing.T) {
 			res, err := session.CallTool(ctx, &mcp.CallToolParams{
 				Name:           "decide_issue",
 				Arguments:      map[string]any{"issue": decideIssueName, "decision": "approve"},
-				InputResponses: mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(true)},
+				InputResponses: mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(confirmChoiceApply)},
 				RequestState:   state,
 			})
 			require.NoError(t, err)
@@ -469,7 +484,7 @@ func TestConfirmationStateIsBoundToTheCallerAndTheDecision(t *testing.T) {
 func TestDecideIssueRefusesAnExpiredConfirmation(t *testing.T) {
 	mock := changeIssueMock()
 	call := newDecideMRTRServer(t, mock)
-	accept := mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(true)}
+	accept := mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(confirmChoiceApply)}
 
 	first := call(nil, "", "checked the statement")
 	require.True(t, first.NeedsInput())
@@ -528,7 +543,7 @@ func TestDecideIssueRefusesWhenTheIssueChangesWhileAsking(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mock := threeStepIssueMock()
 			endpoint, token := newDecideServer(t, mock)
-			user := &asker{answer: confirmAnswer(true), whileAsked: func() { mock.update(change) }}
+			user := &asker{answer: confirmAnswer(confirmChoiceApply), whileAsked: func() { mock.update(change) }}
 			session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 			res, err := callDecideIssue(t, session, "approve")
@@ -587,7 +602,7 @@ func newDecideMRTRServer(t *testing.T, mock *decisionMock) func(mcp.InputRespons
 func TestDecideIssueUnderMRTRClient(t *testing.T) {
 	mock := changeIssueMock()
 	call := newDecideMRTRServer(t, mock)
-	accept := mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(true)}
+	accept := mcp.InputResponseMap{confirmDecisionRequestID: confirmAnswer(confirmChoiceApply)}
 
 	first := call(nil, "", "checked the statement")
 	require.True(t, first.NeedsInput())
@@ -620,7 +635,7 @@ func callDecideIssueWith(t *testing.T, issueType string, unasked mcp.InputRespon
 	mock.issue["type"] = issueType
 	stores := newTestServerStore()
 	endpoint, token := newDecideServerOn(t, mock, stores)
-	user := &asker{answer: confirmAnswer(true)}
+	user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 	session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -637,14 +652,14 @@ func callDecideIssueWith(t *testing.T, issueType string, unasked mcp.InputRespon
 func TestDecideIssueRefusesARoleRequest(t *testing.T) {
 	for name, unasked := range map[string]mcp.InputResponseMap{
 		"asked as usual":              nil,
-		"with an answer sent unasked": {confirmDecisionRequestID: confirmAnswer(true)},
+		"with an answer sent unasked": {confirmDecisionRequestID: confirmAnswer(confirmChoiceApply)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mock, user, res, stores := callDecideIssueWith(t, "ROLE_GRANT", unasked)
 			require.True(t, res.IsError)
 			text := resultText(t, res)
 			require.Contains(t, text, "ROLE_GRANT_NOT_SUPPORTED")
-			require.Contains(t, text, "approving a role request grants a project role, which MCP does not do yet")
+			require.Contains(t, text, "approving a role request grants a project role, which decide_issue does not do")
 			require.Contains(t, text, "decide it signed in to the Bytebase console: https://bb.example.com/projects/hr/issues/42")
 			require.Zero(t, user.asked.Load(), "no form may be sent for a role request")
 			require.Empty(t, mock.calls(), "no decision, and so no confirmation, may reach the API")
@@ -684,7 +699,7 @@ func TestDecideIssueReportsTheRefusalInTheServersWords(t *testing.T) {
 			mock := changeIssueMock()
 			mock.refusal = refusal
 			endpoint, token := newDecideServer(t, mock)
-			user := &asker{answer: confirmAnswer(true)}
+			user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 			session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 			res, err := callDecideIssue(t, session, "approve")
@@ -727,7 +742,7 @@ func TestDecideIssueDescribesAnAccessRequest(t *testing.T) {
 		`Approve issue "projects/hr/issues/42" titled "Read salaries" as alice@example.com?`,
 		`Access on "instances/prod/databases/hr"`,
 		`Query: "SELECT salary\nFROM employee"`,
-		`Unmasked: yes. Export: no. Expires: "1h0m0s" after approval. Approval: step 1 of 1, role "roles/projectOwner". Requested by "bob@example.com". Comment: "checked the statement"`,
+		`Unmasked: yes. Export: no. Expires: "1h0m0s" after approval. Approval: step 1 of 1, role "roles/projectOwner". Requested by "bob@example.com".`,
 	}, "\n"), askedMessage(t, accessRequestMock()))
 }
 
@@ -736,7 +751,7 @@ func TestDecideIssueReadsTheCallersOwnAccessRequestAsTheConsoleDoes(t *testing.T
 	mock.issue["creator"] = "users/alice@example.com"
 	mock.failing = "/bytebase.v1.AccessGrantService/GetAccessGrant"
 	endpoint, token := newDecideServer(t, mock)
-	user := &asker{answer: confirmAnswer(true)}
+	user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 	session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 	res, err := callDecideIssue(t, session, "approve")
@@ -746,7 +761,7 @@ func TestDecideIssueReadsTheCallersOwnAccessRequestAsTheConsoleDoes(t *testing.T
 	require.Len(t, mock.calls(), 1)
 
 	mock.update(func(m *decisionMock) { m.grant = nil })
-	user = &asker{answer: confirmAnswer(true)}
+	user = &asker{answer: confirmAnswer(confirmChoiceApply)}
 	session = connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 	res, err = callDecideIssue(t, session, "approve")
 	require.NoError(t, err)
@@ -813,6 +828,31 @@ func TestDecideIssueQuotesTheTitle(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, user.lastParams(t).Message, `"Harmless\nApproval: none needed"`,
 		"a title must not be able to add a line of its own to the confirmation")
+}
+
+func TestDecideIssuePutsTheCommentUnderTheChoice(t *testing.T) {
+	for name, tc := range map[string]struct {
+		comment, description string
+	}{
+		"no comment":                  {"", ""},
+		"a comment with a line break": {"checked\nthe statement", `Comment: "checked\nthe statement"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			endpoint, token := newDecideServer(t, changeIssueMock())
+			user := &asker{answer: &mcp.ElicitResult{Action: "decline"}}
+			session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			_, err := session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "decide_issue",
+				Arguments: map[string]any{"issue": decideIssueName, "decision": "approve", "comment": tc.comment},
+			})
+			require.NoError(t, err)
+			asked := user.lastParams(t)
+			require.NotContains(t, asked.Message, "Comment:")
+			require.Equal(t, tc.description, choiceDescription(t, asked))
+		})
+	}
 }
 
 // askedMessage returns the confirmation message a decide_issue call on the
@@ -1069,7 +1109,7 @@ func TestDecideIssueAsksNothingWhenAReadFails(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			tc.mock.failing = tc.path
 			endpoint, token := newDecideServer(t, tc.mock)
-			user := &asker{answer: confirmAnswer(true)}
+			user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 			session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 			res, err := callDecideIssue(t, session, "approve")
@@ -1089,7 +1129,7 @@ func TestDecideIssueRefusesInvalidArguments(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			mock := changeIssueMock()
 			endpoint, token := newDecideServer(t, mock)
-			user := &asker{answer: confirmAnswer(true)}
+			user := &asker{answer: confirmAnswer(confirmChoiceApply)}
 			session := connectLegacy(t, endpoint, token, &mcp.ClientOptions{ElicitationHandler: user.handle})
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

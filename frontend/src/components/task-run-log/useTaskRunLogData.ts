@@ -1,6 +1,6 @@
 import { create } from "@bufbuild/protobuf";
 import { createContextValues } from "@connectrpc/connect";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { rolloutServiceClientConnect } from "@/api";
 import { silentContextKey } from "@/api/context-key";
 import { useLatestRef } from "@/hooks/useLatestRef";
@@ -9,11 +9,15 @@ import { useSeededState } from "@/hooks/useSeededState";
 import { sameMessageList } from "@/lib/protoIdentity";
 import { useAppStore } from "@/stores/app";
 import { unknownRollout } from "@/types";
+import type { Release } from "@/types/proto-es/v1/release_service_pb";
 import {
   GetTaskRunLogRequestSchema,
+  GetTaskRunRequestSchema,
   type Task,
+  type TaskRun,
   TaskRun_Status,
   type TaskRunLogEntry,
+  TaskRunLogEntry_Type,
   TaskRunLogEntrySchema,
 } from "@/types/proto-es/v1/rollout_service_pb";
 import type { Sheet } from "@/types/proto-es/v1/sheet_service_pb";
@@ -40,7 +44,16 @@ export interface SheetFetchState extends FetchState {
 }
 
 export interface UseTaskRunLogDataResult {
+  // The run's task, from the cached rollout.
+  task?: Task;
+  // The run itself, fetched only when the caller passed no status (the
+  // revision and changelog pages), so the log can read its status and error.
+  taskRun?: TaskRun;
+  // The task's release, when the task is release-based.
+  release?: Release;
   entries: TaskRunLogEntry[];
+  // Identity and status of the observation that produced these log entries.
+  logSnapshot?: { taskRunName: string; status?: TaskRun_Status };
   sheet: Sheet | undefined;
   sheetsMap: Map<string, Sheet>;
   metadataFetch: FetchState;
@@ -100,7 +113,11 @@ const isLogCacheFresh = (
 // the log grows live instead of freezing until the run's status flips.
 const LIVE_LOG_POLL_INTERVAL_MS = 5000;
 
-type LogSlice = { entries: TaskRunLogEntry[]; state: FetchState };
+type LogSlice = {
+  entries: TaskRunLogEntry[];
+  state: FetchState;
+  logSnapshot?: UseTaskRunLogDataResult["logSnapshot"];
+};
 
 const seedLogSlice = (taskRunName?: string): LogSlice => {
   if (!taskRunName) {
@@ -108,7 +125,11 @@ const seedLogSlice = (taskRunName?: string): LogSlice => {
   }
   const cached = taskRunLogEntriesCache.get(taskRunName);
   if (cached) {
-    return { entries: cached.entries, state: { status: "success" } };
+    return {
+      entries: cached.entries,
+      state: { status: "success" },
+      logSnapshot: { taskRunName, status: cached.status },
+    };
   }
   return { entries: [], state: { status: "loading" } };
 };
@@ -246,6 +267,7 @@ type SheetSlice = {
   sheet: Sheet | undefined;
   sheetsMap: Map<string, Sheet>;
   state: SheetFetchState;
+  release?: Release;
 };
 
 const sheetlessSlice = (state: SheetFetchState): SheetSlice => ({
@@ -414,14 +436,29 @@ export const useTaskRunLogData = (
           entries: response.entries,
           status: taskRunStatus,
         });
-        // Identity-stable across live-poll ticks: unchanged entries keep the
-        // previous slice so the viewer doesn't re-render for nothing.
-        setLogSlice((prev) =>
-          prev.state.status === "success" &&
-          sameMessageList(TaskRunLogEntrySchema, prev.entries, response.entries)
-            ? prev
-            : { entries: response.entries, state: { status: "success" } }
-        );
+        setLogSlice((prev) => {
+          const sameEntries = sameMessageList(
+            TaskRunLogEntrySchema,
+            prev.entries,
+            response.entries
+          );
+          if (
+            sameEntries &&
+            prev.state.status === "success" &&
+            prev.logSnapshot?.taskRunName === requestedTaskRunName &&
+            prev.logSnapshot.status === taskRunStatus
+          ) {
+            return prev;
+          }
+          return {
+            entries: sameEntries ? prev.entries : response.entries,
+            state: { status: "success" },
+            logSnapshot: {
+              taskRunName: requestedTaskRunName,
+              status: taskRunStatus,
+            },
+          };
+        });
       })
       .catch((error: unknown) => {
         if (
@@ -432,7 +469,7 @@ export const useTaskRunLogData = (
         }
         // Keep showing stale cached entries over an empty error state.
         setLogSlice((prev) => ({
-          entries: prev.entries,
+          ...prev,
           state: { status: "error", error: getErrorMessage(error) },
         }));
       });
@@ -471,7 +508,46 @@ export const useTaskRunLogData = (
     []
   );
 
+  // ---- The run, when the caller has no status for it ----
+
+  const [fetchedRun, setFetchedRun] = useState<TaskRun>();
+  useEffect(() => {
+    if (!taskRunName || taskRunStatus !== undefined) return;
+    let canceled = false;
+    rolloutServiceClientConnect
+      .getTaskRun(create(GetTaskRunRequestSchema, { name: taskRunName }), {
+        // A reader of the database may not read the project that ran it.
+        contextValues: createContextValues().set(silentContextKey, true),
+      })
+      .then((run) => {
+        if (!canceled) setFetchedRun(run);
+      })
+      .catch(() => {
+        // Without the run the log renders without the spine.
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [taskRunName, taskRunStatus]);
+
   // ---- Sheet(s) referenced by the log ----
+
+  // A release task fetches only the sheets of the files its run reached, not
+  // every file in the release.
+  const reachedVersionsKey = useMemo(
+    () =>
+      [
+        ...new Set(
+          logSlice.entries
+            .filter(
+              (entry) =>
+                entry.type === TaskRunLogEntry_Type.RELEASE_FILE_EXECUTE
+            )
+            .map((entry) => entry.releaseFileExecute?.version ?? "")
+        ),
+      ].join(","),
+    [logSlice.entries]
+  );
 
   const sheetSeedKey = `${sheetFetchTaskKey}:${unresolvedTaskMetadataStateKey}:${taskRunName ?? ""}`;
   const [sheetSlice, setSheetSlice] = useSeededState<SheetSlice>(
@@ -498,11 +574,15 @@ export const useTaskRunLogData = (
         return;
       }
 
+      const reached = new Set(reachedVersionsKey.split(","));
       void fetchRelease(releaseName, true)
         .then(async (release) => {
           const fileSheets = await Promise.all(
             (release?.files ?? [])
-              .filter((file) => file.sheet && file.version)
+              .filter(
+                (file) =>
+                  file.sheet && file.version && reached.has(file.version)
+              )
               .map(async (file) => ({
                 version: file.version,
                 // Resolves undefined on failure; the result builder counts
@@ -519,6 +599,7 @@ export const useTaskRunLogData = (
             sheet: undefined,
             sheetsMap: releaseResult.sheetsMap,
             state: releaseResult.state,
+            release,
           });
         })
         .catch((error: unknown) => {
@@ -580,10 +661,15 @@ export const useTaskRunLogData = (
     taskRunName,
     sheetFetchTaskKey,
     unresolvedTaskMetadataStateKey,
+    reachedVersionsKey,
   ]);
 
   return {
+    task,
+    taskRun: fetchedRun?.name === taskRunName ? fetchedRun : undefined,
+    release: sheetSlice.release,
     entries: logSlice.entries,
+    logSnapshot: logSlice.logSnapshot,
     sheet: sheetSlice.sheet,
     sheetsMap: sheetSlice.sheetsMap,
     metadataFetch: metadataFetchState,

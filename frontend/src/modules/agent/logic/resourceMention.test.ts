@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   canAddResourceMention,
   deleteResourceMention,
+  getCurrentTurnResourceReferences,
   getDraftResourceMentions,
   getMentionTriggerRange,
   getPlanMentionLabel,
@@ -14,6 +15,7 @@ import {
   updateDraftResourceMentions,
   updateResourceMentionRange,
 } from "./resourceMention";
+import type { AgentMessage } from "./types";
 
 const projectReference = {
   kind: "project" as const,
@@ -39,6 +41,339 @@ const planReference = {
   project: "projects/orders",
   label: "Add order indexes",
 };
+
+const resourceMessage = (
+  message: Partial<AgentMessage> = {}
+): AgentMessage => ({
+  id: "message-1",
+  chatId: "chat-1",
+  createdTs: 1,
+  role: "user",
+  content: "Help me choose a database",
+  ...message,
+});
+
+describe("getCurrentTurnResourceReferences", () => {
+  const question = resourceMessage({
+    role: "assistant",
+    toolCalls: [
+      {
+        id: "ask-1",
+        name: "ask_user",
+        arguments: '{"prompt":"Which database?","kind":"input"}',
+      },
+    ],
+  });
+  const answer = resourceMessage({
+    role: "tool",
+    toolCallId: "ask-1",
+    content: '{"kind":"input","answer":"Use @orders_db"}',
+    metadata: { resourceReference: databaseReference },
+  });
+
+  test("uses the latest selected input reply without losing it after another clarification", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage({
+          metadata: { resourceReference: projectReference },
+        }),
+        question,
+        answer,
+        resourceMessage({
+          role: "assistant",
+          content: "Which columns?",
+        }),
+      ])
+    ).toEqual([databaseReference]);
+  });
+
+  test("accepts the default input ask kind and normalizes a project and database pair", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        {
+          ...question,
+          toolCalls: [
+            {
+              ...question.toolCalls![0],
+              arguments: '{"prompt":"Which database?"}',
+            },
+          ],
+        },
+        {
+          ...answer,
+          metadata: {
+            resourceReferences: [databaseReference, projectReference],
+          },
+        },
+      ])
+    ).toEqual([projectReference, databaseReference]);
+  });
+
+  const customQuestion = resourceMessage({
+    role: "assistant",
+    toolCalls: [
+      {
+        id: "ask-custom",
+        name: "ask_user",
+        arguments: JSON.stringify({
+          prompt: "Which database?",
+          kind: "choose",
+          options: [
+            {
+              label: "Another database",
+              value: "custom-database",
+              kind: "custom-input",
+            },
+          ],
+        }),
+      },
+    ],
+  });
+  const customAnswer = resourceMessage({
+    role: "tool",
+    toolCallId: "ask-custom",
+    content: JSON.stringify({
+      kind: "choose",
+      answer: "Another database: @orders_db",
+      value: "custom-database",
+      input: "@orders_db",
+    }),
+    metadata: { resourceReferences: [projectReference, databaseReference] },
+  });
+
+  test("uses bound references from a matching custom-input choice reply", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        customQuestion,
+        customAnswer,
+        resourceMessage({ role: "assistant", content: "Which columns?" }),
+      ])
+    ).toEqual([projectReference, databaseReference]);
+  });
+
+  test.each([
+    ["ask_masking_rule_scope", "another-database"],
+    ["ask_masking_rule_scope", "choose-project"],
+    ["ask_masking_exemption_scope", "another-database"],
+    ["ask_masking_semantic_type", "action:create-semantic-type"],
+  ])("uses bound references from %s custom choice %s", (name, value) => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        {
+          ...customQuestion,
+          toolCalls: [{ id: "ask-custom", name, arguments: "{}" }],
+        },
+        {
+          ...customAnswer,
+          content: JSON.stringify({
+            kind: "choose",
+            answer: "Custom: @orders_db",
+            value,
+            input: "@orders_db",
+          }),
+        },
+      ])
+    ).toEqual([projectReference, databaseReference]);
+  });
+
+  test.each([
+    { kind: "choose", answer: "Custom", value: "custom-database" },
+    { kind: "choose", answer: "Custom", value: "custom-database", input: " " },
+    {
+      kind: "choose",
+      answer: " ",
+      value: "custom-database",
+      input: "@orders_db",
+    },
+    {
+      kind: "choose",
+      answer: "Custom",
+      value: "not-offered",
+      input: "@orders_db",
+    },
+    { kind: "input", answer: "@orders_db", input: "@orders_db" },
+    { kind: "cancelled", reason: "user" },
+  ])("ignores malformed custom-input resource replies %j", (response) => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        customQuestion,
+        { ...customAnswer, content: JSON.stringify(response) },
+      ])
+    ).toEqual([]);
+  });
+
+  test.each([
+    { kind: "choose", options: [{ value: "custom-database" }] },
+    {
+      kind: "choose",
+      resourceKind: "database",
+      options: [{ value: "custom-database", kind: "custom-input" }],
+    },
+    {
+      kind: "choose",
+      options: [
+        { value: "custom-database", kind: "custom-input" },
+        { value: "custom-database", kind: "custom-input" },
+      ],
+    },
+    {
+      kind: "confirm",
+      options: [{ value: "custom-database", kind: "custom-input" }],
+    },
+  ])("does not trust fabricated custom choices %j", (args) => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        {
+          ...customQuestion,
+          toolCalls: [
+            {
+              id: "ask-custom",
+              name: "ask_user",
+              arguments: JSON.stringify({ prompt: "Which database?", ...args }),
+            },
+          ],
+        },
+        customAnswer,
+      ])
+    ).toEqual([]);
+  });
+
+  test.each([
+    ["ask_masking_rule_scope", "workspace"],
+    ["ask_masking_exemption_scope", "projects/orders"],
+    ["ask_masking_semantic_type", "semantic-type:bb.default"],
+    ["call_api", "another-database"],
+  ])(
+    "does not trust injected input on ordinary %s choice %s",
+    (name, value) => {
+      expect(
+        getCurrentTurnResourceReferences([
+          resourceMessage(),
+          {
+            ...customQuestion,
+            toolCalls: [{ id: "ask-custom", name, arguments: "{}" }],
+          },
+          {
+            ...customAnswer,
+            content: JSON.stringify({
+              kind: "choose",
+              answer: "Custom: @orders_db",
+              value,
+              input: "@orders_db",
+            }),
+          },
+        ])
+      ).toEqual([]);
+    }
+  );
+
+  test("does not carry custom-input references across user turns or duplicate replies", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        customQuestion,
+        resourceMessage({ id: "next" }),
+        customAnswer,
+      ])
+    ).toEqual([]);
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        customQuestion,
+        customQuestion,
+        customAnswer,
+      ])
+    ).toEqual([]);
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        customQuestion,
+        { ...customAnswer, metadata: undefined },
+        customAnswer,
+      ])
+    ).toEqual([]);
+  });
+
+  test("does not carry a clarification selection into a new user turn", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        question,
+        answer,
+        resourceMessage({ id: "next-user" }),
+      ])
+    ).toEqual([]);
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        question,
+        resourceMessage({ id: "next-user" }),
+        answer,
+      ])
+    ).toEqual([]);
+  });
+
+  test.each([
+    { content: '{"kind":"confirm","answer":"Proceed","confirmed":true}' },
+    { content: '{"kind":"choose","answer":"Orders","value":"orders"}' },
+    { content: '{"kind":"input","answer":" "}' },
+    { content: "invalid JSON" },
+    { toolCallId: "unmatched" },
+    { metadata: { resourceReferences: [databaseReference, issueReference] } },
+  ])("ignores invalid or non-input reply references %j", (changes) => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage({
+          metadata: { resourceReference: projectReference },
+        }),
+        question,
+        { ...answer, ...changes },
+      ])
+    ).toEqual([projectReference]);
+  });
+
+  test.each([
+    { name: "call_api" },
+    { arguments: '{"prompt":"Proceed?","kind":"confirm"}' },
+    { arguments: '{"prompt":"Which database?","kind":"choose"}' },
+    { arguments: "invalid JSON" },
+  ])("does not bind resources from another tool request %j", (changes) => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        {
+          ...question,
+          toolCalls: [{ ...question.toolCalls![0], ...changes }],
+        },
+        answer,
+      ])
+    ).toEqual([]);
+  });
+
+  test("does not bind duplicate replies or ambiguous tool call IDs", () => {
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        question,
+        question,
+        answer,
+      ])
+    ).toEqual([]);
+    expect(
+      getCurrentTurnResourceReferences([
+        resourceMessage(),
+        question,
+        { ...answer, metadata: undefined },
+        answer,
+      ])
+    ).toEqual([]);
+  });
+});
 
 describe("getPlanMentionLabel", () => {
   test("keeps the Plan ID visible when titles are shared", () => {

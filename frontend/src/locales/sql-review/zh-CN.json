@@ -2,18 +2,20 @@
   "add-or-remove-rules": "添加或删除规则",
   "add-rules": "添加规则",
   "ai-review": {
-    "ai-off": "工作空间尚未启用 AI，因此不会运行 AI 审核。",
+    "ai-off": "工作空间尚未启用 AI，因此不会运行 AI SQL 审核。",
+    "comments-description": "AI 模型会审核工单中的 SQL（包括草稿），并以评论指出发现的风险。在所有评论解决之前，发布会被阻止。",
     "description": "由 AI 模型审核工单中的 SQL，发现标准规则无法识别的风险。",
     "enable": {
       "description": "每次审核会将语句原文发送给 AI 提供方，并可能发送目标数据库的 Schema 及其表的统计信息，但不会读取数据库中的任何数据行。",
       "self": "使用 AI 审核变更"
     },
     "policy": {
+      "ai-review-policy": "AI SQL 审核策略",
       "cannot-clear": "你的角色无法删除策略，因此不能清空此策略。",
       "description": "此策略定义 AI 审核数据库变更时检查的内容。它适用于工作空间中的每个项目，每个项目都可以添加自己的策略。",
       "load-failed": "审核策略加载失败。",
       "none": "未设置审核策略。",
-      "paused": "此策略已暂停，AI 审核不会使用它。",
+      "paused": "此策略已暂停，AI SQL 审核不会使用它。",
       "placeholder": "例如：\n报告在超过 100 万行的表上会阻塞写入的结构变更。\n每个外键的列都必须有索引。\n新建的表必须包含 created_at 列和 updated_at 列。",
       "project-description": "可选的项目专属策略。它会添加到工作空间策略中；如有冲突则优先。",
       "project-none": "未设置项目策略。",
@@ -21,10 +23,11 @@
       "project-self": "项目补充策略",
       "remove-only": "你可以删除此策略，但不能修改它。清空文本即可删除。",
       "self": "审核策略",
+      "standard-rules-hint": "AI SQL 审核不会重复标准规则的检查，也会跳过已关闭的规则。如需让 AI SQL 审核仍然检查某项，请在策略中写明，例如“每条 UPDATE 语句都必须带有 WHERE 子句”。",
       "too-large": "策略大小为 {{size}} 字节，超过了 {{limit}} 字节的上限。请缩短后再保存。"
     },
-    "project-description": "AI 审核在工作空间中配置。请在下方添加可选的项目专属策略。",
-    "self": "AI 审核",
+    "project-description": "AI SQL 审核在工作空间中配置。请在下方添加可选的项目专属策略。",
+    "self": "AI SQL 审核",
     "set-for-workspace": "由工作空间统一管理。",
     "turn-on-ai": "启用 AI",
     "view-workspace-setting": "查看工作空间 AI 设置"
@@ -68,7 +71,8 @@
   },
   "delete": "删除审核策略",
   "delete-description": "SQL 审核策略及其所有规则将被永久删除，此操作无法撤销。",
-  "description": "SQL 审核策略可以为不同的环境定义不同的 SQL lint 规则集. 它可以帮助团队采用 SQL 最佳使用实践，并在不同的数据库上约束 schema 的一致性。每当您尝试做一个 DDL/DML 变更或者使用 SQL 编辑器来查询数据时， 配置的 SQL 审核规则就会检查相应的执行语句。",
+  "delete-policy-title": "删除 {{name}}？",
+  "description": "检查每次 SQL 变更和 SQL 编辑器查询的规则。策略作用于它所绑定的环境或项目。",
   "disable-description": "禁用此策略将停止对已关联资源应用规则。您可以稍后重新启用。",
   "disabled": "SQL 审核策略已禁用",
   "enable-description": "启用此策略将开始对已关联资源应用规则。",
@@ -144,17 +148,17 @@
   "input-then-press-enter": "输入后按下回车来添加",
   "level": {
     "disabled": "禁用",
-    "error": "错误",
-    "name": "错误等级",
-    "warning": "警告"
+    "name": "优先级"
   },
   "no-permission": "仅管理员或 DBA 有权限创建或更新审核策略。",
+  "policies": "基于规则的 SQL 审核策略",
   "policy-create-failed": "审核策略创建失败",
   "policy-created": "审核策略已创建",
   "policy-removed": "审核策略已删除",
   "policy-update-failed": "审核策略更新失败",
   "policy-updated": "审核策略已更新",
   "review-policy": "审核策略",
+  "reviewer": "SQL 审核",
   "rule": {
     "ADVICE_ONLINE_MIGRATION": {
       "component": {
@@ -882,8 +886,7 @@
     "string-array-required": "请为 {{rule}} 添加至少一个值。"
   },
   "version-switch": {
-    "description": "仅限 dev 构建。标准规则全部关闭的项目，服务端运行 V1，其余运行 V2。此浏览器显示所选版本的页面。",
-    "self": "SQL 审核版本",
+    "description": "此标签显示浏览器所选的界面版本。各项目实际生效的标准规则决定运行哪个审核版本。",
     "to-v1": {
       "confirm": "切换到 V1",
       "description": "这会关闭工作空间的全部标准规则，计划检查改为运行 V1 SQL 审核。自定义了标准规则的项目保持不变。",
@@ -893,6 +896,8 @@
       "confirm": "切换到 V2",
       "description": "这会开启工作空间的全部标准规则，由标准规则审核取代 V1 SQL 审核。",
       "title": "切换到 SQL 审核 V2？"
-    }
+    },
+    "v1": "SQL 审核 V1",
+    "v2": "SQL 审核 V2"
   }
 }

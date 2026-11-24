@@ -72,8 +72,7 @@ func ConvertSyntaxErrorToDiagnostic(err *SyntaxError, statement string) Diagnost
 	end.Character++
 	message := err.Message
 	if err.RawMessage != "" {
-		// Use RawMessage which created by antlr runtime, do not need our fine-tuned message
-		// because we had indicated the error position in the message.
+		// Prefer the parser's raw message since the diagnostic range already indicates position.
 		message = err.RawMessage
 	}
 	return Diagnostic{
@@ -85,4 +84,52 @@ func ConvertSyntaxErrorToDiagnostic(err *SyntaxError, statement string) Diagnost
 		Source:   "Syntax check",
 		Message:  message,
 	}
+}
+
+// DiagnoseSyntaxError returns a diagnostic slice containing syntaxErr if non-nil.
+func DiagnoseSyntaxError(statement string, syntaxErr *SyntaxError) []Diagnostic {
+	diagnostics := make([]Diagnostic, 0)
+	if syntaxErr != nil {
+		diagnostics = append(diagnostics, ConvertSyntaxErrorToDiagnostic(syntaxErr, statement))
+	}
+	return diagnostics
+}
+
+// DiagnoseFirstError converts an optional engine-specific syntax error into a
+// non-nil Diagnostic slice.
+func DiagnoseFirstError[E any](statement string, err *E, extract func(*E) (text string, offset int, message string)) []Diagnostic {
+	if err == nil {
+		return []Diagnostic{}
+	}
+	text, offset, msg := extract(err)
+	return DiagnoseSyntaxError(statement, SyntaxErrorAtOffset(text, offset, msg))
+}
+
+// SyntaxErrorAtOffset builds a *SyntaxError from a parser text excerpt and byte offset.
+func SyntaxErrorAtOffset(text string, offset int, message string) *SyntaxError {
+	if offset < 0 {
+		return &SyntaxError{
+			Position: &storepb.Position{Line: 1, Column: 1},
+			Message:  message,
+		}
+	}
+	return &SyntaxError{
+		Position:   ByteOffsetToRunePosition(text, offset),
+		Message:    message,
+		RawMessage: message,
+	}
+}
+
+// ConvertOffsetDiagnostics maps engine-specific byte-offset diagnostics into LSP diagnostics.
+func ConvertOffsetDiagnostics[T any](statement string, diags []T, extract func(T) (offset int, msg string)) []Diagnostic {
+	result := make([]Diagnostic, 0, len(diags))
+	mapper := NewByteOffsetPositionMapper(statement)
+	for _, d := range diags {
+		offset, msg := extract(d)
+		result = append(result, ConvertSyntaxErrorToDiagnostic(&SyntaxError{
+			Position: mapper.Position(offset),
+			Message:  msg,
+		}, statement))
+	}
+	return result
 }

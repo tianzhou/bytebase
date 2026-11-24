@@ -33,6 +33,10 @@
         "desc": "AI駆動のクエリ提案とインデックス推奨を取得します。",
         "title": "AIクエリ提案"
       },
+      "FEATURE_AI_SQL_REVIEW": {
+        "desc": "AI モデルがポリシーに沿って各 Issue の SQL をレビューし、見つけたリスクをコメントします。",
+        "title": "AI SQL レビュー"
+      },
       "FEATURE_API_INTEGRATION_GUIDANCE": {
         "desc": "API統合のドキュメントとガイダンス。",
         "title": "API統合ガイダンス"
@@ -215,7 +219,7 @@
       },
       "FEATURE_PRE_DEPLOYMENT_SQL_REVIEW": {
         "desc": "100以上のlintルールとスキーマ一貫性チェックでSQLベストプラクティスを適用します。",
-        "title": "SQLレビュー"
+        "title": "ルールベースの SQL レビュー"
       },
       "FEATURE_PROGRESSIVE_ENVIRONMENT_DEPLOYMENT": {
         "desc": "異なる環境を通じて段階的に変更をデプロイします。",

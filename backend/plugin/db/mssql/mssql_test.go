@@ -1,6 +1,7 @@
 package mssql
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,274 +9,319 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"fmt"
+	"errors"
+	"io"
 	"math/big"
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/microsoft/go-mssqldb/azuread"
-	"github.com/microsoft/go-mssqldb/msdsn"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	odriver "github.com/bytebase/omni/driver"
+	metadatapb "github.com/bytebase/omni/metadata"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bytebase/bytebase/backend/common/testcontainer"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
-func TestConnectionDSNAppliesTLSSettings(t *testing.T) {
-	dir := t.TempDir()
-	writeCA := func(name string) (string, *x509.CertPool) {
-		ca := newTestCA(t)
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, ca, 0o600))
-		pool := x509.NewCertPool()
-		require.True(t, pool.AppendCertsFromPEM(ca))
-		return path, pool
-	}
-	sectionCA, sectionPool := writeCA("section.pem")
-	extraCA, extraPool := writeCA("extra.pem")
-
-	for _, tc := range []struct {
-		name       string
-		useSSL     bool
-		verify     bool
-		caFile     string
-		extra      map[string]string
-		encryption msdsn.Encryption
-		// roots verify the server certificate; nil means any certificate is accepted,
-		// unless systemRoots asks for the host's trust store, which crypto/tls takes
-		// from an unset RootCAs.
-		roots       *x509.CertPool
-		systemRoots bool
-	}{
-		{name: "disabled", encryption: msdsn.EncryptionOff},
-		{name: "disabled ignores verify", verify: true, encryption: msdsn.EncryptionOff},
-		{name: "tls", useSSL: true, encryption: msdsn.EncryptionRequired},
-		{name: "tls with a CA", useSSL: true, caFile: sectionCA, encryption: msdsn.EncryptionRequired},
-		{name: "tls verified against the CA", useSSL: true, verify: true, caFile: sectionCA, encryption: msdsn.EncryptionRequired, roots: sectionPool},
-		{name: "tls verified against system trust", useSSL: true, verify: true, encryption: msdsn.EncryptionRequired, systemRoots: true},
-
-		{name: "extra parameters cannot turn verification off", useSSL: true, verify: true, caFile: sectionCA, extra: map[string]string{"TrustServerCertificate": "true"}, encryption: msdsn.EncryptionRequired, roots: sectionPool},
-		{name: "extra parameters cannot make encryption optional", useSSL: true, extra: map[string]string{"encrypt": "false"}, encryption: msdsn.EncryptionRequired},
-		{name: "extra parameters cannot disable encryption", useSSL: true, extra: map[string]string{"Encrypt": "DISABLE"}, encryption: msdsn.EncryptionRequired},
-		{name: "extra parameters can require strict encryption", useSSL: true, extra: map[string]string{"Encrypt": "Strict"}, encryption: msdsn.EncryptionStrict, systemRoots: true},
-		{name: "extra parameters can turn verification on", useSSL: true, caFile: sectionCA, extra: map[string]string{"trustservercertificate": "false"}, encryption: msdsn.EncryptionRequired, roots: sectionPool},
-		{name: "the CA replaces a certificate parameter", useSSL: true, verify: true, caFile: sectionCA, extra: map[string]string{"Certificate": extraCA}, encryption: msdsn.EncryptionRequired, roots: sectionPool},
-		{name: "a certificate parameter replaces system trust", useSSL: true, verify: true, extra: map[string]string{"certificate": extraCA}, encryption: msdsn.EncryptionRequired, roots: extraPool},
-
-		{name: "disabled applies encrypt", extra: map[string]string{"encrypt": "true"}, encryption: msdsn.EncryptionRequired},
-		{name: "disabled applies TrustServerCertificate", extra: map[string]string{"TrustServerCertificate": "false"}, encryption: msdsn.EncryptionOff, systemRoots: true},
-		{name: "disabled applies encrypt=disable", extra: map[string]string{"encrypt": "disable"}, encryption: msdsn.EncryptionDisabled},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ds := &storepb.DataSource{
-				Host:                      "db.example.com",
-				Port:                      "1433",
-				Username:                  "bytebase",
-				UseSsl:                    tc.useSSL,
-				VerifyTlsCertificate:      tc.verify,
-				ExtraConnectionParameters: tc.extra,
-			}
-			driverName, dsn := connectionDSN(ds, "password", "", tc.caFile)
-			require.Equal(t, "sqlserver", driverName)
-			cfg, err := msdsn.Parse(dsn)
-			require.NoError(t, err)
-			require.Equal(t, tc.encryption, cfg.Encryption)
-			if tc.encryption == msdsn.EncryptionDisabled {
-				require.Nil(t, cfg.TLSConfig)
-				return
-			}
-			verified := tc.roots != nil || tc.systemRoots
-			require.Equal(t, !verified, cfg.TLSConfig.InsecureSkipVerify)
-			if verified {
-				require.Equal(t, "db.example.com", cfg.TLSConfig.ServerName)
-			}
-			if tc.systemRoots {
-				require.Nil(t, cfg.TLSConfig.RootCAs, "verified against roots other than the host's")
-			} else if tc.roots != nil {
-				require.True(t, tc.roots.Equal(cfg.TLSConfig.RootCAs), "verified against the wrong roots")
-			}
-		})
-	}
+// TestMSSQLConfigDefaults maps a data source with nothing set onto the contract
+// config: the client's defaults, with the CA file absent.
+func TestMSSQLConfigDefaults(t *testing.T) {
+	cfg, caFile, err := mssqlConfig(db.ConnectionConfig{
+		DataSource:        &storepb.DataSource{Host: "db.example.com", Port: "1433", Username: "bytebase"},
+		Password:          "password",
+		ConnectionContext: db.ConnectionContext{DatabaseName: "db1"},
+	})
+	require.NoError(t, err)
+	require.Empty(t, caFile)
+	require.Equal(t, "db.example.com", cfg.Host)
+	require.Equal(t, "1433", cfg.Port)
+	require.Equal(t, "db1", cfg.Database)
+	require.Equal(t, "bytebase", cfg.User)
+	require.Equal(t, "password", cfg.Password)
+	require.Equal(t, "bytebase", cfg.ApplicationName)
+	// The client accepts the server's certificate unless the data source asks
+	// it to verify, as the driver this replaced did.
+	require.Equal(t, map[string]string{"trustservercertificate": "true"}, cfg.Params)
+	require.Nil(t, cfg.TokenProvider)
+	require.Empty(t, cfg.EngineVersion)
 }
 
-func TestConnectionDSNMergesExtraParameters(t *testing.T) {
+// TestMSSQLConfigExtraParameters keeps the precedence the old driver gave the
+// data source's own parameters: they override the app name, the login, the
+// server and the port, but never the database.
+func TestMSSQLConfigExtraParameters(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		ds         *storepb.DataSource
-		database   string
-		driverName string
-		// want holds the parameters go-mssqldb reads from the DSN.
-		want map[string]string
+		name     string
+		ds       *storepb.DataSource
+		database string
+		wantUser string
+		wantPass string
+		wantApp  string
+		wantHost string
+		wantPort string
+		wantDB   string
+		wantRest map[string]string
 	}{
 		{
-			name:       "defaults",
-			ds:         &storepb.DataSource{Username: "bytebase"},
-			database:   "db1",
-			driverName: "sqlserver",
-			want:       map[string]string{"app name": "bytebase", "tlsmin": "1.0", "database": "db1", "user id": "bytebase", "password": "password"},
+			name: "extra parameters override the credentials",
+			ds: &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"User ID": "other", "Password": "other",
+			}},
+			wantUser: "other", wantPass: "other", wantApp: "bytebase", wantRest: map[string]string{},
 		},
 		{
-			name:       "extra parameters override the credentials",
-			ds:         &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{"User ID": "other", "Password": "other"}},
-			driverName: "sqlserver",
-			want:       map[string]string{"user id": "other", "password": "other"},
+			name: "extra parameters override the app name",
+			ds: &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"App Name": "etl",
+			}},
+			wantUser: "bytebase", wantPass: "password", wantApp: "etl", wantRest: map[string]string{},
 		},
 		{
-			name:       "extra parameters override the app name and tlsmin",
-			ds:         &storepb.DataSource{ExtraConnectionParameters: map[string]string{"App Name": "etl", "TLSMin": "1.2"}},
-			driverName: "sqlserver",
-			want:       map[string]string{"app name": "etl", "tlsmin": "1.2"},
+			name: "the database comes from Bytebase",
+			ds: &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"Database": "other",
+			}},
+			database: "db1", wantUser: "bytebase", wantPass: "password", wantApp: "bytebase", wantDB: "db1",
+			wantRest: map[string]string{},
 		},
 		{
-			name:       "the database comes from Bytebase",
-			ds:         &storepb.DataSource{ExtraConnectionParameters: map[string]string{"Database": "other"}},
-			database:   "db1",
-			driverName: "sqlserver",
-			want:       map[string]string{"database": "db1"},
+			name: "extra parameters name the database when Bytebase has none",
+			ds: &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"database": "other",
+			}},
+			wantUser: "bytebase", wantPass: "password", wantApp: "bytebase", wantDB: "other",
+			wantRest: map[string]string{},
 		},
 		{
-			name:       "extra parameters name the database when Bytebase has none",
-			ds:         &storepb.DataSource{ExtraConnectionParameters: map[string]string{"database": "other"}},
-			driverName: "sqlserver",
-			want:       map[string]string{"database": "other"},
+			name: "extra parameters override the server and port",
+			ds: &storepb.DataSource{Host: "db.example.com", Port: "1433", Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"Server": "other.example.com", "Port": "1444",
+			}},
+			wantUser: "bytebase", wantPass: "password", wantApp: "bytebase", wantHost: "other.example.com", wantPort: "1444",
+			wantRest: map[string]string{},
 		},
 		{
-			name: "the Azure credential comes from Bytebase",
-			ds: &storepb.DataSource{
-				AuthenticationType:        storepb.DataSource_AZURE_IAM,
-				IamExtension:              &storepb.DataSource_AzureCredential_{AzureCredential: &storepb.DataSource_AzureCredential{TenantId: "tenant", ClientId: "client", ClientSecret: "secret"}},
-				ExtraConnectionParameters: map[string]string{"FedAuth": azuread.ActiveDirectoryMSI, "User ID": "other", "Password": "other"},
-			},
-			driverName: azuread.DriverName,
-			want:       map[string]string{"fedauth": azuread.ActiveDirectoryServicePrincipal, "user id": "client@tenant", "password": "secret"},
+			name: "extra parameters reach a named instance",
+			ds: &storepb.DataSource{Host: "db.example.com", Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"Server": `other.example.com\SQLEXPRESS`,
+			}},
+			wantUser: "bytebase", wantPass: "password", wantApp: "bytebase", wantHost: `other.example.com\SQLEXPRESS`,
+			wantRest: map[string]string{},
 		},
 		{
-			name:       "Azure without a credential uses the default chain",
-			ds:         &storepb.DataSource{AuthenticationType: storepb.DataSource_AZURE_IAM},
-			driverName: azuread.DriverName,
-			want:       map[string]string{"fedauth": azuread.ActiveDirectoryDefault},
+			name: "every other parameter reaches the client",
+			ds: &storepb.DataSource{Username: "bytebase", ExtraConnectionParameters: map[string]string{
+				"packet size": "8192", "TLSMin": "1.2",
+			}},
+			wantUser: "bytebase", wantPass: "password", wantApp: "bytebase",
+			wantRest: map[string]string{"packet size": "8192", "tlsmin": "1.2"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			driverName, dsn := connectionDSN(tc.ds, "password", tc.database, "")
-			require.Equal(t, tc.driverName, driverName)
-			cfg, err := msdsn.Parse(dsn)
+			cfg, caFile, err := mssqlConfig(db.ConnectionConfig{
+				DataSource:        tc.ds,
+				Password:          "password",
+				ConnectionContext: db.ConnectionContext{DatabaseName: tc.database},
+			})
 			require.NoError(t, err)
-			for key, value := range tc.want {
-				require.Equal(t, value, cfg.Parameters[key], key)
-			}
-		})
-	}
-}
-
-// A named instance is only reachable through Extra Parameters, because the Host field has no room
-// for the backslash of Server=host\instance.
-func TestConnectionDSNCarriesServerAndPort(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		ds           *storepb.DataSource
-		wantHost     string
-		wantPort     uint64
-		wantInstance string
-	}{
-		{
-			name:     "the server and port come from Bytebase",
-			ds:       &storepb.DataSource{Host: "db.example.com", Port: "1433"},
-			wantHost: "db.example.com",
-			wantPort: 1433,
-		},
-		{
-			name:     "extra parameters override the server and port",
-			ds:       &storepb.DataSource{Host: "db.example.com", Port: "1433", ExtraConnectionParameters: map[string]string{"Server": "other.example.com", "Port": "1444"}},
-			wantHost: "other.example.com",
-			wantPort: 1444,
-		},
-		{
-			name:     "an IPv6 server",
-			ds:       &storepb.DataSource{Host: "db.example.com", Port: "1433", ExtraConnectionParameters: map[string]string{"Server": "2001:db8::1"}},
-			wantHost: "2001:db8::1",
-			wantPort: 1433,
-		},
-		{
-			name:     "an IPv6 server already in brackets",
-			ds:       &storepb.DataSource{Host: "db.example.com", Port: "1433", ExtraConnectionParameters: map[string]string{"Server": "[2001:db8::1]"}},
-			wantHost: "2001:db8::1",
-			wantPort: 1433,
-		},
-		{
-			name:     "an IPv6 host",
-			ds:       &storepb.DataSource{Host: "2001:db8::1", Port: "1433"},
-			wantHost: "2001:db8::1",
-			wantPort: 1433,
-		},
-		{
-			name:         "extra parameters reach a named instance",
-			ds:           &storepb.DataSource{Host: "db.example.com", ExtraConnectionParameters: map[string]string{"Server": `other.example.com\SQLEXPRESS`}},
-			wantHost:     "other.example.com",
-			wantInstance: "SQLEXPRESS",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, dsn := connectionDSN(tc.ds, "password", "", "")
-			cfg, err := msdsn.Parse(dsn)
-			require.NoError(t, err)
+			require.Empty(t, caFile)
+			require.Equal(t, tc.wantUser, cfg.User)
+			require.Equal(t, tc.wantPass, cfg.Password)
+			require.Equal(t, tc.wantApp, cfg.ApplicationName)
 			require.Equal(t, tc.wantHost, cfg.Host)
 			require.Equal(t, tc.wantPort, cfg.Port)
-			require.Equal(t, tc.wantInstance, cfg.Instance)
+			require.Equal(t, tc.wantDB, cfg.Database)
+			// The client's TLS default is the only parameter left when the data
+			// source names none.
+			want := map[string]string{"trustservercertificate": "true"}
+			for key, value := range tc.wantRest {
+				want[key] = value
+			}
+			require.Equal(t, want, cfg.Params)
 		})
 	}
 }
 
-func TestOpenAppliesTLSSettings(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	container := testcontainer.SharedMSSQLContainer(t)
-	signer, err := os.ReadFile(container.GetTLSCAPath())
-	require.NoError(t, err)
-	ca, otherCA := string(signer), string(newTestCA(t))
-
+// TestMSSQLConfigTLS pins the parameters go-mssqldb reads the TLS settings
+// from. TLS mode TLS sets a floor that the data source's parameters may raise
+// but not lower, and the section's CA replaces a certificate parameter.
+func TestMSSQLConfigTLS(t *testing.T) {
+	caPEM := string(newTestCA(t))
 	for _, tc := range []struct {
-		name string
-		// host is localhost, the name in the server certificate, or 127.0.0.1, which it lacks.
-		host string
-		ds   *storepb.DataSource
-		// encryptOption is the session's sys.dm_exec_connections.encrypt_option.
-		encryptOption string
-		wantErr       string
+		name   string
+		ds     *storepb.DataSource
+		want   map[string]string
+		wantCA bool
 	}{
-		{name: "disabled ignores verify", host: "127.0.0.1", ds: &storepb.DataSource{VerifyTlsCertificate: true, SslCa: otherCA}, encryptOption: "FALSE"},
-		{name: "tls accepts any certificate", host: "127.0.0.1", ds: &storepb.DataSource{UseSsl: true, SslCa: otherCA}, encryptOption: "TRUE"},
-		{name: "tls verified against the CA", host: "localhost", ds: &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: ca}, encryptOption: "TRUE"},
-		{name: "a host missing from the certificate", host: "127.0.0.1", ds: &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: ca}, wantErr: "doesn't contain any IP SANs"},
-		{name: "a CA that did not sign the certificate", host: "localhost", ds: &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: otherCA}, wantErr: "certificate signed by unknown authority"},
-		{name: "system trust rejects a private CA", host: "localhost", ds: &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true}, wantErr: "tls: failed to verify certificate"},
 		{
-			name:    "extra parameters cannot turn verification off",
-			host:    "127.0.0.1",
-			ds:      &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: ca, ExtraConnectionParameters: map[string]string{"TrustServerCertificate": "true"}},
-			wantErr: "doesn't contain any IP SANs",
+			name: "verification off",
+			ds:   &storepb.DataSource{UseSsl: true},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "true"},
+		},
+		{
+			name: "verification off ignores verify",
+			ds:   &storepb.DataSource{VerifyTlsCertificate: true},
+			want: map[string]string{"trustservercertificate": "true"},
+		},
+		{
+			name:   "the CA travels as a path",
+			ds:     &storepb.DataSource{UseSsl: true, SslCa: caPEM},
+			want:   map[string]string{"encrypt": "true", "trustservercertificate": "true"},
+			wantCA: true,
+		},
+		{
+			name:   "verified against the CA",
+			ds:     &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: caPEM},
+			want:   map[string]string{"encrypt": "true", "trustservercertificate": "false"},
+			wantCA: true,
+		},
+		{
+			name: "verified against system trust",
+			ds:   &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "false"},
+		},
+		{
+			name: "parameters cannot make encryption optional",
+			ds:   &storepb.DataSource{UseSsl: true, ExtraConnectionParameters: map[string]string{"encrypt": "false"}},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "true"},
+		},
+		{
+			name: "parameters can require strict encryption",
+			ds:   &storepb.DataSource{UseSsl: true, ExtraConnectionParameters: map[string]string{"Encrypt": "Strict"}},
+			want: map[string]string{"encrypt": "Strict", "trustservercertificate": "true"},
+		},
+		{
+			name: "parameters cannot turn verification off",
+			ds:   &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, ExtraConnectionParameters: map[string]string{"TrustServerCertificate": "true"}},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "false"},
+		},
+		{
+			name: "parameters can turn verification on",
+			ds:   &storepb.DataSource{UseSsl: true, ExtraConnectionParameters: map[string]string{"trustservercertificate": "false"}},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "false"},
+		},
+		{
+			name: "the section CA replaces a certificate parameter",
+			ds: &storepb.DataSource{UseSsl: true, VerifyTlsCertificate: true, SslCa: caPEM, ExtraConnectionParameters: map[string]string{
+				"Certificate": "/tmp/other.pem",
+			}},
+			want:   map[string]string{"encrypt": "true", "trustservercertificate": "false"},
+			wantCA: true,
+		},
+		{
+			name: "TLS disabled applies an encrypt parameter",
+			ds:   &storepb.DataSource{ExtraConnectionParameters: map[string]string{"encrypt": "true"}},
+			want: map[string]string{"encrypt": "true", "trustservercertificate": "true"},
+		},
+		{
+			name: "TLS disabled applies a trust parameter",
+			ds:   &storepb.DataSource{ExtraConnectionParameters: map[string]string{"TrustServerCertificate": "false"}},
+			want: map[string]string{"trustservercertificate": "false"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			tc.ds.Username, tc.ds.Host, tc.ds.Port = container.GetUsername(), tc.host, container.GetPort()
-			driver, err := (&Driver{}).Open(ctx, storepb.Engine_MSSQL, db.ConnectionConfig{DataSource: tc.ds, Password: container.GetPassword()})
+			cfg, caFile, err := mssqlConfig(db.ConnectionConfig{DataSource: tc.ds})
 			require.NoError(t, err)
-			defer driver.Close(ctx)
-
-			var encryptOption string
-			err = driver.GetDB().QueryRowContext(ctx, "SELECT encrypt_option FROM sys.dm_exec_connections WHERE session_id = @@SPID").Scan(&encryptOption)
-			if tc.wantErr != "" {
-				require.ErrorContains(t, err, tc.wantErr)
+			if !tc.wantCA {
+				require.Empty(t, caFile)
+				require.Equal(t, tc.want, cfg.Params)
 				return
 			}
+			t.Cleanup(func() { removeCAFile(caFile) })
+			require.NotEmpty(t, caFile)
+			written, err := os.ReadFile(caFile)
 			require.NoError(t, err)
-			require.Equal(t, tc.encryptOption, encryptOption)
+			require.Equal(t, tc.ds.GetSslCa(), string(written))
+			want := tc.want
+			want["certificate"] = caFile
+			require.Equal(t, want, cfg.Params)
+		})
+	}
+}
+
+// TestMSSQLConfigAzureCredential: an Azure login is a token provider and no
+// user, and the fedauth parameter the old driver wrote has no reader.
+func TestMSSQLConfigAzureCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ds   *storepb.DataSource
+	}{
+		{
+			name: "a client secret",
+			ds: &storepb.DataSource{
+				Username:           "ignored",
+				AuthenticationType: storepb.DataSource_AZURE_IAM,
+				IamExtension: &storepb.DataSource_AzureCredential_{AzureCredential: &storepb.DataSource_AzureCredential{
+					TenantId: "tenant", ClientId: "client", ClientSecret: "secret",
+				}},
+				ExtraConnectionParameters: map[string]string{"FedAuth": "ActiveDirectoryMSI", "User ID": "other", "Password": "other"},
+			},
+		},
+		{
+			name: "the default chain",
+			ds:   &storepb.DataSource{AuthenticationType: storepb.DataSource_AZURE_IAM},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _, err := mssqlConfig(db.ConnectionConfig{DataSource: tc.ds, Password: "ignored"})
+			require.NoError(t, err)
+			require.Empty(t, cfg.User)
+			require.Empty(t, cfg.Password)
+			require.NotNil(t, cfg.TokenProvider)
+			require.NotContains(t, cfg.Params, "fedauth")
+			require.NotContains(t, cfg.Params, "user id")
+			require.NotContains(t, cfg.Params, "password")
+		})
+	}
+
+	// The non-Azure path keeps the login and carries no provider.
+	cfg, _, err := mssqlConfig(db.ConnectionConfig{DataSource: &storepb.DataSource{Username: "bytebase"}, Password: "password"})
+	require.NoError(t, err)
+	require.Equal(t, "bytebase", cfg.User)
+	require.Equal(t, "password", cfg.Password)
+	require.Nil(t, cfg.TokenProvider)
+}
+
+// recordingCredential records what the token provider asks it for.
+type recordingCredential struct {
+	scopes []string
+	token  string
+}
+
+func (c *recordingCredential) GetToken(_ context.Context, opts policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	c.scopes = opts.Scopes
+	return azcore.AccessToken{Token: c.token}, nil
+}
+
+// TestAzureTokenProviderAsksForAzureSQL pins the audience: Azure SQL accepts a
+// token only for its own scope.
+func TestAzureTokenProviderAsksForAzureSQL(t *testing.T) {
+	credential := &recordingCredential{token: "token"}
+	provider := azureTokenProvider(credential)
+	token, err := provider(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "token", token)
+	require.Equal(t, []string{"https://database.windows.net/.default"}, credential.scopes)
+}
+
+func TestExplainFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		option *v1pb.QueryOption
+		want   string
+	}{
+		{name: "no option", option: nil, want: "TEXT"},
+		{name: "empty option", option: &v1pb.QueryOption{}, want: "TEXT"},
+		{name: "text", option: &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_TEXT}, want: "TEXT"},
+		{name: "xml", option: &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_XML}, want: "XML"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, util.OmniExplainFormat(tc.option.GetExplainFormat(), "TEXT", v1pb.QueryOption_XML))
 		})
 	}
 }
@@ -299,237 +345,258 @@ func newTestCA(t *testing.T) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-func TestShowplanStatistic(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		option *v1pb.QueryOption
-		want   string
-	}{
-		{name: "no option", option: nil, want: "SHOWPLAN_ALL"},
-		{name: "empty option", option: &v1pb.QueryOption{}, want: "SHOWPLAN_ALL"},
-		{
-			name:   "text",
-			option: &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_TEXT},
-			want:   "SHOWPLAN_ALL",
-		},
-		{
-			name:   "xml",
-			option: &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_XML},
-			want:   "SHOWPLAN_XML",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, showplanStatistic(tc.option))
-		})
+func requireTable(t *testing.T, metadata *metadatapb.DatabaseSchemaMetadata, schemaName, tableName string) *metadatapb.TableMetadata {
+	t.Helper()
+	for _, schema := range metadata.Schemas {
+		if schema.Name != schemaName {
+			continue
+		}
+		for _, table := range schema.Tables {
+			if table.Name == tableName {
+				return table
+			}
+		}
 	}
+	require.FailNowf(t, "table not synced", "%s.%s", schemaName, tableName)
+	return nil
 }
 
-func TestQueryConnRecordsLimitedStatement(t *testing.T) {
-	t.Parallel()
+type fakeMSSQLDriver struct {
+	sessionOpens int
+	sessions     []*fakeMSSQLSession
+
+	execScript string
+	execOpts   odriver.ExecuteOptions
+	execFn     func(context.Context, string, odriver.ExecuteOptions) (int64, error)
+
+	instance *odriver.Instance
+	dumpDDL  string
+}
+
+func (*fakeMSSQLDriver) Ping(context.Context) error { return nil }
+func (*fakeMSSQLDriver) Close() error               { return nil }
+
+func (f *fakeMSSQLDriver) Session(context.Context) (odriver.Session, error) {
+	f.sessionOpens++
+	if len(f.sessions) > 0 {
+		s := f.sessions[0]
+		f.sessions = f.sessions[1:]
+		return s, nil
+	}
+	return &fakeMSSQLSession{}, nil
+}
+
+func (f *fakeMSSQLDriver) SyncInstance(context.Context) (*odriver.Instance, error) {
+	return f.instance, nil
+}
+
+func (*fakeMSSQLDriver) SyncDatabase(context.Context) (*metadatapb.DatabaseSchemaMetadata, error) {
+	return nil, nil
+}
+
+func (f *fakeMSSQLDriver) Dump(_ context.Context, out io.Writer, _ *metadatapb.DatabaseSchemaMetadata) error {
+	_, err := io.WriteString(out, f.dumpDDL)
+	return err
+}
+
+func (f *fakeMSSQLDriver) Execute(ctx context.Context, script string, opts odriver.ExecuteOptions) (int64, error) {
+	f.execScript = script
+	f.execOpts = opts
+	if f.execFn != nil {
+		return f.execFn(ctx, script, opts)
+	}
+	return 1, nil
+}
+
+type fakeMSSQLSession struct {
+	gotOpts odriver.QueryOptions
+	queryFn func(context.Context, string, odriver.QueryOptions) ([]*odriver.Result, error)
+	closed  bool
+}
+
+func (s *fakeMSSQLSession) Query(ctx context.Context, statement string, opts odriver.QueryOptions) ([]*odriver.Result, error) {
+	s.gotOpts = opts
+	if s.queryFn != nil {
+		return s.queryFn(ctx, statement, opts)
+	}
+	return []*odriver.Result{{Statement: statement}}, nil
+}
+
+func (s *fakeMSSQLSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+// TestQueryConnAdapterSeam pins QueryConn's held session reuse, option
+// forwarding, value shape conversion (including empty binary, timestamps,
+// affected rows, truncation, and partial results on error), and session drop
+// on cancellation.
+func TestQueryConnAdapterSeam(t *testing.T) {
 	ctx := context.Background()
-	driver := newSyncTestDatabase(ctx, t, testcontainer.SharedMSSQLContainer(t))
-	executeBatches(ctx, t, driver, "CREATE TABLE dbo.t (id INT PRIMARY KEY);\nINSERT INTO dbo.t VALUES (1), (2), (3);")
 
-	conn, err := driver.GetDB().Conn(ctx)
-	require.NoError(t, err)
-	defer conn.Close()
+	t.Run("reuses one session per driver and converts value shapes", func(t *testing.T) {
+		tz := time.FixedZone("UTC+2", 7200)
+		dtoTime := time.Date(2024, 1, 2, 3, 4, 5, 123000000, tz)
+		dt2Time := time.Date(2024, 1, 2, 3, 4, 5, 120000000, time.UTC)
+		affected := int64(1)
 
-	// SET returns nothing, so the driver pads an empty result in for it.
-	results, err := driver.QueryConn(ctx, conn, "SET NOCOUNT OFF;\nSELECT TOP 3 id FROM dbo.t ORDER BY id;", db.QueryContext{
-		Limit:                2,
-		MaximumSQLResultSize: 1 << 30,
+		sess := &fakeMSSQLSession{
+			queryFn: func(_ context.Context, statement string, _ odriver.QueryOptions) ([]*odriver.Result, error) {
+				if statement == "CREATE TABLE #session (id INT);" {
+					return []*odriver.Result{{Statement: statement}}, nil
+				}
+				return []*odriver.Result{
+					{
+						Statement: statement,
+						Columns: []odriver.Column{
+							{Name: "empty_bin", TypeName: "VARBINARY"},
+							{Name: "bin", TypeName: "VARBINARY"},
+							{Name: "dec", TypeName: "DECIMAL"},
+							{Name: "flag", TypeName: "BIT"},
+							{Name: "t", TypeName: "TIME"},
+							{Name: "d", TypeName: "DATE"},
+							{Name: "dto", TypeName: "DATETIMEOFFSET"},
+							{Name: "dt2", TypeName: "DATETIME2"},
+						},
+						Rows: [][]odriver.Value{{
+							{Kind: odriver.Bytes, Bytes: []byte{}},
+							{Kind: odriver.Bytes, Bytes: []byte{0x01}},
+							{Kind: odriver.String, String: "1.25"},
+							{Kind: odriver.Int64, Int64: 1},
+							{Kind: odriver.String, String: "03:04:05"},
+							{Kind: odriver.String, String: "2024-01-02"},
+							{Kind: odriver.TimestampTZ, Time: dtoTime, Precision: 7},
+							{Kind: odriver.Timestamp, Time: dt2Time, Precision: 2},
+						}},
+					},
+					{
+						Statement:    "INSERT INTO dbo.counted (id) VALUES (1);",
+						AffectedRows: &affected,
+					},
+				}, nil
+			},
+		}
+		fake := &fakeMSSQLDriver{sessions: []*fakeMSSQLSession{sess}}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+		qctx := db.QueryContext{
+			Limit:                2,
+			Explain:              true,
+			MaximumSQLResultSize: 1 << 20,
+			MaskingEnabled:       true,
+			Option:               &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_XML},
+		}
+
+		_, err := d.QueryConn(ctx, "CREATE TABLE #session (id INT);", qctx)
+		require.NoError(t, err)
+		results, err := d.QueryConn(ctx, "SELECT ...", qctx)
+		require.NoError(t, err)
+
+		require.Equal(t, 1, fake.sessionOpens)
+		require.Same(t, sess, d.Session())
+		require.Equal(t, 2, sess.gotOpts.Limit)
+		require.True(t, sess.gotOpts.Explain)
+		require.Equal(t, "XML", sess.gotOpts.ExplainFormat)
+		require.Equal(t, int64(1<<20), sess.gotOpts.MaxResultBytes)
+		require.True(t, sess.gotOpts.MaskingEnabled)
+
+		require.Len(t, results, 2)
+		values := results[0].GetRows()[0].GetValues()
+		require.Len(t, values, 8)
+		require.Equal(t, []byte{}, values[0].GetBytesValue())
+		require.Equal(t, []byte{0x01}, values[1].GetBytesValue())
+		require.Equal(t, "1.25", values[2].GetStringValue())
+		require.Equal(t, int64(1), values[3].GetInt64Value())
+		require.Equal(t, "03:04:05", values[4].GetStringValue())
+		require.Equal(t, "2024-01-02", values[5].GetStringValue())
+		require.Equal(t, int32(7), values[6].GetTimestampTzValue().GetAccuracy())
+		require.Equal(t, int32(7200), values[6].GetTimestampTzValue().GetOffset())
+		require.Equal(t, int32(2), values[7].GetTimestampValue().GetAccuracy())
+
+		require.Equal(t, []string{"Affected Rows"}, results[1].GetColumnNames())
+		require.Len(t, results[1].GetRows(), 1)
+		require.Equal(t, int64(1), results[1].GetRows()[0].GetValues()[0].GetInt64Value())
+		require.Equal(t, int64(1), results[1].GetRowsCount())
+	})
+
+	t.Run("returns partial converted results alongside query error and drops session", func(t *testing.T) {
+		batchErr := errors.New("cannot match the batch's result sets to its statements")
+		sess := &fakeMSSQLSession{
+			queryFn: func(context.Context, string, odriver.QueryOptions) ([]*odriver.Result, error) {
+				return []*odriver.Result{
+					{
+						Statement: "SELECT 1;",
+						Columns:   []odriver.Column{{Name: "one", TypeName: "INT"}},
+						Rows:      [][]odriver.Value{{{Kind: odriver.Int64, Int64: 1}}},
+						Truncated: true,
+					},
+				}, batchErr
+			},
+		}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: &fakeMSSQLDriver{sessions: []*fakeMSSQLSession{sess}}}}
+
+		results, err := d.QueryConn(ctx, "SELECT 1;\nGO\nEXEC dbo.two_sets;\nSELECT 1;", db.QueryContext{MaximumSQLResultSize: 1})
+		require.ErrorIs(t, err, batchErr)
+		require.True(t, sess.closed)
+		require.Nil(t, d.Session())
+		require.Len(t, results, 1)
+		require.Contains(t, results[0].GetError(), "exceeds max allowed output size")
+	})
+}
+
+func TestExecuteParsesTxnModeAndIgnoresIsolation(t *testing.T) {
+	fake := &fakeMSSQLDriver{
+		execFn: func(_ context.Context, script string, opts odriver.ExecuteOptions) (int64, error) {
+			opts.Log.CommandExecute(odriver.Command{Text: script, ByteStart: 0, ByteEnd: len(script)})
+			opts.Log.CommandResponse(1, []int64{1}, nil)
+			return 1, nil
+		},
+		instance: &odriver.Instance{Version: "16.0.4150.1 (2022)", Databases: []*metadatapb.DatabaseSchemaMetadata{{Name: "appdb"}}},
+		dumpDDL:  "CREATE TABLE [dbo].[t] ([id] INT);",
+	}
+	d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+
+	var logTypes []storepb.TaskRunLog_Type
+	rows, err := d.Execute(context.Background(), "-- txn-mode = off\n-- txn-isolation = READ COMMITTED\nINSERT INTO dbo.t VALUES (1);", db.ExecuteOptions{
+		CreateDatabase: true,
+		MaximumRetries: 2,
+		CreateTaskRunLog: func(_ time.Time, entry *storepb.TaskRunLog) error {
+			logTypes = append(logTypes, entry.Type)
+			return nil
+		},
 	})
 	require.NoError(t, err)
-	require.Len(t, results, 2)
-	require.Equal(t, "SET NOCOUNT OFF;", results[0].GetStatement())
-	require.Equal(t, "\nSELECT TOP 2 id FROM dbo.t ORDER BY id;", results[1].GetStatement())
-	require.Len(t, results[1].GetRows(), 2)
+	require.Equal(t, int64(1), rows)
+	require.Equal(t, "INSERT INTO dbo.t VALUES (1);", fake.execScript)
+	require.Equal(t, odriver.AutoCommit, fake.execOpts.Transaction)
+	require.Empty(t, fake.execOpts.Isolation)
+	require.True(t, fake.execOpts.CreateDatabase)
+	require.Equal(t, 2, fake.execOpts.MaxRetries)
+	require.Equal(t, []storepb.TaskRunLog_Type{
+		storepb.TaskRunLog_COMMAND_EXECUTE,
+		storepb.TaskRunLog_COMMAND_RESPONSE,
+	}, logTypes)
+
+	inst, err := d.SyncInstance(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "16.0.4150.1 (2022)", inst.Version)
+	var dump bytes.Buffer
+	require.NoError(t, d.Dump(context.Background(), &dump, &metadatapb.DatabaseSchemaMetadata{Name: "appdb"}))
+	require.Contains(t, dump.String(), "CREATE TABLE [dbo].[t]")
 }
 
-func TestQueryConnMatchesResultsToStatements(t *testing.T) {
-	t.Parallel()
+func TestOpenDoesNotDialAndCleansUpCAFileOnClose(t *testing.T) {
 	ctx := context.Background()
-	driver := newSyncTestDatabase(ctx, t, testcontainer.SharedMSSQLContainer(t))
-	executeBatches(ctx, t, driver, `CREATE TABLE dbo.t (id INT PRIMARY KEY);
-INSERT INTO dbo.t VALUES (1), (2), (3);
-GO
-CREATE PROCEDURE dbo.two_sets AS
-BEGIN
-	UPDATE dbo.t SET id = id;
-	SELECT id FROM dbo.t ORDER BY id;
-	SELECT 'second' AS s;
-END`)
-
-	conn, err := driver.GetDB().Conn(ctx)
+	d, err := (&Driver{}).Open(ctx, storepb.Engine_MSSQL, db.ConnectionConfig{
+		DataSource: &storepb.DataSource{
+			Host:                 "127.0.0.1",
+			Port:                 "1433",
+			Username:             "sa",
+			UseSsl:               true,
+			VerifyTlsCertificate: true,
+			SslCa:                string(newTestCA(t)),
+		},
+		Password: "secret",
+	})
 	require.NoError(t, err)
-	defer conn.Close()
-	queryContext := db.QueryContext{MaximumSQLResultSize: 1 << 30}
-	describe := func(results []*v1pb.QueryResult) []string {
-		var got []string
-		for _, r := range results {
-			line := fmt.Sprintf("%s %v %d", strings.TrimSpace(r.GetStatement()), r.GetColumnNames(), len(r.GetRows()))
-			if r.GetError() != "" {
-				line += " error"
-			}
-			got = append(got, line)
-		}
-		return got
-	}
-
-	// Statements that return nothing keep their places across GO, and the
-	// procedure's second result set comes after every statement's result.
-	results, err := driver.QueryConn(ctx, conn, `EXEC dbo.two_sets;
-DECLARE @x INT;
-SELECT @x = id FROM dbo.t;
-GO
-DECLARE @y INT;
-SELECT @y = id FROM dbo.t;
-SELECT id FROM dbo.t WHERE id = 3;`, queryContext)
-	require.NoError(t, err)
-	require.Equal(t, []string{
-		"EXEC dbo.two_sets; [id] 3",
-		"DECLARE @x INT; [] 0",
-		"SELECT @x = id FROM dbo.t; [] 0",
-		"DECLARE @y INT; [] 0",
-		"SELECT @y = id FROM dbo.t; [] 0",
-		"SELECT id FROM dbo.t WHERE id = 3; [id] 1",
-		"EXEC dbo.two_sets; [s] 1",
-	}, describe(results))
-
-	results, err = driver.QueryConn(ctx, conn, "EXEC dbo.two_sets;", db.QueryContext{Limit: 2, MaximumSQLResultSize: 1 << 30})
-	require.NoError(t, err)
-	require.Equal(t, []string{"EXEC dbo.two_sets; [id] 2", "EXEC dbo.two_sets; [s] 1"}, describe(results))
-
-	// The size limit covers the rows kept, not the ones the row limit cuts.
-	results, err = driver.QueryConn(ctx, conn, "EXEC('SELECT TOP 200 name FROM sys.all_objects');", db.QueryContext{Limit: 2, MaximumSQLResultSize: 2000})
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Empty(t, results[0].GetError())
-	require.Len(t, results[0].GetRows(), 2)
-
-	// Masking cannot trace the rows of a procedure call or an OUTPUT clause.
-	results, err = driver.QueryConn(ctx, conn, "EXEC dbo.two_sets;\nGO\nUPDATE dbo.t SET id = id OUTPUT inserted.id;\nSELECT id FROM dbo.t WHERE id = 1;", db.QueryContext{MaskingEnabled: true, MaximumSQLResultSize: 1 << 30})
-	require.NoError(t, err)
-	require.Equal(t, []string{
-		"EXEC dbo.two_sets; [id] 0 error",
-		"UPDATE dbo.t SET id = id OUTPUT inserted.id; [id] 0 error",
-		"SELECT id FROM dbo.t WHERE id = 1; [id] 1",
-		"EXEC dbo.two_sets; [s] 0 error",
-	}, describe(results))
-	require.Contains(t, results[0].GetError(), "data masking")
-
-	_, err = driver.QueryConn(ctx, conn, "EXEC dbo.two_sets;\nSELECT 1 AS one;", queryContext)
-	require.ErrorContains(t, err, "cannot match the batch's result sets to its statements")
-
-	_, err = driver.QueryConn(ctx, conn, "SET NOEXEC ON;\nSELECT 1 AS one;", queryContext)
-	require.EqualError(t, err, "SET NOEXEC is not supported")
-	_, err = driver.QueryConn(ctx, conn, "SET ANSI_NULLS, NOEXEC ON;\nDELETE FROM dbo.t;", queryContext)
-	require.EqualError(t, err, "SET NOEXEC is not supported")
-
-	_, err = driver.QueryConn(ctx, conn, "SELECT 1 AS one;\nSELECT 1/0 AS x;", queryContext)
-	require.ErrorContains(t, err, "Divide by zero error encountered")
-
-	// A result set cut off at the size limit must not stall the rest of the batch.
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	results, err = driver.QueryConn(timeoutCtx, conn, "SELECT TOP 100 name FROM sys.all_objects;\nSELECT 1 AS one;", db.QueryContext{MaximumSQLResultSize: 1})
-	require.NoError(t, err)
-	require.Len(t, results, 2)
-	require.Contains(t, results[0].GetError(), "exceeds max allowed output size")
-	require.Len(t, results[1].GetRows(), 1)
-}
-
-func TestMatchResults(t *testing.T) {
-	const (
-		rows  = stmtTypeResultSetGenerating | stmtTypeRowCountGenerating
-		count = stmtTypeRowCountGenerating
-		none  = stmtTypeUnknown
-		proc  = stmtTypeProcedure
-	)
-	// describe names a result by its column, or by its affected rows.
-	describe := func(results []*v1pb.QueryResult) []string {
-		var got []string
-		for _, r := range results {
-			name := strings.Join(r.GetColumnNames(), ",")
-			if name == "Affected Rows" {
-				name = fmt.Sprintf("affected %d", r.GetRows()[0].GetValues()[0].GetInt64Value())
-			}
-			got = append(got, r.GetStatement()+":"+name)
-		}
-		return got
-	}
-	for _, tc := range []struct {
-		name      string
-		types     []stmtType
-		sets      []string
-		counts    []int64
-		want      []string
-		wantExtra []string
-		wantErr   bool
-	}{
-		{
-			name:   "each statement gets its own result",
-			types:  []stmtType{none, rows, count, rows},
-			sets:   []string{"a", "b"},
-			counts: []int64{3},
-			want:   []string{"s0:", "s1:a", "s2:affected 3", "s3:b"},
-		},
-		{
-			name:      "a procedure call takes every result set",
-			types:     []stmtType{none, proc, count},
-			sets:      []string{"a", "b", "c"},
-			counts:    []int64{4},
-			want:      []string{"s0:", "s1:a", "s2:affected 4"},
-			wantExtra: []string{"s1:b", "s1:c"},
-		},
-		{
-			name:  "a procedure call that returns nothing",
-			types: []stmtType{proc, rows},
-			sets:  []string{"a"},
-			want:  []string{"s0:", "s1:a"},
-		},
-		{
-			name:   "row counts that cannot be told apart are dropped",
-			types:  []stmtType{count, proc, count},
-			counts: []int64{1, 2, 3},
-			want:   []string{"s0:", "s1:", "s2:"},
-		},
-		{
-			name:    "a procedure call beside another statement that returns rows",
-			types:   []stmtType{proc, rows},
-			sets:    []string{"a", "b"},
-			wantErr: true,
-		},
-		{
-			name:    "two procedure calls",
-			types:   []stmtType{proc, proc},
-			sets:    []string{"a"},
-			wantErr: true,
-		},
-		{
-			name:    "a statement without its result set",
-			types:   []stmtType{rows, rows},
-			sets:    []string{"a"},
-			wantErr: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			statements := make([]string, len(tc.types))
-			for i := range statements {
-				statements[i] = fmt.Sprintf("s%d", i)
-			}
-			var sets []*v1pb.QueryResult
-			for _, column := range tc.sets {
-				sets = append(sets, &v1pb.QueryResult{ColumnNames: []string{column}})
-			}
-			results, extra, err := matchResults(statements, tc.types, sets, tc.counts)
-			if tc.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, tc.want, describe(results))
-			require.Equal(t, tc.wantExtra, describe(extra))
-		})
-	}
+	require.NoError(t, d.Close(ctx))
 }

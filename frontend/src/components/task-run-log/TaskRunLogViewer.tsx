@@ -6,16 +6,35 @@ import {
   List,
   Server,
 } from "lucide-react";
-import { memo, useCallback, useMemo } from "react";
+import { memo, type ReactNode, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useSeededState } from "@/hooks/useSeededState";
 import {
+  AgentDiagnosticHelpButton,
+  useAgentDiagnosticHelpAvailable,
+} from "@/modules/agent/components/AgentDiagnosticHelpButton";
+import { getTaskRunDiagnostic } from "@/modules/agent/logic/taskRunDiagnostics";
+import { Release_Type } from "@/types/proto-es/v1/release_service_pb";
+import {
+  type Task_ReleaseState,
   TaskRun_Status,
   TaskRunLogEntry_Type,
 } from "@/types/proto-es/v1/rollout_service_pb";
+import {
+  extractPlanNameFromRolloutName,
+  extractRolloutNameFromTaskRunName,
+} from "@/utils/v1/issue/rollout";
+import { extractProjectResourceName } from "@/utils/v1/project";
 import { LogRows, ROW_DIVIDER } from "./LogRows";
 import { countRetryMarkers, type TaskRunLogDetailText } from "./model";
+import {
+  type OpenReleaseFile,
+  ReleaseSpineView,
+  RevisionsLink,
+  type RevisionsLinkTarget,
+} from "./ReleaseSpineView";
 import { SectionContent } from "./SectionContent";
 import { SectionStatusIcon } from "./SectionHeader";
 import type { LogRow } from "./types";
@@ -24,6 +43,7 @@ import { useTaskRunLogSections } from "./useTaskRunLogSections";
 
 export interface TaskRunLogViewerProps {
   taskRunName: string;
+  agentHelp?: { provenance: "latest" | "explicit-history" };
   // Pass when known: a terminal status lets a cached log render without a
   // refetch, since a finished run's log is immutable. Callers without a
   // TaskRun in hand (changelog/revision pages) omit it and always revalidate,
@@ -32,22 +52,52 @@ export interface TaskRunLogViewerProps {
   // When false, pause the live log poll — the card is mounted but its stage is
   // hidden. Defaults to live.
   active?: boolean;
+  // The run's error (TaskRun.detail): a versioned release's spine places it on
+  // the section it belongs to.
+  runError?: string;
+  // The task's stored release state. The plan page passes it; the revision
+  // page renders the run's log alone.
+  releaseState?: Task_ReleaseState;
+  // The run follows an earlier run of the task (D4).
+  rerun?: boolean;
+  onOpenFile?: OpenReleaseFile;
+  // The run's error alert. The spine places the error on its section, so the
+  // alert shows only when the spine does not render.
+  renderErrorAlert?: (action: ReactNode) => ReactNode;
+  // The database's revisions, shown once the run applied a file. Without the
+  // spine there are no per-file states, so only a done run shows it.
+  revisionsLink?: RevisionsLinkTarget;
 }
 
-// memo: both props are scalars and data flows in via zustand subscriptions
-// (not React context), so re-renders of the surrounding card don't cascade
-// into the log tree unless the run itself changed.
+// memo: callers pass scalars and identity-stable objects (the stored state,
+// a memoized error-alert renderer and file opener), and data flows in via zustand
+// subscriptions, so re-renders of the surrounding card don't cascade into the
+// log tree unless the run itself changed.
 export const TaskRunLogViewer = memo(function TaskRunLogViewer({
   taskRunName,
+  agentHelp,
   taskRunStatus,
   active = true,
+  runError,
+  releaseState,
+  rerun,
+  onOpenFile,
+  renderErrorAlert,
+  revisionsLink,
 }: TaskRunLogViewerProps) {
   const { t } = useTranslation();
-  const { entries, logFetch, sheet, sheetsMap } = useTaskRunLogData(
-    taskRunName,
-    taskRunStatus,
-    active
-  );
+  const helpAvailable = useAgentDiagnosticHelpAvailable();
+  const narrow = useMediaQuery("(max-width: 639px)");
+  const {
+    entries,
+    logFetch,
+    logSnapshot,
+    sheet,
+    sheetsMap,
+    release,
+    task,
+    taskRun: fetchedRun,
+  } = useTaskRunLogData(taskRunName, taskRunStatus, active);
 
   // The reader's explicit row folds. They live here, above every conditional
   // SectionContent mount, so collapsing a section or the sole-section layout
@@ -138,6 +188,56 @@ export const TaskRunLogViewer = memo(function TaskRunLogViewer({
     taskRunStatus,
   });
 
+  const spineFiles = useMemo(
+    () =>
+      release?.type === Release_Type.VERSIONED
+        ? release.files.map((file) => ({
+            version: file.version,
+            path: file.path,
+          }))
+        : [],
+    [release]
+  );
+  const spineRun = useMemo(() => {
+    const status = taskRunStatus ?? fetchedRun?.status;
+    return status === undefined
+      ? undefined
+      : { status, error: runError ?? fetchedRun?.detail ?? "" };
+  }, [taskRunStatus, runError, fetchedRun]);
+
+  const provenance = agentHelp?.provenance;
+  const diagnostic = useMemo(() => {
+    if (!taskRunName || !provenance || !spineRun) return undefined;
+    const planName = extractPlanNameFromRolloutName(
+      extractRolloutNameFromTaskRunName(taskRunName)
+    );
+    return getTaskRunDiagnostic({
+      resource: {
+        kind: "plan",
+        name: planName,
+        label: planName,
+        project: `projects/${extractProjectResourceName(planName)}`,
+      },
+      planName,
+      run: {
+        name: taskRunName,
+        status: spineRun.status,
+        detail: spineRun.error,
+      },
+      provenance,
+      task,
+      log: { entries, fetchStatus: logFetch.status, snapshot: logSnapshot },
+    });
+  }, [
+    entries,
+    logFetch.status,
+    logSnapshot,
+    provenance,
+    spineRun,
+    task,
+    taskRunName,
+  ]);
+
   const hasRenderableReleaseFiles =
     hasReleaseFiles && releaseFileGroups.length > 0;
   const hasContent =
@@ -146,19 +246,78 @@ export const TaskRunLogViewer = memo(function TaskRunLogViewer({
   if (!taskRunName) {
     return null;
   }
+  const renderHelp = (iconOnly = false) =>
+    diagnostic && helpAvailable ? (
+      <span
+        className="inline-flex min-w-0 font-sans"
+        data-testid="task-run-diagnostic-help"
+        data-task-run-name={taskRunName}
+      >
+        <AgentDiagnosticHelpButton context={diagnostic} iconOnly={iconOnly} />
+      </span>
+    ) : null;
+  const help = renderHelp();
+  const alertOwnsHelp =
+    renderErrorAlert !== undefined &&
+    spineRun?.status === TaskRun_Status.FAILED;
+  const errorAlert = renderErrorAlert?.(alertOwnsHelp ? help : null);
+  const footerHelp = alertOwnsHelp ? null : help;
+  const showRevisions =
+    revisionsLink !== undefined && taskRunStatus === TaskRun_Status.DONE;
+  const withAlert = (node: ReactNode) =>
+    errorAlert || showRevisions || footerHelp ? (
+      <div className="flex flex-col gap-2">
+        {errorAlert}
+        {node}
+        {footerHelp && <div className="flex justify-end">{footerHelp}</div>}
+        {showRevisions && revisionsLink ? (
+          <RevisionsLink target={revisionsLink} />
+        ) : null}
+      </div>
+    ) : (
+      node
+    );
+
+  // A versioned release's run reads as one spine of file sections. Several
+  // replicas, or a run whose status is unknown, keep the plain log. The log
+  // decides the spine, so it waits for a first load (an empty log reads as
+  // every file applied); a failed refresh keeps its entries.
+  if (
+    spineRun &&
+    spineFiles.length > 0 &&
+    !hasMultipleReplicas &&
+    (logFetch.status === "success" || entries.length > 0)
+  ) {
+    return (
+      <ReleaseSpineView
+        key={datasetKey}
+        files={spineFiles}
+        entries={entries}
+        run={spineRun}
+        state={releaseState}
+        rerun={rerun}
+        sheetsMap={sheetsMap}
+        getSectionLabel={getSectionLabel}
+        detailText={detailText}
+        onOpenFile={onOpenFile}
+        revisionsLink={revisionsLink}
+        diagnosticHelp={renderHelp(narrow)}
+      />
+    );
+  }
 
   if (!hasContent) {
     // Reserve the approximate height of a small loaded log (label row plus a
     // couple of entries) while the first fetch is in flight, so entries fill
     // the box in place instead of popping the card taller.
     if (logFetch.status === "loading") {
-      return (
+      return withAlert(
         <div className="flex min-h-20 items-center justify-center rounded-sm border border-block-border bg-control-bg/50 px-3 py-2 text-sm text-control-light">
           {t("common.loading")}
         </div>
       );
     }
-    return null;
+    return withAlert(null);
   }
 
   // A single section with no replicas or release files carries no structure
@@ -173,7 +332,7 @@ export const TaskRunLogViewer = memo(function TaskRunLogViewer({
       ? firstRow
       : undefined;
   if (soleSection) {
-    return (
+    return withAlert(
       <div
         className="w-full font-mono text-xs"
         data-testid="task-run-log-viewer"
@@ -312,7 +471,7 @@ export const TaskRunLogViewer = memo(function TaskRunLogViewer({
     logRows(rows)
   );
 
-  return (
+  return withAlert(
     <div className="w-full font-mono text-xs" data-testid="task-run-log-viewer">
       <div className="w-full overflow-hidden rounded-sm border border-block-border bg-control-bg/50">
         <div className="flex items-center justify-between border-block-border border-b bg-control-bg px-2 py-1">

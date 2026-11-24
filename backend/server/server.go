@@ -57,6 +57,9 @@ const (
 	// lspAPI is the API for Bytebase Language Server Protocol.
 	lspAPI                 = "/lsp"
 	gracefulShutdownPeriod = 10 * time.Second
+	// replicaDeregisterTimeout bounds the heartbeat delete that runs after the
+	// graceful shutdown deadline may already have passed.
+	replicaDeregisterTimeout = 3 * time.Second
 )
 
 // Server is the Bytebase server.
@@ -248,9 +251,12 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 	combinedExecutor := plancheck.NewCombinedExecutor(stores, sheetManager, s.dbFactory, ruleReviewCovers)
 	s.planCheckScheduler = plancheck.NewScheduler(stores, s.bus, combinedExecutor, s.licenseService, productMetrics)
 
-	s.reviewRunScheduler = reviewrun.NewScheduler(stores, s.bus, profile, s.licenseService, productMetrics)
-	s.reviewRunScheduler.Register(store.ReviewRunTypeRule, reviewrun.NewRuleExecutor(stores))
-	s.reviewRunScheduler.Register(store.ReviewRunTypeAI, reviewrun.NewAIReviewExecutor(stores))
+	var ruleReviewExecutor *reviewrun.RuleExecutor
+	if profile.SQLReviewV2 {
+		ruleReviewExecutor = reviewrun.NewRuleExecutor(stores)
+	}
+	reviewExecutor := reviewrun.NewReviewExecutor(stores, s.licenseService, ruleReviewExecutor, reviewrun.NewAIReviewExecutor(stores, s.licenseService, ruleReviewCovers))
+	s.reviewRunScheduler = reviewrun.NewScheduler(stores, s.bus, profile, s.licenseService, productMetrics, reviewExecutor)
 	s.notifyListener = notifylistener.NewListener(stores.GetDB(), s.bus)
 
 	// Data cleaner
@@ -271,7 +277,7 @@ func NewServer(ctx context.Context, profile *config.Profile) (*Server, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to configure gRPC routers")
 	}
-	mcpServer, err := mcp.NewServer(stores, profile, secret, internalMCPHandler)
+	mcpServer, err := mcp.NewServer(stores, profile, secret, internalMCPHandler, s.licenseService)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to create MCP server")
 	}
@@ -409,6 +415,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// that outlives this gets an error from the closed store, not a nil handle.
 	if err := waitRunners(ctx, &s.runnerWG); err != nil {
 		slog.Warn("Runners did not stop before the shutdown deadline", log.BBError(err))
+	}
+
+	if s.store != nil {
+		// Deregister only after runners stop: the heartbeat row is also the lease
+		// peers check before failing this replica's task and review runs.
+		deregisterCtx, cancelDeregister := context.WithTimeout(context.WithoutCancel(ctx), replicaDeregisterTimeout)
+		if err := s.store.DeleteReplicaHeartbeat(deregisterCtx, s.profile.ReplicaID); err != nil {
+			slog.Warn("Failed to delete replica heartbeat", slog.String("replicaID", s.profile.ReplicaID), log.BBError(err))
+		}
+		cancelDeregister()
 	}
 
 	// Close db connection

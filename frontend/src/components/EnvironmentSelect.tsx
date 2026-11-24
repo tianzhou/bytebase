@@ -20,10 +20,10 @@ interface MultiProps {
 }
 
 export type EnvironmentSelectProps = (SingleProps | MultiProps) & {
+  triggerRef?: React.Ref<HTMLDivElement>;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
-  portal?: boolean;
   clearable?: boolean;
   /**
    * Extra content rendered next to the environment in every option row, and
@@ -65,6 +65,7 @@ export function EnvironmentSelect(props: EnvironmentSelectProps) {
   if (props.multiple) {
     return (
       <Combobox
+        triggerRef={props.triggerRef}
         multiple
         value={props.value}
         onChange={props.onChange}
@@ -72,7 +73,6 @@ export function EnvironmentSelect(props: EnvironmentSelectProps) {
         noResultsText={t("common.no-data")}
         disabled={props.disabled}
         className={props.className}
-        portal={props.portal}
         clearable={clearable}
         options={options}
       />
@@ -81,13 +81,13 @@ export function EnvironmentSelect(props: EnvironmentSelectProps) {
 
   return (
     <Combobox
+      triggerRef={props.triggerRef}
       value={props.value}
       onChange={props.onChange}
       placeholder={placeholder}
       noResultsText={t("common.no-data")}
       disabled={props.disabled}
       className={props.className}
-      portal={props.portal}
       clearable={clearable}
       renderValue={(opt) => {
         const env = environments.find(

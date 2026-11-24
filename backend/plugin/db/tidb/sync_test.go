@@ -1,336 +1,136 @@
 package tidb
 
 import (
-	"database/sql"
-	"fmt"
+	"context"
+	"errors"
+	"io"
 	"testing"
 
+	omnidriver "github.com/bytebase/omni/driver"
 	metadatapb "github.com/bytebase/omni/metadata"
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/testing/protocmp"
+
+	"github.com/bytebase/bytebase/backend/common"
+	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	"github.com/bytebase/bytebase/backend/plugin/db/util"
 )
 
-func TestSetColumnMetadataDefault(t *testing.T) {
-	/*
-		CREATE TABLE hello (
-			id INT AUTO_INCREMENT PRIMARY KEY,
-			name0 varchar(20),
-			name1 varchar(20) DEFAULT '0',
-			name2 varchar(20) DEFAULT 'hello',
-			age0 int NOT NULL,
-			age1 tinyint(4) NOT NULL DEFAULT '0',
-			age2 tinyint(4) NOT NULL DEFAULT 0,
-			age3 tinyint NOT NULL DEFAULT '0',
-			age4 tinyint NOT NULL DEFAULT 0,
-			price double(16,2) DEFAULT '0.00',
-			time0 datetime,
-			time1 datetime NOT NULL,
-			time2 datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			time3 datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			time4 datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			time5 datetime(6) DEFAULT CURRENT_TIMESTAMP(6),
-			time6 datetime(6) DEFAULT NOW(6),
-			time7 datetime DEFAULT CURRENT_TIMESTAMP()
-		);
-
-		// 8.0.11-TiDB-v7.6.0 created format.
-		// 5.7.28-TiDB-v7.1.1-serverless created format.
-		// 5.7.25-TiDB-v6.5.8 created format.
-		CREATE TABLE `hello` (
-			`id` int(11) NOT NULL AUTO_INCREMENT,
-			`name0` varchar(20) DEFAULT NULL,
-			`name1` varchar(20) DEFAULT '0',
-			`name2` varchar(20) DEFAULT 'hello',
-			`age0` int(11) NOT NULL,
-			`age1` tinyint(4) NOT NULL DEFAULT '0',
-			`age2` tinyint(4) NOT NULL DEFAULT '0',
-			`age3` tinyint(4) NOT NULL DEFAULT '0',
-			`age4` tinyint(4) NOT NULL DEFAULT '0',
-			`price` double(16,2) DEFAULT '0',
-			`time0` datetime DEFAULT NULL,
-			`time1` datetime NOT NULL,
-			`time2` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			`time3` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			`time4` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-			`time5` datetime(6) DEFAULT CURRENT_TIMESTAMP(6),
-			`time6` datetime(6) DEFAULT CURRENT_TIMESTAMP(6),
-			`time7` datetime DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (`id`) ... // T![clustered_index] CLUSTERED
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-	*/
-	tests := []struct {
-		name         string
-		defaultStr   sql.NullString
-		nullableBool bool
-		extra        string
-		want         *metadatapb.ColumnMetadata
-	}{
-		// 8.0.11-TiDB-v7.6.0.
-		// 5.7.28-TiDB-v7.1.1-serverless.
-		// 5.7.25-TiDB-v6.5.8.
-		{
-			name:         "id",
-			defaultStr:   sql.NullString{},
-			nullableBool: false,
-			extra:        "auto_increment",
-			want: &metadatapb.ColumnMetadata{
-				Default: "AUTO_INCREMENT",
-			},
-		},
-		{
-			name:         "name0",
-			defaultStr:   sql.NullString{},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "NULL",
-			},
-		},
-		{
-			name:         "name1",
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name:         "name2",
-			defaultStr:   sql.NullString{Valid: true, String: "hello"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "hello",
-			},
-		},
-		{
-			name:         "age0",
-			defaultStr:   sql.NullString{},
-			nullableBool: false,
-			extra:        "",
-			want:         &metadatapb.ColumnMetadata{},
-		},
-		{
-			name:         "age1",
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: false,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name:         "age2",
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: false,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name:         "age3",
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: false,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name:         "age4",
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: false,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name: "price",
-			// This is strange, not "0.00".
-			defaultStr:   sql.NullString{Valid: true, String: "0"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "0",
-			},
-		},
-		{
-			name:         "time0",
-			defaultStr:   sql.NullString{},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "NULL",
-			},
-		},
-		{
-			name:         "time1",
-			defaultStr:   sql.NullString{},
-			nullableBool: false,
-			extra:        "",
-			want:         &metadatapb.ColumnMetadata{},
-		},
-		{
-			name:         "time2",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP"},
-			nullableBool: false,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "CURRENT_TIMESTAMP",
-			},
-		},
-		{
-			name:         "time3",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP"},
-			nullableBool: false,
-			extra:        "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
-			want: &metadatapb.ColumnMetadata{
-				Default:  "CURRENT_TIMESTAMP",
-				OnUpdate: "CURRENT_TIMESTAMP",
-			},
-		},
-		{
-			name:         "time4",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP"},
-			nullableBool: true,
-			extra:        "DEFAULT_GENERATED on update CURRENT_TIMESTAMP",
-			want: &metadatapb.ColumnMetadata{
-				Default:  "CURRENT_TIMESTAMP",
-				OnUpdate: "CURRENT_TIMESTAMP",
-			},
-		},
-		{
-			name:         "time5",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP(6)"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "CURRENT_TIMESTAMP(6)",
-			},
-		},
-		{
-			name:         "time6",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP(6)"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "CURRENT_TIMESTAMP(6)",
-			},
-		},
-		{
-			name:         "time7",
-			defaultStr:   sql.NullString{Valid: true, String: "CURRENT_TIMESTAMP"},
-			nullableBool: true,
-			extra:        "",
-			want: &metadatapb.ColumnMetadata{
-				Default: "CURRENT_TIMESTAMP",
-			},
-		},
-	}
-
-	a := require.New(t)
-	for _, tc := range tests {
-		column := &metadatapb.ColumnMetadata{}
-		setColumnMetadataDefault(column, tc.defaultStr, tc.nullableBool, tc.extra)
-		a.Equal(tc.want, column, tc.name)
-	}
+type fakeSyncDriver struct {
+	instance     *omnidriver.Instance
+	schema       *metadatapb.DatabaseSchemaMetadata
+	syncDBErr    error
+	dumpSQL      string
+	dumpErr      error
+	dumpedSchema *metadatapb.DatabaseSchemaMetadata
 }
 
-func TestConvertCollationToCharset(t *testing.T) {
-	tests := []struct {
-		collation string
-		want      string
-	}{
-		{
-			collation: "ascii_bin",
-			want:      "ascii",
-		},
-		{
-			collation: "binary",
-			want:      "binary",
-		},
-		{
-			collation: "gbk_chinese_ci",
-			want:      "gbk",
-		},
-		{
-			collation: "latin1_bin",
-			want:      "latin1",
-		},
-		{
-			collation: "utf8_bin",
-			want:      "utf8",
-		},
-		{
-			collation: "utf8mb4_bin",
-			want:      "utf8mb4",
-		},
-	}
+func (*fakeSyncDriver) Ping(context.Context) error { return nil }
+func (*fakeSyncDriver) Close() error               { return nil }
 
-	a := require.New(t)
-	for _, tc := range tests {
-		got := convertCollationToCharset(tc.collation)
-		a.Equal(tc.want, got, tc.collation)
-	}
+func (f *fakeSyncDriver) SyncInstance(context.Context) (*omnidriver.Instance, error) {
+	return f.instance, nil
 }
 
-func TestStripSingleQuote(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"'quoted'", "quoted"},
-		{"''", ""},
-		{"'single'", "single"},
-		{"no quotes", "no quotes"},
-		{"'partial", "'partial"},
-		{"partial'", "partial'"},
+func (f *fakeSyncDriver) SyncDatabase(context.Context) (*metadatapb.DatabaseSchemaMetadata, error) {
+	if f.syncDBErr != nil {
+		return nil, f.syncDBErr
 	}
-
-	for _, test := range tests {
-		t.Run(fmt.Sprintf("input: %s", test.input), func(t *testing.T) {
-			result := stripSingleQuote(test.input)
-			require.Equal(t, test.expected, result)
-		})
-	}
+	return f.schema, nil
 }
 
-func TestSupportsCheckConstraintTable(t *testing.T) {
-	tests := []struct {
-		version string
-		want    bool
-	}{
-		// information_schema.CHECK_CONSTRAINTS landed in TiDB v7.4.0, the same release
-		// that moved the reported MySQL prefix from 5.7.25 to 8.0.11. The TiDB version
-		// decides whenever it is readable.
-		{version: "5.7.25-TiDB-v7.1.1", want: false},
-		{version: "5.7.25-TiDB-v7.2.0", want: false},
-		{version: "5.7.25-TiDB-v7.3.0", want: false},
-		{version: "8.0.11-TiDB-v7.4.0", want: true},
-		{version: "8.0.11-TiDB-v8.5.0", want: true},
-		{version: "8.0.11-TiDB-v7.5.2-serverless", want: true},
-		// No readable TiDB version, so the MySQL prefix decides. TiDB Cloud reports a
-		// calendar version; a custom server-version can drop the TiDB half entirely.
-		{version: "8.0.11-TiDB-CLOUD.202603.4", want: true},
-		{version: "5.7.25-TiDB-CLOUD.202603.4", want: false},
-		{version: "8.0.11", want: true},
-		{version: "5.7.25", want: false},
-		// A future prefix bump must not regress.
-		{version: "8.4.0-TiDB-CLOUD.202701.1", want: true},
-		// The TiDB version wins over the prefix when both are readable.
-		{version: "8.0.11-TiDB-v7.3.0", want: false},
-		// MySQL added the table in 8.0.16; comparing the prefix against that would
-		// answer false for every TiDB build, all of which report 8.0.11.
-		{version: "8.0.11-TiDB-CLOUD.202512.1", want: true},
-		{version: "", want: false},
-		{version: "not-a-version", want: false},
+func (f *fakeSyncDriver) Dump(_ context.Context, out io.Writer, metadata *metadatapb.DatabaseSchemaMetadata) error {
+	f.dumpedSchema = metadata
+	if f.dumpErr != nil {
+		return f.dumpErr
+	}
+	_, err := io.WriteString(out, f.dumpSQL)
+	return err
+}
+
+// TestSyncDBSchemaPassesTheDriversMetadataThrough proves the adapter returns
+// omni's synced database schema unchanged.
+func TestSyncDBSchemaPassesTheDriversMetadataThrough(t *testing.T) {
+	t.Parallel()
+
+	want := &metadatapb.DatabaseSchemaMetadata{
+		Name: "shop",
+		Schemas: []*metadatapb.SchemaMetadata{{
+			Tables: []*metadatapb.TableMetadata{{
+				Name: "orders",
+				Columns: []*metadatapb.ColumnMetadata{
+					{Name: "id", Type: "int"},
+					{Name: "note", Type: "varchar(64)"},
+				},
+			}},
+		}},
+	}
+	driver := &Driver{OmniAdapter: util.OmniAdapter{Driver: &fakeSyncDriver{schema: want}}}
+
+	got, err := driver.SyncDBSchema(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(want, got, protocmp.Transform()))
+}
+
+// TestSyncDBSchemaReportsAMissingDatabase pins the adapter's translation of
+// omni's ErrNotFound into Bytebase's common.NotFound error.
+func TestSyncDBSchemaReportsAMissingDatabase(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fake := &fakeSyncDriver{syncDBErr: omnidriver.ErrNotFound}
+	driver := &Driver{
+		OmniAdapter: util.OmniAdapter{
+			Driver:           fake,
+			NotFoundResource: "database",
+			DatabaseName:     "shop_missing",
+		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.version, func(t *testing.T) {
-			require.Equal(t, tc.want, supportsCheckConstraintTable(tc.version))
-		})
+	_, err := driver.SyncDBSchema(ctx)
+	require.Error(t, err)
+	require.Equal(t, common.NotFound, common.ErrorCode(err))
+	require.Contains(t, err.Error(), `database "shop_missing" not found`)
+
+	otherErr := errors.New("connection refused")
+	fake.syncDBErr = otherErr
+	_, err = driver.SyncDBSchema(ctx)
+	require.ErrorIs(t, err, otherErr)
+}
+
+// TestSyncInstanceMapsTheDriversInstance pins how the adapter maps omni's
+// instance version, databases, roles, and lower_case_table_names onto
+// Bytebase's InstanceMetadata.
+func TestSyncInstanceMapsTheDriversInstance(t *testing.T) {
+	t.Parallel()
+
+	grantAttr := "GRANT SELECT ON `shop`.* TO 'bb_sync_probe'@'%'"
+	contract := &omnidriver.Instance{
+		Version:             "8.0.11-TiDB-v8.5.5",
+		LowerCaseTableNames: 2,
+		Databases: []*metadatapb.DatabaseSchemaMetadata{
+			{Name: "shop", CharacterSet: "utf8mb4", Collation: "utf8mb4_bin"},
+		},
+		Roles: []*omnidriver.Role{
+			{Name: "'bb_sync_probe'@'%'", Attribute: &grantAttr},
+		},
 	}
+	driver := &Driver{
+		OmniAdapter: util.OmniAdapter{
+			Driver:               &fakeSyncDriver{instance: contract},
+			WithInstanceMetadata: true,
+		},
+	}
+
+	instance, err := driver.SyncInstance(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, contract.Version, instance.Version)
+	require.NotNil(t, instance.Metadata)
+	require.Equal(t, int32(2), instance.Metadata.GetMysqlLowerCaseTableNames())
+	require.Empty(t, cmp.Diff(contract.Databases, instance.Databases, protocmp.Transform()))
+	require.Empty(t, cmp.Diff([]*storepb.InstanceRole{{
+		Name:      "'bb_sync_probe'@'%'",
+		Attribute: &grantAttr,
+	}}, instance.Metadata.GetRoles(), protocmp.Transform()))
 }

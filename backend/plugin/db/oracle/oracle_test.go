@@ -1,6 +1,7 @@
 package oracle
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,27 +9,24 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"database/sql"
-	"database/sql/driver"
-	"encoding/json"
 	"encoding/pem"
-	"fmt"
+	"errors"
+	"io"
 	"maps"
 	"math/big"
 	"net"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	goora "github.com/sijms/go-ora/v2"
-	"github.com/sijms/go-ora/v2/configurations"
+	omnidriver "github.com/bytebase/omni/driver"
+	metadatapb "github.com/bytebase/omni/metadata"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bytebase/bytebase/backend/common"
-	"github.com/bytebase/bytebase/backend/common/testcontainer"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/plugin/db"
+	"github.com/bytebase/bytebase/backend/plugin/db/util"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/plugin/parser/plsql"
 )
@@ -103,228 +101,102 @@ END update_salary;`
 	require.Len(t, commands, 9)
 }
 
-func TestBuildExecuteCommandsSplitsLargeOracleScript(t *testing.T) {
-	var builder strings.Builder
-	builder.WriteString(`CREATE TABLE APPS.M_SKU_STOCK_KEY_TMP (
-  SKU_CODE VARCHAR2(100) NOT NULL,
-  STOCK_KEY VARCHAR2(100)
-);
-`)
-	builder.WriteString("CREATE INDEX IDX_TMP_SKU_CODE ON APPS.M_SKU_STOCK_KEY_TMP(SKU_CODE);\n")
-	for i := 0; builder.Len() <= common.MaxSheetCheckSize+1024; i++ {
-		_, err := fmt.Fprintf(&builder, "INSERT INTO APPS.M_SKU_STOCK_KEY_TMP(SKU_CODE, STOCK_KEY) VALUES('SKU_%06d', '%s');\n", i, strings.Repeat("x", 64))
-		require.NoError(t, err)
-	}
-	statement := builder.String()
-	require.Greater(t, len(statement), common.MaxSheetCheckSize)
-
-	commands, err := buildExecuteCommands(statement)
-	require.NoError(t, err)
-
-	require.Greater(t, len(commands), 2)
-	require.NotEqual(t, statement, commands[0].Text)
-	require.Equal(t, "CREATE TABLE APPS.M_SKU_STOCK_KEY_TMP (\n  SKU_CODE VARCHAR2(100) NOT NULL,\n  STOCK_KEY VARCHAR2(100)\n)", strings.TrimSpace(commands[0].Text))
-	require.Equal(t, "CREATE INDEX IDX_TMP_SKU_CODE ON APPS.M_SKU_STOCK_KEY_TMP(SKU_CODE)", strings.TrimSpace(commands[1].Text))
-}
-
-func TestConnectionOptions(t *testing.T) {
+// TestConnectionParams pins the data source fields that reach go-ora through the
+// contract's Params, and that an extra parameter wins in any spelling: go-ora
+// upper-cases option keys, so two spellings of one option would leave the winner
+// to map iteration order.
+func TestConnectionParams(t *testing.T) {
 	tests := []struct {
 		name            string
+		serviceName     string
 		sid             string
 		extraParameters map[string]string
-		useTLS          bool
 		want            map[string]string
 	}{
+		{name: "no fields", want: map[string]string{}},
+		{name: "service name field", serviceName: "ORCLPDB1", want: map[string]string{"SERVICE_NAME": "ORCLPDB1"}},
+		{name: "SID field", sid: "ORCL", want: map[string]string{"SID": "ORCL"}},
 		{
-			name: "no extra parameters",
-			want: map[string]string{"CONNECTION TIMEOUT": "10"},
+			name:            "extra parameters in their own spelling",
+			serviceName:     "ORCLPDB1",
+			extraParameters: map[string]string{"WALLET": "/opt/oracle/wallet", "prefetch_rows": "500"},
+			want:            map[string]string{"SERVICE_NAME": "ORCLPDB1", "WALLET": "/opt/oracle/wallet", "prefetch_rows": "500"},
 		},
 		{
-			name: "SID field",
-			sid:  "ORCL",
-			want: map[string]string{"CONNECTION TIMEOUT": "10", "SID": "ORCL"},
+			name:            "an extra SID replaces the field",
+			sid:             "ORCL",
+			want:            map[string]string{"sid": "STANDBY"},
+			extraParameters: map[string]string{"sid": "STANDBY"},
 		},
 		{
-			name:            "dial timeout in the exact spelling",
-			extraParameters: map[string]string{"CONNECTION TIMEOUT": "5"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "5"},
+			name:            "an extra service name replaces the field",
+			serviceName:     "ORCLPDB1",
+			extraParameters: map[string]string{"service_name": "OTHER"},
+			want:            map[string]string{"service_name": "OTHER"},
 		},
 		{
-			name:            "dial timeout in lowercase",
-			extraParameters: map[string]string{"connection timeout": "5"},
-			want:            map[string]string{"connection timeout": "5"},
+			name:            "an extra SERVICE_NAME alone names the service",
+			extraParameters: map[string]string{"SERVICE_NAME": "OTHER"},
+			want:            map[string]string{"SERVICE_NAME": "OTHER"},
 		},
 		{
-			name:            "dial timeout alias",
+			name:            "an explicit dial timeout is kept",
 			extraParameters: map[string]string{"CONNECT TIMEOUT": "5"},
 			want:            map[string]string{"CONNECT TIMEOUT": "5"},
 		},
 		{
-			name:            "dial timeout alias in mixed case",
-			extraParameters: map[string]string{"Connect Timeout": "5"},
-			want:            map[string]string{"Connect Timeout": "5"},
-		},
-		{
-			name:            "dial timeout turned off",
-			extraParameters: map[string]string{"CONNECTION TIMEOUT": "0"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "0"},
-		},
-		{
-			name:            "read timeout is a different option",
-			extraParameters: map[string]string{"TIMEOUT": "30"},
-			want:            map[string]string{"TIMEOUT": "30", "CONNECTION TIMEOUT": "10"},
-		},
-		{
-			name:            "SID key in the exact spelling",
-			sid:             "ORCL",
-			extraParameters: map[string]string{"SID": "STANDBY"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "10", "SID": "STANDBY"},
-		},
-		{
-			name:            "SID key in lowercase",
-			sid:             "ORCL",
-			extraParameters: map[string]string{"sid": "STANDBY"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "10", "sid": "STANDBY"},
-		},
-		{
-			name:            "SID key without the SID field",
-			extraParameters: map[string]string{"Sid": "STANDBY"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "10", "Sid": "STANDBY"},
-		},
-		{
-			name: "other keys pass through in their own spelling",
-			sid:  "ORCL",
-			extraParameters: map[string]string{
-				"SERVER":          "standby-1.example.com:1521, standby-2.example.com:1521",
-				"SSL":             "true",
-				"ssl verify":      "false",
-				"WALLET":          "/opt/oracle/wallet",
-				"WALLET PASSWORD": "wallet-secret",
-				"AUTH TYPE":       "TCPS",
-				"prefetch_rows":   "500",
-			},
-			want: map[string]string{
-				"CONNECTION TIMEOUT": "10",
-				"SID":                "ORCL",
-				"SERVER":             "standby-1.example.com:1521, standby-2.example.com:1521",
-				"SSL":                "true",
-				"ssl verify":         "false",
-				"WALLET":             "/opt/oracle/wallet",
-				"WALLET PASSWORD":    "wallet-secret",
-				"AUTH TYPE":          "TCPS",
-				"prefetch_rows":      "500",
-			},
-		},
-		{
-			name:   "TLS mode TLS sets SSL",
-			useTLS: true,
-			want:   map[string]string{"CONNECTION TIMEOUT": "10", "SSL": "TRUE"},
-		},
-		{
-			name:            "TLS mode TLS replaces an SSL key in any spelling",
-			extraParameters: map[string]string{"ssl": "FALSE"},
-			useTLS:          true,
-			want:            map[string]string{"CONNECTION TIMEOUT": "10", "SSL": "TRUE"},
-		},
-		{
-			name:            "TLS mode TLS passes the other TLS keys through",
-			extraParameters: map[string]string{"SSL VERIFY": "FALSE", "WALLET": "/opt/oracle/wallet"},
-			useTLS:          true,
-			want: map[string]string{
-				"CONNECTION TIMEOUT": "10",
-				"SSL":                "TRUE",
-				"SSL VERIFY":         "FALSE",
-				"WALLET":             "/opt/oracle/wallet",
-			},
-		},
-		{
-			name:            "TLS mode Disabled passes an SSL key through",
-			extraParameters: map[string]string{"ssl": "TRUE"},
-			want:            map[string]string{"CONNECTION TIMEOUT": "10", "ssl": "TRUE"},
+			name:            "another spelling of the dial timeout is kept",
+			extraParameters: map[string]string{"connection timeout": "5"},
+			want:            map[string]string{"connection timeout": "5"},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			extraParameters := maps.Clone(test.extraParameters)
-			got := connectionOptions(test.sid, extraParameters, test.useTLS)
-			require.Equal(t, test.want, got)
-			require.Equal(t, test.extraParameters, extraParameters)
+			dataSource := &storepb.DataSource{
+				ServiceName:               test.serviceName,
+				Sid:                       test.sid,
+				ExtraConnectionParameters: extraParameters,
+			}
+			// The dial timeout is the one parameter the adapter supplies: go-ora
+			// otherwise leaves it to the transport, which stalls a connect check
+			// behind an unreachable primary.
+			want := maps.Clone(test.want)
+			hasDialTimeout := false
+			for key := range want {
+				option := strings.ToUpper(key)
+				if option == "CONNECTION TIMEOUT" || option == "CONNECT TIMEOUT" {
+					hasDialTimeout = true
+				}
+			}
+			if !hasDialTimeout {
+				want["CONNECTION TIMEOUT"] = "10"
+			}
+			require.Equal(t, want, connectionParams(dataSource))
+			require.Equal(t, test.extraParameters, dataSource.GetExtraConnectionParameters(), "the data source must not be changed")
 		})
 	}
 }
 
-// go-ora reads the options back from the URL, so these cases check what the driver ends up
-// with rather than what Bytebase sent.
-func TestConnectionOptionsAsReadByDriver(t *testing.T) {
-	parse := func(t *testing.T, sid string, extraParameters map[string]string, useTLS bool) *configurations.ConnectionConfig {
-		t.Helper()
-		dsn := goora.BuildUrl("primary.example.com", 1521, "ORCLPDB1", "bytebase", "secret", connectionOptions(sid, extraParameters, useTLS))
-		config, err := configurations.ParseConfig(dsn)
-		require.NoError(t, err)
-		return config
-	}
-
-	t.Run("default", func(t *testing.T) {
-		config := parse(t, "", nil, false)
-		require.Equal(t, 10*time.Second, config.ConnectTimeout)
-		// A read timeout would cut off long statements.
-		require.Zero(t, config.Timeout)
-		require.Empty(t, config.SID)
+// TestQueryOptionsCarriesTheRequest pins the mapping QueryConn hands the driver,
+// masking included: the rows of a statement whose span cannot be traced must not
+// reach the caller.
+func TestQueryOptionsCarriesTheRequest(t *testing.T) {
+	options := queryOptions(db.QueryContext{
+		Schema:               "APP",
+		Limit:                10,
+		Explain:              true,
+		MaximumSQLResultSize: 1024,
+		MaskingEnabled:       true,
+		Option:               &v1pb.QueryOption{ExplainFormat: v1pb.QueryOption_JSON},
 	})
-
-	for _, key := range []string{"CONNECTION TIMEOUT", "connection timeout", "CONNECT TIMEOUT", "connect timeout", "Connect Timeout"} {
-		t.Run("dial timeout as "+key, func(t *testing.T) {
-			config := parse(t, "", map[string]string{key: "5"}, false)
-			require.Equal(t, 5*time.Second, config.ConnectTimeout)
-			require.Zero(t, config.Timeout)
-		})
-	}
-
-	t.Run("dial timeout turned off", func(t *testing.T) {
-		config := parse(t, "", map[string]string{"connect timeout": "0"}, false)
-		require.Zero(t, config.ConnectTimeout)
-	})
-
-	t.Run("SID field", func(t *testing.T) {
-		config := parse(t, "ORCL", nil, false)
-		require.Equal(t, "ORCL", config.SID)
-	})
-
-	t.Run("SID key replaces the SID field", func(t *testing.T) {
-		config := parse(t, "ORCL", map[string]string{"sid": "STANDBY"}, false)
-		require.Equal(t, "STANDBY", config.SID)
-	})
-
-	t.Run("second address over TCPS", func(t *testing.T) {
-		config := parse(t, "", map[string]string{
-			"SERVER":     "standby-1.example.com:2484, standby-2.example.com:2484",
-			"SSL":        "true",
-			"SSL VERIFY": "false",
-			"AUTH TYPE":  "TCPS",
-		}, false)
-		require.Equal(t, []configurations.ServerAddr{
-			{Addr: "primary.example.com", Port: 1521},
-			{Addr: "standby-1.example.com", Port: 2484},
-			{Addr: "standby-2.example.com", Port: 2484},
-		}, config.Servers)
-		require.True(t, config.SSL)
-		require.False(t, config.SSLVerify)
-		require.Equal(t, configurations.TCPS, config.AuthType)
-		require.Equal(t, 10*time.Second, config.ConnectTimeout)
-	})
-
-	for _, key := range []string{"SSL", "ssl", "Ssl"} {
-		t.Run("TLS mode TLS overrides "+key+"=FALSE", func(t *testing.T) {
-			config := parse(t, "", map[string]string{key: "FALSE"}, true)
-			require.True(t, config.SSL)
-		})
-	}
-
-	t.Run("TLS mode Disabled reads SSL from extra parameters", func(t *testing.T) {
-		config := parse(t, "", map[string]string{"ssl": "true"}, false)
-		require.True(t, config.SSL)
-	})
+	require.Equal(t, "APP", options.Schema)
+	require.Equal(t, 10, options.Limit)
+	require.True(t, options.Explain)
+	require.Equal(t, "JSON", options.ExplainFormat)
+	require.Equal(t, int64(1024), options.MaxResultBytes)
+	require.True(t, options.MaskingEnabled, "masking reaches the driver")
 }
 
 func TestOpenAppliesTLSSettings(t *testing.T) {
@@ -433,68 +305,330 @@ func TestOpenAppliesTLSSettings(t *testing.T) {
 		require.Error(t, nextHandshake(t, handshakes).err)
 	})
 
-	t.Run("each connection gets its own copy of the TLS configuration", func(t *testing.T) {
-		port, handshakes := startTCPSListener(t, serverConfig)
-		portNumber, err := strconv.Atoi(port)
+	t.Run("the TLS callback names no server, so go-ora binds each dial", func(t *testing.T) {
+		config, err := getTLSConfig(verified("1521"))
 		require.NoError(t, err)
-		config, err := getTLSConfig(verified(port))
-		require.NoError(t, err)
-		c := &connector{
-			dsn:       goora.BuildUrl("localhost", portNumber, "ORCLPDB1", "bytebase", "secret", connectionOptions("", nil, true)),
-			tlsConfig: config,
-		}
-		_, err = c.Connect(context.Background())
-		require.Error(t, err)
-		require.NoError(t, nextHandshake(t, handshakes).err)
-		// go-ora sets ServerName on the configuration it is handed, just before the handshake.
+		// go-ora sets ServerName on the configuration it is handed, just before the
+		// handshake; a name set here would check every server against one host.
 		require.Empty(t, config.ServerName)
 	})
 }
 
-func TestCurrentSchemaOnNewSessions(t *testing.T) {
-	ctx := context.Background()
-	container, schema := testcontainer.NewOracleSchema(t)
-	open := func(schema string) (db.Driver, error) {
-		return (&Driver{}).Open(ctx, storepb.Engine_ORACLE, db.ConnectionConfig{
-			DataSource: &storepb.DataSource{
-				Host:        container.GetHost(),
-				Port:        container.GetPort(),
-				Username:    container.GetUsername(),
-				ServiceName: testcontainer.OracleServiceName,
-			},
-			Password:          container.GetPassword(),
-			ConnectionContext: db.ConnectionContext{DatabaseName: schema},
-		})
+func TestWithoutSQLPlusCommands(t *testing.T) {
+	script := "SET DEFINE OFF\nSELECT 1 AS A FROM DUAL"
+	blanked := withoutSQLPlusCommands(script)
+	require.Len(t, blanked, len(script), "byte offsets of subsequent statements must be preserved")
+	require.Equal(t, "SELECT 1 AS A FROM DUAL", strings.TrimLeft(blanked, " "))
+	require.Equal(t, strings.Index(script, "SELECT"), strings.Index(blanked, "SELECT"))
+
+	plain := "SELECT 1 FROM DUAL"
+	require.Equal(t, plain, withoutSQLPlusCommands(plain))
+}
+
+type fakeOracleDriver struct {
+	sessionOpens int
+	sessions     []*captureOracleSession
+	sessionErr   error
+
+	execScript string
+	execOpts   omnidriver.ExecuteOptions
+	execFn     func(context.Context, string, omnidriver.ExecuteOptions) (int64, error)
+
+	instance    *omnidriver.Instance
+	schema      *metadatapb.DatabaseSchemaMetadata
+	dumpDDL     string
+	estimate    int64
+	estimateErr error
+	estimateSQL string
+	ownsLink    bool
+	ownsLinkErr error
+}
+
+func (*fakeOracleDriver) Ping(context.Context) error { return nil }
+func (*fakeOracleDriver) Close() error               { return nil }
+
+func (f *fakeOracleDriver) Session(context.Context) (omnidriver.Session, error) {
+	f.sessionOpens++
+	if f.sessionErr != nil {
+		return nil, f.sessionErr
 	}
-	driver, err := open(schema)
+	if len(f.sessions) > 0 {
+		s := f.sessions[0]
+		f.sessions = f.sessions[1:]
+		return s, nil
+	}
+	return &captureOracleSession{}, nil
+}
+
+func (f *fakeOracleDriver) SyncInstance(context.Context) (*omnidriver.Instance, error) {
+	return f.instance, nil
+}
+
+func (f *fakeOracleDriver) SyncDatabase(context.Context) (*metadatapb.DatabaseSchemaMetadata, error) {
+	return f.schema, nil
+}
+
+func (f *fakeOracleDriver) Dump(_ context.Context, out io.Writer, _ *metadatapb.DatabaseSchemaMetadata) error {
+	_, err := io.WriteString(out, f.dumpDDL)
+	return err
+}
+
+func (f *fakeOracleDriver) Execute(ctx context.Context, script string, opts omnidriver.ExecuteOptions) (int64, error) {
+	f.execScript = script
+	f.execOpts = opts
+	if f.execFn != nil {
+		return f.execFn(ctx, script, opts)
+	}
+	return 1, nil
+}
+
+func (f *fakeOracleDriver) CountAffectedRows(_ context.Context, statement string) (int64, error) {
+	f.estimateSQL = statement
+	return f.estimate, f.estimateErr
+}
+
+func (f *fakeOracleDriver) OwnsPrivateDatabaseLink(context.Context) (bool, error) {
+	return f.ownsLink, f.ownsLinkErr
+}
+
+type captureOracleSession struct {
+	gotStatements []string
+	gotStatement  string
+	gotOpts       omnidriver.QueryOptions
+	queryFn       func(context.Context, string, omnidriver.QueryOptions) ([]*omnidriver.Result, error)
+	closed        bool
+}
+
+func (s *captureOracleSession) Query(ctx context.Context, stmt string, opts omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+	s.gotStatements = append(s.gotStatements, stmt)
+	s.gotStatement = stmt
+	s.gotOpts = opts
+	if s.queryFn != nil {
+		return s.queryFn(ctx, stmt, opts)
+	}
+	return []*omnidriver.Result{{Statement: stmt}}, nil
+}
+
+func (s *captureOracleSession) Close() error {
+	s.closed = true
+	return nil
+}
+
+func TestExecuteAndQueryConnSQLPlusSeam(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeOracleDriver{
+		execFn: func(_ context.Context, script string, opts omnidriver.ExecuteOptions) (int64, error) {
+			opts.Log.CommandExecute(omnidriver.Command{Text: script, ByteStart: 0, ByteEnd: len(script)})
+			opts.Log.CommandResponse(1, []int64{1}, nil)
+			return 1, nil
+		},
+	}
+	session := &captureOracleSession{}
+	d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+	d.SetSession(session)
+
+	_, err := d.Execute(ctx, "CREATE TABLE T (ID NUMBER)", db.ExecuteOptions{CreateDatabase: true})
+	require.ErrorContains(t, err, "create database is not supported for Oracle")
+
+	var logTypes []storepb.TaskRunLog_Type
+	rows, err := d.Execute(ctx, "-- txn-mode = off\nSET DEFINE OFF\nINSERT INTO T VALUES (1)", db.ExecuteOptions{
+		MaximumRetries: 2,
+		CreateTaskRunLog: func(_ time.Time, entry *storepb.TaskRunLog) error {
+			logTypes = append(logTypes, entry.Type)
+			return nil
+		},
+	})
 	require.NoError(t, err)
-	defer driver.Close(ctx)
-	// With no idle connection kept, the pool opens a new session for every connection it hands out.
-	driver.GetDB().SetMaxIdleConns(0)
+	require.Equal(t, int64(1), rows)
+	require.Equal(t, omnidriver.AutoCommit, fake.execOpts.Transaction)
+	require.Empty(t, fake.execOpts.Isolation)
+	require.Equal(t, 2, fake.execOpts.MaxRetries)
+	require.NotContains(t, fake.execScript, "SET DEFINE OFF")
+	require.Contains(t, fake.execScript, "INSERT INTO T VALUES (1)")
+	require.Equal(t, []storepb.TaskRunLog_Type{
+		storepb.TaskRunLog_COMMAND_EXECUTE,
+		storepb.TaskRunLog_COMMAND_RESPONSE,
+	}, logTypes)
 
-	t.Run("QueryConn", func(t *testing.T) {
-		conn, err := driver.GetDB().Conn(ctx)
+	_, err = d.QueryConn(ctx, "SET DEFINE OFF\nSELECT 1 FROM DUAL", db.QueryContext{MaximumSQLResultSize: 1024})
+	require.NoError(t, err)
+	require.NotContains(t, session.gotStatement, "SET DEFINE OFF")
+	require.Contains(t, session.gotStatement, "SELECT 1 FROM DUAL")
+}
+
+func TestQueryConnAdapterSeam(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("reuses one session across calls and converts values", func(t *testing.T) {
+		affected := int64(2)
+		sess := &captureOracleSession{
+			queryFn: func(_ context.Context, stmt string, _ omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				if strings.HasPrefix(stmt, "ALTER SESSION") {
+					return []*omnidriver.Result{{Statement: stmt}}, nil
+				}
+				return []*omnidriver.Result{
+					{
+						Statement: stmt,
+						Columns:   []omnidriver.Column{{Name: "D", TypeName: "VARCHAR2"}, {Name: "N", TypeName: "NUMBER"}},
+						Rows: [][]omnidriver.Value{{
+							{Kind: omnidriver.String, String: "2026/01/02"},
+							{Kind: omnidriver.Null},
+						}},
+					},
+					{
+						Statement:    "UPDATE T SET A = 1",
+						AffectedRows: &affected,
+					},
+				}, nil
+			},
+		}
+		fake := &fakeOracleDriver{sessions: []*captureOracleSession{sess}}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+		qctx := db.QueryContext{Schema: "APP", Limit: 5, MaximumSQLResultSize: 1024}
+
+		_, err := d.QueryConn(ctx, "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY/MM/DD'", qctx)
 		require.NoError(t, err)
-		defer conn.Close()
-		results, err := driver.QueryConn(ctx, conn, "SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL", db.QueryContext{MaximumSQLResultSize: 1024})
+		results, err := d.QueryConn(ctx, "SELECT TO_CHAR(DATE '2026-01-02') AS D, NULL AS N FROM DUAL", qctx)
 		require.NoError(t, err)
-		require.Len(t, results, 1)
-		require.Empty(t, results[0].Error)
-		require.Equal(t, schema, results[0].Rows[0].Values[0].GetStringValue())
+
+		require.Equal(t, 1, fake.sessionOpens)
+		require.Same(t, sess, d.Session())
+		require.Equal(t, "APP", sess.gotOpts.Schema)
+		require.Equal(t, 5, sess.gotOpts.Limit)
+		require.Len(t, results, 2)
+		require.Equal(t, "2026/01/02", results[0].Rows[0].Values[0].GetStringValue())
+		require.IsType(t, (*v1pb.RowValue_NullValue)(nil), results[0].Rows[0].Values[1].Kind)
+		require.Equal(t, []string{"Affected Rows"}, results[1].ColumnNames)
+		require.Equal(t, int64(2), results[1].Rows[0].Values[0].GetInt64Value())
 	})
 
-	t.Run("Execute", func(t *testing.T) {
-		_, err := driver.Execute(ctx, "CREATE TABLE SESSION_SCHEMA AS SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') AS NAME FROM DUAL", db.ExecuteOptions{})
-		require.NoError(t, err)
-		var name string
-		require.NoError(t, container.GetDB().QueryRowContext(ctx, fmt.Sprintf("SELECT NAME FROM %s.SESSION_SCHEMA", schema)).Scan(&name))
-		require.Equal(t, schema, name)
+	t.Run("wraps session open errors", func(t *testing.T) {
+		fake := &fakeOracleDriver{sessionErr: errors.New("ORA-01435")}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+		_, err := d.QueryConn(ctx, "SELECT 1 FROM DUAL", db.QueryContext{MaximumSQLResultSize: 1024})
+		require.ErrorContains(t, err, "failed to open a session")
+		require.ErrorContains(t, err, "ORA-01435")
 	})
 
-	t.Run("Open fails on a schema that doesn't exist", func(t *testing.T) {
-		_, err := open("NO_SUCH_SCHEMA")
-		require.ErrorContains(t, err, `failed to set current schema to "NO_SUCH_SCHEMA"`)
+	t.Run("discards session after canceled context", func(t *testing.T) {
+		sess1 := &captureOracleSession{
+			queryFn: func(ctx context.Context, _ string, _ omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				return nil, ctx.Err()
+			},
+		}
+		sess2 := &captureOracleSession{}
+		fake := &fakeOracleDriver{sessions: []*captureOracleSession{sess1, sess2}}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+
+		canceledCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		_, err := d.QueryConn(canceledCtx, "SELECT 1 FROM DUAL", db.QueryContext{MaximumSQLResultSize: 1024})
+		require.ErrorIs(t, err, context.Canceled)
+		require.True(t, sess1.closed)
+		require.Nil(t, d.Session())
+
+		_, err = d.QueryConn(ctx, "SELECT 1 FROM DUAL", db.QueryContext{MaximumSQLResultSize: 1024})
+		require.NoError(t, err)
+		require.Equal(t, 2, fake.sessionOpens)
+		require.Same(t, sess2, d.Session())
 	})
+}
+
+func TestProbeAdapterSeam(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("runs autocommit probe on fresh session and maps cells", func(t *testing.T) {
+		probeSess := &captureOracleSession{
+			queryFn: func(_ context.Context, stmt string, _ omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				return []*omnidriver.Result{{
+					Statement: stmt,
+					Columns:   []omnidriver.Column{{Name: "OP", TypeName: "VARCHAR2"}, {Name: "META", TypeName: "JSON"}},
+					Rows: [][]omnidriver.Value{{
+						{Kind: omnidriver.String, String: "SELECT STATEMENT"},
+						{Kind: omnidriver.Structured, String: `{"k":"v"}`},
+					}},
+				}}, nil
+			},
+		}
+		fake := &fakeOracleDriver{sessions: []*captureOracleSession{probeSess}}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+
+		res, err := d.Probe(ctx, db.ProbeContext{Autocommit: true}, "EXPLAIN PLAN FOR SELECT 1 FROM DUAL")
+		require.NoError(t, err)
+		require.Equal(t, []string{"EXPLAIN PLAN FOR SELECT 1 FROM DUAL"}, probeSess.gotStatements)
+		require.True(t, probeSess.closed)
+		require.Equal(t, []string{"OP", "META"}, res.Columns)
+		require.Equal(t, [][]any{{"SELECT STATEMENT", nil}}, res.Rows)
+	})
+
+	t.Run("propagates statement error from probe", func(t *testing.T) {
+		probeSess := &captureOracleSession{
+			queryFn: func(_ context.Context, stmt string, _ omnidriver.QueryOptions) ([]*omnidriver.Result, error) {
+				return []*omnidriver.Result{{Statement: stmt, Err: errors.New("ORA-00942: table or view does not exist")}}, nil
+			},
+		}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: &fakeOracleDriver{sessions: []*captureOracleSession{probeSess}}}}
+
+		_, err := d.Probe(ctx, db.ProbeContext{Autocommit: true}, "EXPLAIN PLAN FOR SELECT * FROM NO_SUCH_TABLE")
+		require.ErrorContains(t, err, "ORA-00942")
+		require.True(t, probeSess.closed)
+	})
+
+	t.Run("refuses non-autocommit probes without opening a session", func(t *testing.T) {
+		fake := &fakeOracleDriver{}
+		d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+
+		_, err := d.Probe(ctx, db.ProbeContext{PreExecutions: []string{"ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY'"}}, "SELECT 1 FROM DUAL")
+		require.ErrorContains(t, err, "runs alone")
+		require.Zero(t, fake.sessionOpens)
+	})
+}
+
+func TestSyncDumpLinksAndRowEstimatorSeam(t *testing.T) {
+	ctx := context.Background()
+	schema := &metadatapb.DatabaseSchemaMetadata{
+		Name:    "APP",
+		Schemas: []*metadatapb.SchemaMetadata{{Name: "APP", Tables: []*metadatapb.TableMetadata{{Name: "T"}}}},
+	}
+	fake := &fakeOracleDriver{
+		instance: &omnidriver.Instance{Version: "23.26.3.0.0", Databases: []*metadatapb.DatabaseSchemaMetadata{{Name: "APP"}}},
+		schema:   schema,
+		dumpDDL:  `CREATE TABLE "T" ("ID" NUMBER);`,
+		estimate: 42,
+		ownsLink: true,
+	}
+	d := &Driver{OmniAdapter: util.OmniAdapter{Driver: fake}}
+
+	inst, err := d.SyncInstance(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "23.26.3.0.0", inst.Version)
+	require.Len(t, inst.Databases, 1)
+
+	gotSchema, err := d.SyncDBSchema(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "APP", gotSchema.Name)
+
+	var dump bytes.Buffer
+	require.NoError(t, d.Dump(ctx, &dump, gotSchema))
+	require.Contains(t, dump.String(), `CREATE TABLE "T"`)
+
+	rows, err := d.CountAffectedRows(ctx, "DELETE FROM T WHERE ID = 1")
+	require.NoError(t, err)
+	require.Equal(t, int64(42), rows)
+	require.Equal(t, "DELETE FROM T WHERE ID = 1", fake.estimateSQL)
+
+	owns, err := d.OwnsPrivateDatabaseLink(ctx)
+	require.NoError(t, err)
+	require.True(t, owns)
+
+	fake.ownsLink = false
+	owns, err = d.OwnsPrivateDatabaseLink(ctx)
+	require.NoError(t, err)
+	require.False(t, owns)
+
+	fake.ownsLinkErr = errors.New("ORA-00942")
+	_, err = d.OwnsPrivateDatabaseLink(ctx)
+	require.ErrorContains(t, err, "ORA-00942")
 }
 
 func closedPort(t *testing.T) string {
@@ -645,57 +779,4 @@ func ping(t *testing.T, dataSource *storepb.DataSource) string {
 	err = driver.Ping(ctx)
 	require.Error(t, err)
 	return err.Error()
-}
-
-// TestQueryPlanSteps covers the one form of plan the query-plan viewer draws:
-// Oracle states a plan as rows of PLAN_TABLE, and the driver is where those
-// become the JSON document the viewer parses.
-func TestQueryPlanSteps(t *testing.T) {
-	t.Parallel()
-	connector := &fakePlanConnector{
-		columns: []string{"ID", "PARENT_ID", "OPERATION", "OPTIONS", "OBJECT_NAME", "COST", "ACCESS_PREDICATES"},
-		plan: [][]driver.Value{
-			{"0", nil, "SELECT STATEMENT", nil, nil, "48", nil},
-			// The driver hands text back as bytes, which JSON would otherwise
-			// encode as base64.
-			{"1", "0", "TABLE ACCESS", []byte("FULL"), []byte("ORDERS"), "48", []byte(`"TOTAL">880`)},
-		},
-	}
-	database := sql.OpenDB(connector)
-	defer database.Close()
-	conn, err := database.Conn(context.Background())
-	require.NoError(t, err)
-	defer conn.Close()
-
-	result, err := queryPlanSteps(context.Background(), conn, "SELECT ...")
-	require.NoError(t, err)
-	require.Equal(t, []string{"PLAN"}, result.GetColumnNames())
-	require.Len(t, result.GetRows(), 1)
-
-	var steps []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(result.GetRows()[0].GetValues()[0].GetStringValue()), &steps))
-	require.Equal(t, []map[string]any{
-		// A column the optimizer said nothing about is left out, not carried
-		// as a null the viewer would have to skip.
-		{"id": "0", "operation": "SELECT STATEMENT", "cost": "48"},
-		{
-			"id": "1", "parent_id": "0", "operation": "TABLE ACCESS",
-			"options": "FULL", "object_name": "ORDERS", "cost": "48",
-			"access_predicates": `"TOTAL">880`,
-		},
-	}, steps)
-}
-
-// TestRenderPlanStepsHandlesARaggedRow keeps the rendering off the end of a row
-// shorter than the column list, which no Oracle returns but a fake might.
-func TestRenderPlanStepsHandlesARaggedRow(t *testing.T) {
-	t.Parallel()
-	payload, err := renderPlanSteps([]string{"ID", "COST"}, [][]any{{"0"}})
-	require.NoError(t, err)
-	require.JSONEq(t, `[{"id":"0"}]`, payload)
-
-	// A plan with no steps is an empty list rather than a JSON null.
-	payload, err = renderPlanSteps([]string{"ID"}, nil)
-	require.NoError(t, err)
-	require.JSONEq(t, `[]`, payload)
 }

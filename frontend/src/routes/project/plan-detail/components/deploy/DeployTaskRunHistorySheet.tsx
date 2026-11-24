@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, Clock3, User } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HumanizeTs } from "@/components/HumanizeTs";
 import { TaskRunStatusIcon } from "@/components/TaskRunStatusIcon";
@@ -27,6 +27,7 @@ import { TaskRunErrorAlert } from "./TaskRunErrorAlert";
 // runs collapse to header rows. Keeps the sheet scannable and avoids fetching
 // every run's log up front.
 const COLLAPSE_OLDER_RUNS_THRESHOLD = 4;
+const HISTORY_AGENT_HELP = { provenance: "explicit-history" } as const;
 
 export function DeployTaskRunHistorySheet({
   onOpenChange,
@@ -108,6 +109,13 @@ function TaskRunHistoryItem({
   taskRun: TaskRun;
 }) {
   const { t } = useTranslation();
+  // Stable across renders, so the memoized log viewer keeps its memo.
+  const renderErrorAlert = useCallback(
+    (action: ReactNode) => (
+      <TaskRunErrorAlert taskRun={taskRun} action={action} />
+    ),
+    [taskRun]
+  );
   const startMs =
     getTimeForPbTimestampProtoEs(taskRun.startTime) ??
     getTimeForPbTimestampProtoEs(taskRun.createTime);
@@ -159,15 +167,17 @@ function TaskRunHistoryItem({
       </Button>
       {isExpanded && (
         <div className="flex flex-col gap-2 border-t p-3">
-          <TaskRunErrorAlert taskRun={taskRun} />
           {/* Status is part of the key (as in the latest-run panel): a
               RUNNING -> DONE flip remounts the viewer so useTaskRunLogData's
               unmount cleanup invalidates the in-flight RUNNING log request,
               which would otherwise cache an incomplete RUNNING log. */}
           <TaskRunLogViewer
+            agentHelp={HISTORY_AGENT_HELP}
             key={`logs-${taskRun.name}-${taskRun.status}`}
             taskRunName={taskRun.name}
             taskRunStatus={taskRun.status}
+            runError={taskRun.detail}
+            renderErrorAlert={renderErrorAlert}
           />
         </div>
       )}

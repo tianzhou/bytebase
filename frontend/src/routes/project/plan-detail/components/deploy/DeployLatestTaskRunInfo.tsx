@@ -1,8 +1,13 @@
 import { Clock3, History, User } from "lucide-react";
+import { type ReactNode, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { HumanizeTs } from "@/components/HumanizeTs";
 import { TaskRunStatusIcon } from "@/components/TaskRunStatusIcon";
 import { TaskRunLogViewer } from "@/components/task-run-log";
+import type {
+  OpenReleaseFile,
+  RevisionsLinkTarget,
+} from "@/components/task-run-log/ReleaseSpineView";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { executorEmailOfTaskRun } from "@/lib/taskRun";
@@ -10,7 +15,10 @@ import { cn } from "@/lib/utils";
 import { getDateForPbTimestampProtoEs } from "@/types";
 import type { Engine } from "@/types/proto-es/v1/common_pb";
 import { Engine as EngineEnum } from "@/types/proto-es/v1/common_pb";
-import type { TaskRun } from "@/types/proto-es/v1/rollout_service_pb";
+import type {
+  Task_ReleaseState,
+  TaskRun,
+} from "@/types/proto-es/v1/rollout_service_pb";
 import { TaskRun_Status } from "@/types/proto-es/v1/rollout_service_pb";
 import { stringifyTaskRunStatus } from "@/utils/v1/issue/rollout";
 import { PlanDetailTaskRunSession } from "../PlanDetailTaskRunSession";
@@ -21,13 +29,17 @@ const STATUS_LABEL_CLASS: Partial<Record<TaskRun_Status, string>> = {
   [TaskRun_Status.DONE]: "text-success",
   [TaskRun_Status.FAILED]: "text-error",
 };
+const LATEST_AGENT_HELP = { provenance: "latest" } as const;
 
 export function DeployLatestTaskRunInfo({
   active = true,
   databaseEngine,
   duration,
   historyCount,
+  onOpenFile,
   onShowHistory,
+  releaseState,
+  revisionsLink,
   taskRun,
 }: {
   // When false, the card's stage is hidden (kept mounted); pause the live log
@@ -36,10 +48,22 @@ export function DeployLatestTaskRunInfo({
   databaseEngine?: Engine;
   duration?: string;
   historyCount: number;
+  onOpenFile?: OpenReleaseFile;
   onShowHistory: () => void;
+  releaseState?: Task_ReleaseState;
+  // Must be stable: the log viewer is memoized.
+  revisionsLink?: RevisionsLinkTarget;
   taskRun: TaskRun;
 }) {
   const { t } = useTranslation();
+  // Stable across renders, so the memoized log viewer re-renders only when
+  // the run changes.
+  const renderErrorAlert = useCallback(
+    (action: ReactNode) => (
+      <TaskRunErrorAlert taskRun={taskRun} action={action} />
+    ),
+    [taskRun]
+  );
   const updateDate = getDateForPbTimestampProtoEs(taskRun.updateTime);
   const executorEmail = executorEmailOfTaskRun(taskRun);
   const showSession =
@@ -103,8 +127,6 @@ export function DeployLatestTaskRunInfo({
         )}
       </div>
 
-      <TaskRunErrorAlert taskRun={taskRun} />
-
       {/* Status is part of the key on purpose: a status flip (RUNNING→DONE)
           remounts the viewer for a fresh disclosure state on the new phase.
           The remount paints fully formed — useTaskRunLogData seeds from its
@@ -112,9 +134,16 @@ export function DeployLatestTaskRunInfo({
           cache freshness and the live poll while running. */}
       <TaskRunLogViewer
         active={active}
+        agentHelp={LATEST_AGENT_HELP}
         key={`logs-${taskRun.name}-${taskRun.status}`}
         taskRunName={taskRun.name}
         taskRunStatus={taskRun.status}
+        runError={taskRun.detail}
+        releaseState={releaseState}
+        rerun={historyCount > 1}
+        onOpenFile={onOpenFile}
+        renderErrorAlert={renderErrorAlert}
+        revisionsLink={revisionsLink}
       />
 
       {showSession && (

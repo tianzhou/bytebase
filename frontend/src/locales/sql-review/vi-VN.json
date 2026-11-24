@@ -2,18 +2,20 @@
   "add-or-remove-rules": "Thêm hoặc xóa quy tắc",
   "add-rules": "Thêm quy tắc",
   "ai-review": {
-    "ai-off": "AI đang tắt trong không gian làm việc nên không có lần đánh giá bằng AI nào được chạy.",
+    "ai-off": "AI đang tắt trong không gian làm việc nên không có lần đánh giá SQL bằng AI nào được chạy.",
+    "comments-description": "Một mô hình AI xem xét SQL của issue, kể cả bản nháp, và bình luận về các rủi ro tìm thấy. Việc triển khai bị chặn cho đến khi mọi bình luận được giải quyết.",
     "description": "Một mô hình AI đánh giá SQL của issue để tìm các rủi ro mà quy tắc tiêu chuẩn không phát hiện được.",
     "enable": {
       "description": "Mỗi lần đánh giá sẽ gửi nguyên văn các câu lệnh tới nhà cung cấp AI, và có thể gửi lược đồ của các cơ sở dữ liệu đích cùng số liệu thống kê bảng của chúng. Tính năng này không đọc bất kỳ hàng dữ liệu nào trong cơ sở dữ liệu.",
       "self": "Đánh giá thay đổi bằng AI"
     },
     "policy": {
+      "ai-review-policy": "Chính sách đánh giá SQL bằng AI",
       "cannot-clear": "Vai trò của bạn không thể xóa chính sách, nên không thể để trống chính sách này.",
       "description": "Chính sách này xác định những gì AI kiểm tra khi đánh giá thay đổi cơ sở dữ liệu. Nó áp dụng cho mọi dự án trong không gian làm việc và mỗi dự án có thể thêm chính sách riêng.",
       "load-failed": "Không thể tải chính sách đánh giá.",
       "none": "Chưa có chính sách đánh giá.",
-      "paused": "Chính sách này đang tạm dừng nên tính năng đánh giá bằng AI không sử dụng chính sách này.",
+      "paused": "Chính sách này đang tạm dừng nên tính năng đánh giá SQL bằng AI không sử dụng chính sách này.",
       "placeholder": "Ví dụ:\nBáo cáo thay đổi lược đồ chặn ghi trên bảng có hơn 1 triệu hàng.\nMọi khóa ngoại đều cần chỉ mục trên các cột của nó.\nBảng mới cần có cột created_at và updated_at.",
       "project-description": "Chính sách tùy chọn dành riêng cho dự án. Chính sách này được thêm vào chính sách không gian làm việc và được ưu tiên khi có xung đột.",
       "project-none": "Chưa có chính sách dự án.",
@@ -21,10 +23,11 @@
       "project-self": "Chính sách bổ sung của dự án",
       "remove-only": "Bạn có thể xóa chính sách này nhưng không thể thay đổi nó. Hãy xóa hết nội dung để xóa chính sách.",
       "self": "Chính sách đánh giá",
+      "standard-rules-hint": "Đánh giá SQL bằng AI không lặp lại các quy tắc tiêu chuẩn và bỏ qua những quy tắc đang tắt. Để AI vẫn kiểm tra một quy tắc, hãy nêu rõ trong chính sách, ví dụ: \"Mọi câu lệnh UPDATE đều cần mệnh đề WHERE\".",
       "too-large": "Chính sách có dung lượng {{size}} byte, vượt quá giới hạn {{limit}} byte. Hãy rút gọn để lưu."
     },
-    "project-description": "Tính năng đánh giá bằng AI được cấu hình cho không gian làm việc. Hãy thêm chính sách tùy chọn dành riêng cho dự án bên dưới.",
-    "self": "Đánh giá bằng AI",
+    "project-description": "Tính năng đánh giá SQL bằng AI được cấu hình cho không gian làm việc. Hãy thêm chính sách tùy chọn dành riêng cho dự án bên dưới.",
+    "self": "Đánh giá SQL bằng AI",
     "set-for-workspace": "Được quản lý ở cấp không gian làm việc.",
     "turn-on-ai": "Bật AI",
     "view-workspace-setting": "Xem thiết lập AI của không gian làm việc"
@@ -68,7 +71,8 @@
   },
   "delete": "Xóa chính sách đánh giá SQL",
   "delete-description": "Chính sách đánh giá SQL và tất cả các quy tắc của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác hành động này.",
-  "description": "Chính sách đánh giá SQL có thể xác định các bộ quy tắc lint SQL khác nhau cho các môi trường tương ứng. Nó giúp các nhóm áp dụng thực tiễn tốt nhất về SQL và thực thi tính nhất quán của lược đồ trên các cơ sở dữ liệu khác nhau. Bất cứ khi nào bạn cố gắng thay đổi DDL/DML hoặc sử dụng Trình soạn thảo SQL để truy vấn dữ liệu, truy vấn sẽ được kiểm tra theo chính sách đánh giá SQL đã định cấu hình.",
+  "delete-policy-title": "Xóa {{name}}?",
+  "description": "Các quy tắc kiểm tra mỗi thay đổi SQL và mỗi truy vấn trong SQL Editor. Một chính sách áp dụng cho các môi trường hoặc dự án mà nó được gắn vào.",
   "disable-description": "Tắt chính sách này sẽ ngừng áp dụng các quy tắc của nó trên các tài nguyên đã đính kèm. Bạn có thể bật lại sau.",
   "disabled": "Đánh giá SQL bị vô hiệu hóa",
   "enable-description": "Bật chính sách này sẽ bắt đầu áp dụng các quy tắc của nó trên các tài nguyên đã đính kèm.",
@@ -144,17 +148,17 @@
   "input-then-press-enter": "Nhập giá trị sau đó nhấn enter để thêm",
   "level": {
     "disabled": "Đã tắt",
-    "error": "Lỗi",
-    "name": "Mức độ lỗi",
-    "warning": "Cảnh báo"
+    "name": "Mức ưu tiên"
   },
   "no-permission": "Chỉ DBA hoặc Quản trị viên mới có quyền tạo hoặc cập nhật chính sách đánh giá.",
+  "policies": "Chính sách đánh giá SQL dựa trên quy tắc",
   "policy-create-failed": "Không tạo được chính sách đánh giá.",
   "policy-created": "Đã tạo thành công chính sách đánh giá.",
   "policy-removed": "Đã xóa thành công chính sách đánh giá.",
   "policy-update-failed": "Không cập nhật được chính sách đánh giá.",
   "policy-updated": "Đã cập nhật thành công chính sách đánh giá.",
   "review-policy": "Chính sách xem xét",
+  "reviewer": "Đánh giá SQL",
   "rule": {
     "ADVICE_ONLINE_MIGRATION": {
       "component": {
@@ -882,8 +886,7 @@
     "string-array-required": "Thêm ít nhất một giá trị cho {{rule}}."
   },
   "version-switch": {
-    "description": "Chỉ dành cho bản dev. Máy chủ chạy V1 cho dự án tắt toàn bộ quy tắc tiêu chuẩn, và chạy V2 cho các dự án còn lại. Trình duyệt này hiển thị các trang của phiên bản bạn chọn.",
-    "self": "Phiên bản đánh giá SQL",
+    "description": "Nhãn này hiển thị phiên bản giao diện được chọn trong trình duyệt. Các quy tắc tiêu chuẩn có hiệu lực của từng dự án quyết định phiên bản đánh giá được chạy.",
     "to-v1": {
       "confirm": "Chuyển sang V1",
       "description": "Thao tác này tắt mọi quy tắc tiêu chuẩn của workspace, nên kiểm tra kế hoạch sẽ chạy đánh giá SQL V1. Các dự án tùy chỉnh quy tắc tiêu chuẩn vẫn giữ nguyên.",
@@ -893,6 +896,8 @@
       "confirm": "Chuyển sang V2",
       "description": "Thao tác này bật mọi quy tắc tiêu chuẩn của workspace, nên đánh giá theo quy tắc tiêu chuẩn sẽ thay thế đánh giá SQL V1.",
       "title": "Chuyển sang đánh giá SQL V2?"
-    }
+    },
+    "v1": "Đánh giá SQL V1",
+    "v2": "Đánh giá SQL V2"
   }
 }

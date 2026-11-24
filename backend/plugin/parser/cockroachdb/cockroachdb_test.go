@@ -1,44 +1,29 @@
 package cockroachdb
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
-	"github.com/bytebase/bytebase/backend/common/yamltest"
+	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	"github.com/bytebase/bytebase/backend/plugin/parser/base"
+
+	// Registers the statement splitter that CockroachDB parsing uses.
+	_ "github.com/bytebase/bytebase/backend/plugin/parser/pg"
 )
 
-func TestSplitSQLStatement(t *testing.T) {
-	type testCase struct {
-		Statement string   `yaml:"statement"`
-		Want      []string `yaml:"want"`
+func TestParseSeam(t *testing.T) {
+	// Registry dispatch combines PG splitter positions with CockroachDB ASTs.
+	stmts, err := base.ParseStatements(storepb.Engine_COCKROACHDB, "CREATE TABLE t (id INT); ; UPSERT INTO t VALUES (1);")
+	require.NoError(t, err)
+	asts := base.ExtractASTs(stmts)
+	require.Len(t, asts, 2)
+	for _, a := range asts {
+		_, ok := a.(*AST)
+		require.True(t, ok)
+		require.Equal(t, int32(1), a.ASTStartPosition().Line)
 	}
 
-	const record = false
-
-	a := require.New(t)
-
-	testFilepath := "testdata/split_sql_statement.yaml"
-	content, err := os.ReadFile(testFilepath)
-	a.NoError(err)
-
-	var testCases []testCase
-	err = yaml.Unmarshal(content, &testCases)
-	a.NoError(err)
-
-	for idx, tc := range testCases {
-		got, err := SplitSQLStatement(tc.Statement)
-		a.NoErrorf(err, "test case %d: %s", idx, tc.Statement)
-		if record {
-			testCases[idx].Want = got
-		} else {
-			a.Equalf(tc.Want, got, "test case %d: %s", idx, tc.Statement)
-		}
-	}
-
-	if record {
-		yamltest.Record(t, testFilepath, testCases)
-	}
+	_, err = base.ParseStatements(storepb.Engine_COCKROACHDB, "SELECT FROM")
+	require.Error(t, err)
 }

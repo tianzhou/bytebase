@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/pkg/errors"
 
@@ -16,10 +17,41 @@ import (
 	"github.com/bytebase/bytebase/backend/plugin/db"
 )
 
-// AssumeRoleIfNeeded checks if role assumption is configured and updates the AWS config with assumed role credentials.
-// This is a shared utility used by multiple AWS service drivers (Elasticsearch, RDS, etc.).
+// LoadAWSConfig loads the AWS SDK configuration for config and applies role
+// assumption when the data source specifies a role ARN.
+func LoadAWSConfig(ctx context.Context, config db.ConnectionConfig) (aws.Config, error) {
+	return loadAWSConfig(ctx, config, "failed to load AWS config")
+}
+
+func loadAWSConfig(ctx context.Context, config db.ConnectionConfig, wrapMsg string) (aws.Config, error) {
+	awsConfig, err := getAWSConnectionConfig(ctx, config)
+	if err != nil {
+		return aws.Config{}, errors.Wrap(err, wrapMsg)
+	}
+	if err := assumeRoleIfNeeded(ctx, &awsConfig, config.ConnectionContext, config.DataSource.GetAwsCredential()); err != nil {
+		return aws.Config{}, err
+	}
+	return awsConfig, nil
+}
+
+// RDSAuthToken builds an AWS RDS IAM authentication token for config.
+func RDSAuthToken(ctx context.Context, config db.ConnectionConfig) (string, error) {
+	ds := config.DataSource
+	awsConfig, err := loadAWSConfig(ctx, config, "load aws config failed")
+	if err != nil {
+		return "", err
+	}
+	dbEndpoint := fmt.Sprintf("%s:%s", ds.GetHost(), ds.GetPort())
+	token, err := auth.BuildAuthToken(ctx, dbEndpoint, ds.GetRegion(), ds.GetUsername(), awsConfig.Credentials)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create authentication token")
+	}
+	return token, nil
+}
+
+// assumeRoleIfNeeded checks if role assumption is configured and updates the AWS config with assumed role credentials.
 // Returns an error if role assumption fails.
-func AssumeRoleIfNeeded(ctx context.Context, awsCfg *aws.Config, connectionCtx db.ConnectionContext, awsCredential *storepb.DataSource_AWSCredential) error {
+func assumeRoleIfNeeded(ctx context.Context, awsCfg *aws.Config, connectionCtx db.ConnectionContext, awsCredential *storepb.DataSource_AWSCredential) error {
 	// If no role ARN is provided, no assumption needed
 	if awsCredential == nil || awsCredential.RoleArn == "" {
 		return nil

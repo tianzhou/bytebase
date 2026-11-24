@@ -1,11 +1,16 @@
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { errorToJson } from "@connectrpc/connect/protocol-connect";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SQL_EDITOR_DATABASE_MODULE } from "@/app/router/handles";
 import {
   consumeAccessGrantDraft,
   type RequestRoleDraft,
 } from "@/modules/sql-editor/model/accessGrantDraft";
-import { State } from "@/types/proto-es/v1/common_pb";
+import {
+  PermissionDeniedDetailSchema,
+  State,
+} from "@/types/proto-es/v1/common_pb";
 import { DatabaseSchema$ } from "@/types/proto-es/v1/database_service_pb";
 import { ProjectSchema } from "@/types/proto-es/v1/project_service_pb";
 import {
@@ -13,13 +18,19 @@ import {
   prepareAgentAccessGrantDraftRoute,
   prepareAgentDeniedQueryRequestRoute,
   resolveDeniedQueryAccessDraft,
+  validateAccessGrantDraft,
 } from "./deniedQueryAccess";
 
 const api = vi.hoisted(() => ({ getDatabase: vi.fn(), getProject: vi.fn() }));
 const app = vi.hoisted(() => ({
   loadSubscription: vi.fn(),
   hasFeature: vi.fn(),
+  serverInfo: { workspace: "workspaces/example" },
+  currentUser: { workspace: "workspaces/example" },
 }));
+const setup = vi.hoisted(() => ({ getMaskingSetup: vi.fn() }));
+
+vi.mock("./tools/maskingSetup", () => setup);
 
 vi.mock("@/api", () => ({
   databaseServiceClientConnect: { getDatabase: api.getDatabase },
@@ -67,6 +78,7 @@ beforeEach(() => {
   );
   app.loadSubscription.mockResolvedValue({});
   app.hasFeature.mockReturnValue(true);
+  setup.getMaskingSetup.mockResolvedValue({ justInTime: { eligible: true } });
 });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -105,6 +117,64 @@ describe("prepareAgentAccessGrantDraftRoute", () => {
     await expect(prepareAgentAccessGrantDraftRoute(draft)).rejects.toThrow();
     expect(sessionStorage.length).toBe(0);
   });
+
+  test.each([false, undefined])(
+    "requires positive fresh Access Grant eligibility: %s",
+    async (eligible) => {
+      setup.getMaskingSetup.mockResolvedValue({
+        justInTime: { eligible },
+      });
+
+      await expect(prepareAgentAccessGrantDraftRoute(draft)).rejects.toThrow();
+      expect(sessionStorage.length).toBe(0);
+      expect(setup.getMaskingSetup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceName: "workspaces/example",
+          projectName: project,
+          databaseName: database,
+        })
+      );
+      expect(app.loadSubscription).not.toHaveBeenCalled();
+    }
+  );
+
+  test("preserves explicit unmask without requiring exemption or SQL permissions", async () => {
+    const unmaskDraft = {
+      ...draft,
+      unmask: true,
+      reason: "  Investigate a discrepancy.\n",
+    };
+
+    const route = await prepareAgentAccessGrantDraftRoute(unmaskDraft);
+
+    if (typeof route === "string") throw new Error("Expected a route target");
+    expect(
+      consumeAccessGrantDraft(String(route.query?.accessGrantDraftKey))
+    ).toEqual(unmaskDraft);
+    expect(setup.getMaskingSetup).toHaveBeenCalledOnce();
+    expect(app.loadSubscription).not.toHaveBeenCalled();
+  });
+
+  test.each(["true", 1, null])(
+    "rejects non-boolean unmask %s",
+    async (unmask) => {
+      await expect(
+        validateAccessGrantDraft({ ...draft, unmask } as never)
+      ).resolves.toBe(false);
+      expect(api.getDatabase).not.toHaveBeenCalled();
+      expect(setup.getMaskingSetup).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([42, null, {}, []])(
+    "rejects non-string reason %j",
+    async (reason) => {
+      await expect(
+        validateAccessGrantDraft({ ...draft, reason } as never)
+      ).resolves.toBe(false);
+      expect(api.getDatabase).not.toHaveBeenCalled();
+    }
+  );
 
   test("reports storage failure without opening an empty drawer", async () => {
     const storage = sessionStorage;
@@ -172,6 +242,96 @@ describe("prepareAgentAccessGrantDraftRoute", () => {
 });
 
 describe("extractDeniedQueryAccessRequest", () => {
+  test("uses actual Connect wire permission details for the exact denied query", () => {
+    const error = new ConnectError(
+      "Query access denied",
+      Code.PermissionDenied,
+      undefined,
+      [
+        {
+          desc: PermissionDeniedDetailSchema,
+          value: create(PermissionDeniedDetailSchema, {
+            requiredPermissions: ["bb.sql.select"],
+            resources: [database],
+          }),
+        },
+      ]
+    );
+    expect(
+      extractDeniedQueryAccessRequest(
+        query,
+        JSON.stringify({
+          status: 403,
+          response: errorToJson(error, undefined),
+        })
+      )
+    ).toEqual({
+      sourceDatabase: database,
+      targets: [database],
+      resources: [database],
+      statement: query.body.statement,
+      requiredPermissions: ["bb.sql.select"],
+      schema: "public",
+    });
+  });
+
+  test("accepts a structured read-permission preflight denial without executing SQL", () => {
+    const result = JSON.stringify({
+      status: 403,
+      error: "Not called: missing query access",
+      response: {
+        code: "permission_denied",
+        requiredPermissions: ["bb.sql.select"],
+        resources: [`${database}/schemas/public/tables/users`],
+      },
+    });
+    expect(extractDeniedQueryAccessRequest(query, result)).toEqual({
+      sourceDatabase: database,
+      targets: [database],
+      resources: [`${database}/schemas/public/tables/users`],
+      statement: query.body.statement,
+      schema: "public",
+      requiredPermissions: ["bb.sql.select"],
+    });
+  });
+
+  test.each(["bb.databases.get", "bb.sql.export", "bb.sql.dml"])(
+    "does not claim JIT can fix a %s preflight denial",
+    (permission) => {
+      const result = JSON.stringify({
+        status: 403,
+        error: "Not called",
+        response: {
+          code: "permission_denied",
+          requiredPermissions: [permission],
+          resources: [database],
+        },
+      });
+      expect(extractDeniedQueryAccessRequest(query, result)).toBeUndefined();
+    }
+  );
+
+  test("combines targets only when every result was denied read permission", () => {
+    const other = "instances/prod/databases/other";
+    const result = JSON.stringify({
+      status: 200,
+      response: {
+        results: [database, other].map((name) => ({
+          error: "Permission denied",
+          permissionDenied: {
+            requiredPermissions: ["bb.sql.select"],
+            resources: [name],
+          },
+        })),
+      },
+    });
+    expect(extractDeniedQueryAccessRequest(query, result)).toMatchObject({
+      targets: [database, other],
+      resources: [database, other],
+      requiredPermissions: ["bb.sql.select"],
+    });
+  });
+
   test("uses the exact failed SQL and typed denied resources, not a prose error", () => {
     expect(
       extractDeniedQueryAccessRequest(
@@ -258,6 +418,42 @@ describe("extractDeniedQueryAccessRequest", () => {
 });
 
 describe("resolveDeniedQueryAccessDraft", () => {
+  test.each([
+    ["network failure", JSON.stringify({ error: "Failed to fetch" })],
+    [
+      "syntax error",
+      JSON.stringify({
+        status: 200,
+        response: { results: [{ error: "syntax error" }] },
+      }),
+    ],
+    [
+      "rejected confirmation",
+      JSON.stringify({ error: "The member declined execution" }),
+    ],
+    ["metadata denial", denied([database], ["bb.databases.get"])],
+  ])("does not start access recovery for %s", async (_name, result) => {
+    await expect(
+      resolveDeniedQueryAccessDraft(query, result)
+    ).resolves.toBeUndefined();
+    expect(api.getDatabase).not.toHaveBeenCalled();
+    expect(api.getProject).not.toHaveBeenCalled();
+    expect(setup.getMaskingSetup).not.toHaveBeenCalled();
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  test.each([false, undefined])(
+    "does not offer access when fresh JIT eligibility is %s",
+    async (eligible) => {
+      setup.getMaskingSetup.mockResolvedValue({ justInTime: { eligible } });
+      await expect(
+        resolveDeniedQueryAccessDraft(query, denied())
+      ).resolves.toBeUndefined();
+      expect(setup.getMaskingSetup).toHaveBeenCalledOnce();
+      expect(sessionStorage.length).toBe(0);
+    }
+  );
+
   test("checks every target belongs to one active JIT-enabled project", async () => {
     const otherDatabase = "instances/prod/databases/other";
     await expect(

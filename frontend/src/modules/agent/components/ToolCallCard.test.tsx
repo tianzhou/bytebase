@@ -1,6 +1,9 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, test, vi } from "vitest";
+import { manualResult } from "../dom/interactionRegistry";
+import { agentApiExecutionEvidence } from "../logic/apiExecution";
+import { resolveSkill } from "../logic/skills";
 import { ToolCallCard } from "./ToolCallCard";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -8,7 +11,13 @@ import { ToolCallCard } from "./ToolCallCard";
 
 vi.mock("react-i18next", () => ({
   initReactI18next: { type: "3rdParty", init: () => {} },
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, options?: Record<string, unknown>) =>
+      key === "agent.query-result.sampled-rows" ||
+      key === "agent.query-result.omitted-rows"
+        ? `${key} ${JSON.stringify(options)}`
+        : key,
+  }),
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -40,7 +49,7 @@ Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
   value: () => ({ measureText: (text: string) => ({ width: text.length * 8 }) }),
 });
 
-const renderCard = (operationId: string, result: string) => {
+const renderCard = (operationId: string, result: string, name = "call_api") => {
   const container = document.createElement("div");
   const root = createRoot(container);
   act(() => {
@@ -48,7 +57,7 @@ const renderCard = (operationId: string, result: string) => {
       <ToolCallCard
         toolCall={{
           id: "query-1",
-          name: "call_api",
+          name,
           arguments: JSON.stringify({ operationId }),
         }}
         result={result}
@@ -61,7 +70,517 @@ const renderCard = (operationId: string, result: string) => {
   };
 };
 
+const renderUnmaskMethod = (result: unknown, name = "ask_unmask_method") => {
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  act(() => {
+    root.render(
+      <ToolCallCard
+        toolCall={{ id: "unmask-method", name, arguments: "{}" }}
+        result={JSON.stringify(result)}
+      />
+    );
+  });
+  return {
+    container,
+    unmount: () => act(() => root.unmount()),
+  };
+};
+
+const unmaskExplanation = {
+  label: "Access Grant",
+  description: "Request temporary access for yourself to one exact query.",
+  alternativeReason: "A masking exemption cannot grant missing query access.",
+};
+
 describe("ToolCallCard", () => {
+  test.each([
+    {
+      result: manualResult(),
+      status: "agent.tool-manual-required",
+      color: "text-warning",
+    },
+    {
+      result: { success: false, message: "The page has changed." },
+      status: "agent.tool-failed",
+      color: "text-error",
+    },
+  ])("shows $status instead of success for a refused DOM action", ({ result, status, color }) => {
+    const { container, unmount } = renderCard("", JSON.stringify(result), "dom_action");
+    try {
+      expect(container.querySelector(`button .${color}`)).toHaveTextContent(status);
+      expect(container.querySelector("button .text-success")).toBeNull();
+      expect(container.querySelector("button")).toHaveAttribute("aria-expanded", "false");
+      act(() => (container.querySelector("button") as HTMLElement).click());
+      expect(container.querySelectorAll("pre")[1]).toHaveTextContent(result.message);
+    } finally {
+      unmount();
+    }
+  });
+
+  test.each([
+    { success: true, effect: "local-draft" },
+    { success: true, value: "draft", agentExecution: { result: "unknown" } },
+  ])("preserves ordinary local DOM results: %j", (result) => {
+    const { container, unmount } = renderCard("", JSON.stringify(result), "dom_action");
+    try {
+      expect(container.querySelector(".text-success")).not.toBeNull();
+      expect(container).not.toHaveTextContent("agent.api-recovery.");
+    } finally {
+      unmount();
+    }
+  });
+
+  test.each([
+    ["fetch-failed", "unknown", undefined],
+    ["unverified-response", "unknown", 200],
+    ["permission-rejected", "not-sent", undefined],
+    ["rpc-success", "acknowledged", 200],
+  ] as const)("reports a DOM write's %s outcome without trusting model operation hints", (reason, label, status) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => root.render(
+      <ToolCallCard
+        toolCall={{
+          id: "dom-write",
+          name: "dom_action",
+          arguments: JSON.stringify({ type: "click", ref: "e1", operationId: "bytebase.v1.ProjectService.GetProject" }),
+        }}
+        result={JSON.stringify({ status, response: status === 200 ? {} : undefined,
+          agentExecution: agentApiExecutionEvidence(reason, { httpStatus: status }) })}
+      />
+    ));
+    try {
+      expect(container.textContent).toContain(`agent.api-recovery.${label}`);
+      expect(container.querySelector("button .text-success")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  test("keeps a local DOM result outside API outcome reporting", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => root.render(
+      <ToolCallCard
+        toolCall={{ id: "dom-local", name: "dom_action", arguments: JSON.stringify({
+          type: "input", ref: "e1", agentExecution: agentApiExecutionEvidence("fetch-failed"),
+        }) }}
+        result={JSON.stringify({ success: true, message: "Local draft updated." })}
+      />
+    ));
+    try {
+      expect(container.querySelector("button .text-success")).toHaveTextContent("\u2713");
+      expect(container.textContent).not.toContain("agent.api-recovery.");
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  test.each([
+    ["DeleteProject", "rpc-success", "acknowledged", 200, {}],
+    ["DeleteProject", "fetch-failed", "unknown", undefined, undefined],
+    ["DeleteProject", "permission-rejected", "not-sent", undefined, undefined],
+    ["DeleteProject", "rpc-error", "failed-possible", 500, {code:"internal"}],
+    ["ImportInstances", "rpc-rejected-before-effects", "rejected", 403, {code:"permission_denied"}],
+    ["ImportInstances", "import-partial", "partial", 200, {}],
+    ["ImportInstances", "import-none-created", "none-created", 200, {}],
+    ["Query", "query-result-error", "possible", 200, {results:[{error:"denied"}]}],
+  ] as const)("describes %s %s without implying rollback or completion", (method, reason, label, status, response) => {
+    const service = method === "Query" ? "SQL" : method === "DeleteProject" ? "Project" : "Instance";
+    const {container, unmount} = renderCard(`bytebase.v1.${service}Service.${method}`, JSON.stringify({status, response,
+      agentExecution:agentApiExecutionEvidence(reason, {httpStatus:status, connectCode:status === 500 ? 13 : status === 403 ? 7 : undefined})}));
+    expect(container.textContent).toContain(`agent.api-recovery.${label}`);
+    expect(container.textContent).not.toContain("agent.tool-failed");
+    unmount();
+  });
+
+  test.each(["just-in-time", "masking-exemption"])(
+    "shows the sole %s method explanation without expanding or adding an action",
+    (method) => {
+      const explanation =
+        method === "just-in-time"
+          ? unmaskExplanation
+          : {
+              label: "Masking exemption",
+              description: "Unmask selected data across different queries.",
+              alternativeReason: "Access Grants are disabled in this project.",
+            };
+      const { container, unmount } = renderUnmaskMethod({
+        method,
+        needsScope: false,
+        methodExplanation: explanation,
+      });
+      try {
+        const summary = container.querySelector(
+          "[data-agent-unmask-method-explanation]"
+        );
+        expect(summary).not.toBeNull();
+        expect(summary).toHaveTextContent(explanation.label);
+        expect(summary).toHaveTextContent(explanation.description);
+        expect(summary).toHaveTextContent(explanation.alternativeReason);
+        expect(container.querySelectorAll("button")).toHaveLength(1);
+        expect(container.querySelector("button")).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+        expect(container.querySelector("pre")).toBeNull();
+      } finally {
+        unmount();
+      }
+    }
+  );
+
+  test.each([
+    { method: "just-in-time", needsScope: false },
+    { method: "just-in-time", methodExplanation: unmaskExplanation },
+    { method: null, needsScope: false, methodExplanation: unmaskExplanation },
+    { method: "other", needsScope: false, methodExplanation: unmaskExplanation },
+    { method: "just-in-time", needsScope: true, methodExplanation: unmaskExplanation },
+    { method: "just-in-time", needsScope: false, methodExplanation: null },
+    { method: "just-in-time", needsScope: false, methodExplanation: [] },
+    { method: "just-in-time", needsScope: false, methodExplanation: { ...unmaskExplanation, label: " " } },
+    { method: "just-in-time", needsScope: false, methodExplanation: { ...unmaskExplanation, description: " " } },
+    { method: "just-in-time", needsScope: false, methodExplanation: { ...unmaskExplanation, alternativeReason: 1 } },
+    { method: "just-in-time", needsScope: false, methodExplanation: { ...unmaskExplanation, alternativeReason: " " } },
+    { method: "just-in-time", needsScope: false, methodExplanation: unmaskExplanation, error: "Unavailable" },
+    { method: "just-in-time", needsScope: false, methodExplanation: unmaskExplanation, kind: "error", message: "Unavailable" },
+  ])("omits an incomplete or unsuccessful unmask explanation: %j", (result) => {
+    const { container, unmount } = renderUnmaskMethod(result);
+    try {
+      expect(
+        container.querySelector("[data-agent-unmask-method-explanation]")
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test("does not show unmask explanations supplied by another tool", () => {
+    const { container, unmount } = renderUnmaskMethod(
+      { method: "just-in-time", needsScope: false, methodExplanation: unmaskExplanation },
+      "get_skill"
+    );
+    try {
+      expect(
+        container.querySelector("[data-agent-unmask-method-explanation]")
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  test.each(["sampled", "omitted"])(
+    "labels %s row previews without an empty-success message",
+    (level) => {
+      const result = JSON.stringify({
+        status: 200,
+        response: { results: [{ columnNames: ["payload"], rows: [] }] },
+        agentQueryPreview: {
+          version: 1,
+          level,
+          results: [{ receivedRows: 50, retainedRows: 0 }],
+        },
+      });
+      const { container, unmount } = renderCard("SQLService/Query", result);
+
+      expect(container.textContent).toContain(
+        level === "sampled"
+          ? 'agent.query-result.sampled-rows {"retained":0,"received":50}'
+          : 'agent.query-result.omitted-rows {"received":50}'
+      );
+      expect(container.textContent).not.toContain("common.no-data");
+      act(() => (container.querySelector("button") as HTMLElement).click());
+      expect(container.textContent).toContain(
+        `agent.query-result.preview-${level === "omitted" ? "expired" : "partial"}`
+      );
+      expect(container.querySelector("pre:last-of-type")).toHaveTextContent(
+        '"receivedRows": 50'
+      );
+      act(() =>
+        (container.querySelectorAll('[role="radio"]')[1] as HTMLElement).click()
+      );
+      expect(container.textContent).not.toContain("common.no-data");
+      unmount();
+    }
+  );
+
+  test("distinguishes retained and displayed row counts for a partial sample", () => {
+    const result = JSON.stringify({
+      status: 200,
+      response: {
+        results: [
+          {
+            columnNames: ["id"],
+            rows: Array.from({ length: 101 }, (_, value) => ({
+              values: [{ int32Value: value }],
+            })),
+          },
+        ],
+      },
+      agentQueryPreview: {
+        version: 1,
+        level: "sampled",
+        results: [{ receivedRows: 200, retainedRows: 101 }],
+      },
+    });
+    const { container, unmount } = renderCard("SQLService/Query", result);
+    expect(container.textContent).toContain(
+      'agent.query-result.sampled-rows {"retained":101,"received":200}'
+    );
+    expect(container.textContent).toContain("agent.query-result.showing-rows");
+    unmount();
+  });
+
+  test("labels expired rows beyond the displayed result sets in raw details", () => {
+    const result = JSON.stringify({
+      status: 200,
+      response: {
+        results: Array.from({ length: 4 }, () => ({
+          columnNames: ["value"],
+          rows: [],
+        })),
+      },
+      agentQueryPreview: {
+        version: 1,
+        level: "omitted",
+        results: [
+          { receivedRows: 0, retainedRows: 0 },
+          { receivedRows: 0, retainedRows: 0 },
+          { receivedRows: 0, retainedRows: 0 },
+          { receivedRows: 50, retainedRows: 0 },
+        ],
+      },
+    });
+    const { container, unmount } = renderCard("SQLService/Query", result);
+    act(() => (container.querySelector("button") as HTMLElement).click());
+    expect(container.textContent).toContain("agent.query-result.preview-expired");
+    unmount();
+  });
+
+  test("marks a rejected skill load as failed rather than showing a success check", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const args = { name: "query", section: "overview" as const };
+    const result = resolveSkill(args);
+    expect(result.kind).toBe("error");
+
+    act(() =>
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "skill",
+            name: "get_skill",
+            arguments: JSON.stringify(args),
+          }}
+          result={JSON.stringify(result)}
+        />
+      )
+    );
+
+    expect(container.querySelector("button .text-error")).toHaveTextContent(
+      "agent.tool-failed"
+    );
+    expect(container.querySelector("button .text-success")).toBeNull();
+    act(() => (container.querySelector("button") as HTMLElement).click());
+    expect(
+      JSON.parse(container.querySelectorAll("pre")[1].textContent ?? "null")
+    ).toEqual(result);
+    act(() => root.unmount());
+  });
+
+  test("keeps a loaded masking skill successful", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "skill",
+            name: "get_skill",
+            arguments: '{"name":"data-masking","section":"rule"}',
+          }}
+          result={JSON.stringify({
+            kind: "loaded",
+            name: "data-masking",
+            section: "rule",
+          })}
+        />
+      )
+    );
+
+    expect(container.querySelector("button .text-success")).not.toBeNull();
+    expect(container.querySelector("button .text-error")).toBeNull();
+    act(() => root.unmount());
+  });
+
+  test("shows a structured runtime-choice error message without a success status", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "scope",
+            name: "ask_masking_rule_scope",
+            arguments: "{}",
+          }}
+          result={JSON.stringify({
+            kind: "error",
+            message: "Scope access is unverified.",
+          })}
+        />
+      )
+    );
+
+    expect(container.querySelector("button .text-error")).toHaveTextContent(
+      "agent.tool-failed"
+    );
+    expect(container.querySelector('[role="alert"]')).toHaveTextContent(
+      "Scope access is unverified."
+    );
+    act(() => root.unmount());
+  });
+
+  test.each([
+    ["ask_masking_rule_scope", "agent.masking.rule-scope.question"],
+    ["ask_masking_semantic_type", "agent.masking.semantic-type-choice.question"],
+  ])("renders %s as its own runtime choice question", (name, prompt) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => root.render(<ToolCallCard toolCall={{id: "runtime", name, arguments: "{}"}} />));
+    expect(container.textContent).toContain("agent.tool-ask-user");
+    act(() => (container.querySelector("button") as HTMLElement).click());
+    expect(container.querySelector("pre")).toHaveTextContent(prompt);
+    expect(container.textContent).toContain("agent.tool-ask-user-choose");
+    act(() => root.unmount());
+  });
+
+  test.each([
+    { result: undefined, status: "agent.tool-ask-user" },
+    {
+      result: JSON.stringify({
+        kind: "choose",
+        answer: "All databases in this project",
+        value: "projects/orders",
+      }),
+      status: "agent.tool-response-submitted",
+    },
+    {
+      result: JSON.stringify({ kind: "cancelled", reason: "user" }),
+      status: "agent.tool-request-canceled",
+    },
+    {
+      result: "Error: Select an exact project first.",
+      status: "agent.tool-failed",
+    },
+  ])(
+    "renders the dedicated scope question with $status",
+    ({ result, status }) => {
+      const container = document.createElement("div");
+      const root = createRoot(container);
+      act(() =>
+        root.render(
+          <ToolCallCard
+            toolCall={{
+              id: "scope",
+              name: "ask_masking_exemption_scope",
+              arguments: "{}",
+            }}
+            result={result}
+          />
+        )
+      );
+
+      expect(container.textContent).toContain(status);
+      act(() => (container.querySelector("button") as HTMLElement).click());
+      expect(container.textContent).toContain("agent.tool-ask-user-choose");
+      expect(container.querySelector("pre")).toHaveTextContent(
+        "agent.masking.exemption-scope.question"
+      );
+      expect(container.textContent).not.toContain("agent.tool-ask-user-input");
+      act(() => root.unmount());
+    }
+  );
+
+  test.each([
+    {
+      name: "a rejected ask as failed",
+      result:
+        "Error: Resource choices could not be verified with current access. Ask a free-form question instead; do not describe the list as empty.",
+      status: "agent.tool-failed",
+    },
+    {
+      name: "a skipped ask as skipped",
+      result: JSON.stringify({
+        skipped: true,
+        blockedByToolCallId: "ask-previous",
+        blockedByKind: "ask_user",
+        reason: "Skipped because this assistant turn already emitted ask_user",
+      }),
+      status: "common.skipped",
+    },
+    {
+      name: "an unrecognized ask result as completed",
+      result: JSON.stringify({ status: "complete" }),
+      status: "agent.tool-completed",
+    },
+    {
+      name: "a malformed answer as completed",
+      result: JSON.stringify({ kind: "input" }),
+      status: "agent.tool-completed",
+    },
+    {
+      name: "an unanswered ask as asking the user",
+      result: undefined,
+      status: "agent.tool-ask-user",
+    },
+    {
+      name: "an input answer as submitted",
+      result: JSON.stringify({ kind: "input", answer: "Production" }),
+      status: "agent.tool-response-submitted",
+    },
+    {
+      name: "a choice answer as submitted",
+      result: JSON.stringify({
+        kind: "choose",
+        answer: "Production",
+        value: "prod",
+      }),
+      status: "agent.tool-response-submitted",
+    },
+    {
+      name: "a declined confirmation as submitted",
+      result: JSON.stringify({
+        kind: "confirm",
+        answer: "Cancel",
+        confirmed: false,
+      }),
+      status: "agent.tool-response-submitted",
+    },
+  ])("shows $name", ({ result, status }) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "ask-1",
+            name: "ask_user",
+            arguments: JSON.stringify({ kind: "input", prompt: "Which project?" }),
+          }}
+          result={result}
+        />
+      );
+    });
+
+    expect(container.textContent).toContain(status);
+    if (status !== "agent.tool-response-submitted") {
+      expect(container.textContent).not.toContain("agent.tool-response-submitted");
+    }
+    act(() => root.unmount());
+  });
+
   test("shows a canceled ask without claiming the user submitted an answer", () => {
     const container = document.createElement("div");
     const root = createRoot(container);
@@ -80,6 +599,40 @@ describe("ToolCallCard", () => {
 
     expect(container.textContent).toContain("agent.tool-request-canceled");
     expect(container.textContent).not.toContain("agent.tool-response-submitted");
+    act(() => root.unmount());
+  });
+
+  test.each([
+    "Error: The database choices could not be verified.",
+    JSON.stringify({ error: "The database choices could not be verified." }),
+  ])("shows an ask failure reason without requiring expansion: %s", (result) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const toolCall = {
+      id: "ask-1",
+      name: "ask_user",
+      arguments: JSON.stringify({
+        kind: "choose",
+        prompt: "Which database?",
+        options: [{ label: "Example database", value: "example" }],
+      }),
+    };
+    act(() => root.render(<ToolCallCard toolCall={toolCall} />));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    act(() => root.render(<ToolCallCard toolCall={toolCall} result={result} />));
+
+    expect(container.querySelector('[role="alert"]')).toHaveTextContent(
+      "The database choices could not be verified."
+    );
+    expect(container.textContent).toContain("agent.tool-failed");
+    expect(container.textContent).not.toContain("agent.tool-response-submitted");
+
+    act(() => (container.querySelector("button") as HTMLElement).click());
+
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    expect(container.textContent).toContain("Which database?");
+    expect(container.textContent).toContain("Example database");
     act(() => root.unmount());
   });
 
@@ -424,6 +977,117 @@ describe("ToolCallCard", () => {
 
     expect(container.querySelector("button .text-warning")).toHaveTextContent(
       "agent.tool-completed-with-warnings"
+    );
+    act(() => root.unmount());
+  });
+
+  test("warns when a failed done result has a verified recovery draft", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const result = { text: "Query blocked; access draft prepared", success: false };
+    act(() => {
+      root.render(
+        <ToolCallCard
+          toolCall={{ id: "done-1", name: "done", arguments: "{}" }}
+          result={JSON.stringify(result)}
+          hasRecoveryDraft
+        />
+      );
+    });
+
+    expect(container.querySelector("button .text-warning")).toHaveTextContent(
+      "agent.tool-completed-with-warnings"
+    );
+    expect(container.querySelector("button .text-error")).toBeNull();
+    expect(container.querySelector("button .text-success")).toBeNull();
+    act(() => (container.querySelector("button") as HTMLElement).click());
+    expect(container.querySelector("pre")).toHaveTextContent(result.text);
+    act(() => root.unmount());
+  });
+
+  test.each([
+    ["missing", undefined],
+    ["invalid JSON", "invalid JSON"],
+    ["array", JSON.stringify([{ success: false, text: "Blocked" }])],
+    ["missing success", JSON.stringify({ text: "Blocked" })],
+    ["non-boolean success", JSON.stringify({ success: "false", text: "Blocked" })],
+    ["missing text", JSON.stringify({ success: false })],
+    ["empty text", JSON.stringify({ success: false, text: "   " })],
+    ["skipped", JSON.stringify({ success: false, text: "Skipped", skipped: true })],
+    ["error", JSON.stringify({ success: false, text: "Blocked", kind: "error" })],
+  ])("does not label a %s done result as recovered", (_name, result) => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "done-1",
+            name: "done",
+            arguments: JSON.stringify({ success: false, text: "Draft prepared" }),
+          }}
+          result={result}
+          hasRecoveryDraft
+        />
+      );
+    });
+
+    expect(container.querySelector("button .text-warning")).toBeNull();
+    expect(container.querySelector("button .text-error")).toHaveTextContent(
+      "agent.tool-failed"
+    );
+    act(() => root.unmount());
+  });
+
+  test("does not treat model recovery claims as runtime evidence", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    const recoveryClaim = {
+      success: false,
+      text: "Access draft prepared",
+      hasRecoveryDraft: true,
+      accessRequestDraft: { statement: "SELECT 1" },
+    };
+    act(() => {
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "done-1",
+            name: "done",
+            arguments: JSON.stringify(recoveryClaim),
+          }}
+          result={JSON.stringify(recoveryClaim)}
+        />
+      );
+    });
+
+    expect(container.querySelector("button .text-warning")).toBeNull();
+    expect(container.querySelector("button .text-error")).toHaveTextContent(
+      "agent.tool-failed"
+    );
+    act(() => root.unmount());
+  });
+
+  test("keeps failed API calls failed when a recovery draft exists", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <ToolCallCard
+          toolCall={{
+            id: "query-1",
+            name: "call_api",
+            arguments: JSON.stringify({ operationId: "SQLService/Query" }),
+          }}
+          result={JSON.stringify({ status: 403, error: "Permission denied" })}
+          hasRecoveryDraft
+        />
+      );
+    });
+
+    expect(container.querySelector("button .text-warning")).toBeNull();
+    expect(container.querySelector("button .text-error")).toHaveTextContent(
+      "agent.tool-failed"
     );
     act(() => root.unmount());
   });

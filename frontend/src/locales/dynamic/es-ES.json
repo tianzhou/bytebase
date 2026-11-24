@@ -33,6 +33,10 @@
         "desc": "Obtenga sugerencias de consultas y recomendaciones de índices impulsadas por IA.",
         "title": "Sugerencias de consultas con IA"
       },
+      "FEATURE_AI_SQL_REVIEW": {
+        "desc": "Un modelo de IA revisa el SQL de cada incidencia según sus políticas y comenta los riesgos que encuentra.",
+        "title": "Revisión de SQL con IA"
+      },
       "FEATURE_API_INTEGRATION_GUIDANCE": {
         "desc": "Documentación y orientación para integraciones API.",
         "title": "Guía de integración API"
@@ -215,7 +219,7 @@
       },
       "FEATURE_PRE_DEPLOYMENT_SQL_REVIEW": {
         "desc": "Aplique las mejores prácticas de SQL con más de 100 reglas de lint y verificaciones de coherencia de esquema.",
-        "title": "Revisión de SQL"
+        "title": "Revisión de SQL basada en reglas"
       },
       "FEATURE_PROGRESSIVE_ENVIRONMENT_DEPLOYMENT": {
         "desc": "Despliegue cambios progresivamente a través de diferentes entornos.",

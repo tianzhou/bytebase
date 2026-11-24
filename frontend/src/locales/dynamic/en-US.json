@@ -33,6 +33,10 @@
         "desc": "Get AI-powered query suggestions and index recommendations.",
         "title": "AI query suggestions"
       },
+      "FEATURE_AI_SQL_REVIEW": {
+        "desc": "An AI model reviews the SQL of each issue against your policies and comments on the risks it finds.",
+        "title": "AI SQL review"
+      },
       "FEATURE_API_INTEGRATION_GUIDANCE": {
         "desc": "Documentation and guidance for API integrations.",
         "title": "API integration guidance"
@@ -215,7 +219,7 @@
       },
       "FEATURE_PRE_DEPLOYMENT_SQL_REVIEW": {
         "desc": "Enforce SQL best practices with 100+ lint rules and schema consistency checks.",
-        "title": "SQL review"
+        "title": "Rule-based SQL review"
       },
       "FEATURE_PROGRESSIVE_ENVIRONMENT_DEPLOYMENT": {
         "desc": "Deploy changes progressively through different environments.",

@@ -1,4 +1,20 @@
 {
+  "account-list": {
+    "deactivate-description": "{{email}} can no longer sign in. You can restore it later.",
+    "deactivate-title": "Deactivate {{name}}?",
+    "more-actions": "More actions for {{name}}",
+    "no-role": "No role",
+    "no-service-accounts": "No service accounts",
+    "no-workload-identities": "No workload identities",
+    "nothing-matches": "Nothing matches",
+    "search-placeholder": "Search by name or email",
+    "service-accounts-description": "Service accounts sign in with a key. Use them for scripts, Terraform and API calls. For CI on GitHub or GitLab, a workload identity needs no stored secret.",
+    "trust-any-environment": "Only jobs that run in an environment",
+    "trust-environment": "Only jobs with <code>environment: {{environment}}</code>",
+    "trust-environment-plain": "Only jobs with environment: {{environment}}",
+    "trusts": "Trusts",
+    "workload-identities-description": "Workload identities let CI jobs sign in with their own short-lived token, so there is no secret to store. Each one names the jobs it trusts and the role they get."
+  },
   "activity": {
     "n-similar-activities": "{{count}} similar activities",
     "sentence": {
@@ -23,9 +39,22 @@
   },
   "agent": {
     "access-grant-draft": {
+      "default-reason": "Request temporary query access to {{database}}.",
+      "default-unmask-reason": "Request temporary query access to {{database}} with unmasked results.",
       "open": "Open access request draft",
       "storage-failed": "Couldn't prepare the access request. Try again.",
       "unavailable": "Couldn't open the access request. The database or access settings may have changed."
+    },
+    "action-receipt": {
+      "changed": "Changed since saved",
+      "matching": "Matching configuration found",
+      "not-found": "Saved configuration not found",
+      "open-exemption": "Open exemptions",
+      "open-rule": "Open masking rules",
+      "open-unavailable": "Couldn't open the saved configuration. Check the current page and permissions.",
+      "saved": "Saved",
+      "status-unavailable": "Couldn't check the current configuration. The saved outcome is unchanged; check your permissions and try again.",
+      "unavailable": "Status unavailable"
     },
     "ai-not-configured": {
       "configure": "Configure",
@@ -41,14 +70,32 @@
     "api-permission-expires-in": "Expires in {{time}}",
     "api-permission-request": "Allow the agent to run this API request?",
     "api-permission-title": "Request permission",
+    "api-recovery": {
+      "acknowledged": "RPC acknowledged",
+      "delete-warning": "Deleting this history removes local recovery evidence. It does not cancel or reverse a server action.",
+      "failed-possible": "RPC failed; changes may have occurred",
+      "in-flight": "Request in progress",
+      "no-replay": "The request will not be sent again automatically.",
+      "none-created": "No instances created",
+      "not-sent": "Not sent",
+      "partial": "Partial effects confirmed",
+      "possible": "RPC acknowledged; effects uncertain",
+      "rejected": "Rejected before any effects",
+      "repeat-risk": "An earlier identical request may already have taken effect. Allowing this request may repeat the change or overwrite later edits.",
+      "title": "Request recovery",
+      "unknown": "Outcome unknown",
+      "verifying": "Request status unverified"
+    },
     "archive-all-chats": "Archive all chats",
+    "archive-all-chats-confirmation": "Archive all chats ({{count}})?",
     "archive-chat": "Archive chat",
+    "archive-chat-confirmation": "Archive this chat?",
     "archived-only-chats": "View archived chats",
     "args": "Args",
     "assistant-title": "AI Assistant",
     "cancel": "Cancel",
     "cancel-request": "Cancel request",
-    "chat-archived-label": "Archived",
+    "chat-archived-notice": "This chat is archived.",
     "chat-default-title": "New Chat",
     "chat-list-label": "Chats",
     "chat-total-tokens": "Chat tokens: {{count}}",
@@ -60,7 +107,7 @@
     "context-workspace": "Workspace",
     "contextual-start": {
       "active-request": "Finish the active request before starting another chat.",
-      "continue-chat": "Continue current chat",
+      "continue-chat": "Continue last chat",
       "database-heading": "Ask about this database",
       "database-recent": "What changed recently in this database?",
       "database-schema": "What tables are in this database?",
@@ -92,6 +139,9 @@
       "masking-global-effect": "What will a developer see for values covered by this Inner Mask rule?",
       "masking-global-exemptions": "Could an exemption reveal the original value?",
       "masking-global-heading": "Ask about data masking",
+      "masking-rule-configure": "Help me configure this rule.",
+      "masking-rule-effect": "Explain the masking effect of this rule.",
+      "masking-rule-review": "Review this rule.",
       "masking-semantic-algorithm": "What does this masking algorithm preserve?",
       "masking-semantic-heading": "Ask about semantic types",
       "masking-semantic-rules": "Which masking rules use this semantic type?",
@@ -105,11 +155,17 @@
       "project-heading": "Ask about this project",
       "resource-unavailable": "This resource is not available to reference."
     },
+    "custom-input-label": "Details",
+    "custom-input-placeholder": "Enter a value",
     "database-reference-unavailable": "This database is no longer available or you do not have access to it.",
     "delete-all-chats": "Delete all chats",
-    "delete-all-chats-confirmation": "Are you sure you want to delete all archived chats? This action cannot be undone.",
+    "delete-all-chats-confirmation": "Delete all archived chats ({{count}})? This action cannot be undone.",
     "delete-chat": "Delete chat",
     "delete-chat-confirmation": "Are you sure you want to delete this chat? This action cannot be undone.",
+    "diagnostic-help": {
+      "ask-agent": "Ask Agent",
+      "scope-mismatch": "This diagnostic chat is bound to its original resource. Open a new help request for another resource."
+    },
     "empty-chat": {
       "project-heading": "How can I help with this project?",
       "suggestions": "Suggested questions",
@@ -122,7 +178,19 @@
       "references": "Evidence"
     },
     "follow-up": {
-      "ask-next": "Ask next"
+      "ask-next": "Ask next",
+      "query-mask": "How can I mask these columns?",
+      "query-mask-database": "How can I mask columns in {{database}}?",
+      "query-unmask": "How can I request access to unmasked data?",
+      "query-unmask-database": "How can I request unmasked access to {{database}}?"
+    },
+    "follow-up-queue": {
+      "enqueue": "Queue",
+      "input-placeholder": "Add a follow-up",
+      "paused": "Paused",
+      "queued-count": "{{count}} queued",
+      "remove": "Remove queued message {{position}}",
+      "resume": "Resume queue"
     },
     "handoff": {
       "open-data-classification": "Open data classification settings",
@@ -140,13 +208,11 @@
       "view-failed-tasks": "View failed tasks"
     },
     "input-keyboard-hint": "Enter to send · Shift+Enter for a new line",
+    "input-keyboard-hint-newline": "Enter for a new line · Cmd/Ctrl+Enter to send",
     "input-placeholder": "Ask AI anything or type @ to select a resource",
     "input-processing-placeholder": "Processing...",
     "interrupted": "Interrupted",
     "interrupted-retry-hint": "The conversation was interrupted. You can retry or send a new message.",
-    "issue-assistance": {
-      "review": "Review with Agent"
-    },
     "issue-comment-draft": {
       "existing": "This issue already has an unsent comment. Review it before opening another draft.",
       "open": "Draft review comment",
@@ -175,25 +241,96 @@
       "workspace-setup-first": "What should I set up first?"
     },
     "masking": {
-      "ask-agent": "Ask Agent about masking"
+      "ask-agent-short": "Ask Agent",
+      "exemption-scope": {
+        "another-database": "Another database",
+        "database-placeholder": "Enter a database name",
+        "only-database": "Only {{database}}",
+        "project": "All databases in this project",
+        "question": "Which databases should this exemption cover?"
+      },
+      "rule-scope": {
+        "choose-project": "Choose a project",
+        "question": "Which databases should this masking rule cover?",
+        "workspace": "All workspace databases"
+      },
+      "semantic-type-choice": {
+        "create": "Create a custom masking type…",
+        "create-description": "Prepare a new semantic type with your masking settings.",
+        "create-placeholder": "Describe how values should be masked",
+        "question": "Which semantic type should mask these columns?"
+      },
+      "unmask-method": {
+        "exemption": "Masking exemption",
+        "exemption-description": "For access to selected data across different queries, for yourself or selected members. Choose an expiration or no expiration. Existing query access is still required.",
+        "exemption-feature-unavailable": "Data masking is not available under the current subscription.",
+        "exemption-permission-denied": "You do not have all permissions required to prepare a masking exemption.",
+        "exemption-query-access-required": "A masking exemption cannot grant the query access you are missing.",
+        "exemption-unverified": "Masking exemption availability could not be verified.",
+        "jit": "Access Grant",
+        "jit-description": "For a short task or investigation. Request access for yourself to one exact read-only query until expiration, under the project's approval policy. Unmask covers its entire result.",
+        "jit-disabled": "Access Grants are disabled in this project.",
+        "jit-feature-unavailable": "Access Grants are not available under the current subscription.",
+        "jit-permission-denied": "You do not have permission to request an Access Grant in this project.",
+        "jit-self-only": "Access Grants can only be requested for yourself.",
+        "jit-unverified": "Access Grant availability could not be verified.",
+        "question": "How would you like to access unmasked data?"
+      }
+    },
+    "masking-exemption-draft": {
+      "applied": "Applied to draft",
+      "apply": "Apply to draft",
+      "inactive": "This draft is no longer available. Check the current exemptions before preparing another draft.",
+      "open": "Open exemption draft",
+      "opened": "Opened exemption draft",
+      "unavailable": "Couldn't apply this draft. The editor, permissions, or configuration may have changed. Review the current form and ask Agent to prepare it again.",
+      "unsaved": "Only fills the unsaved form. Review it before selecting Grant Exemption."
+    },
+    "masking-rule-draft": {
+      "all-databases": "All workspace databases",
+      "applied": "Applied to draft",
+      "apply": "Apply to draft",
+      "help-prompt": "First read the current unsaved rule with get_masking_rule_draft. Use its actual fields, not an earlier proposal. Ask only for missing details. Do not save settings.",
+      "inactive": "This draft is no longer available. Check the current masking rules before preparing another draft.",
+      "open": "Open rule draft",
+      "opened": "Opened rule draft",
+      "queue": {
+        "created": "Created",
+        "editing": "Editing",
+        "needs-recheck": "Masking rules or semantic types changed. Recheck drafts before continuing.",
+        "pending": "Pending",
+        "recheck": "Recheck drafts",
+        "review": "Review",
+        "title": "Rule drafts"
+      },
+      "review-many": "Review {{count}} rule drafts",
+      "scope": "Database scope",
+      "semantic-type": "Semantic type",
+      "unavailable": "Couldn't apply this draft. The editor, permissions, or configuration may have changed. Review the current form and ask Agent to prepare it again.",
+      "unsaved": "Only fills the unsaved form. Review it before selecting Create rule."
     },
     "minimize": "Minimize",
     "new-chat": "New Chat",
     "other-chats": "Other chats",
-    "pending-choose-hint": "Please select an option above",
+    "pending-choose-hint": "Select an option, then click Reply.",
     "pending-confirm-hint": "Please confirm or cancel above",
     "pending-input-hint": "Please provide input above",
     "permission": {
+      "after": "After",
+      "before": "Before",
+      "database-environment": "Update database environment",
+      "database-labels": "Update database labels",
+      "exact-request": "Exact API request",
       "issue-approval": "This approval advances the issue to the next review step. It does not create a rollout yet.",
       "issue-approval-access-grant": "This is the final approval step. Approval may immediately activate the requested access grant, without a rollout.",
       "issue-approval-final": "This completes the approval decision, but does not itself guarantee rollout creation or task execution.",
       "issue-approval-role-grant": "This is the final approval step. Approval may immediately grant the requested project role, without a rollout.",
       "issue-approval-rollout": "This is the final approval step. Approval may create a rollout after required checks and reviews pass; it does not guarantee task execution.",
-      "issue-rejection": "Rejecting this issue stops its current approval flow. The rejection must be addressed before approval can continue."
+      "issue-rejection": "Rejecting this issue stops its current approval flow. The rejection must be addressed before approval can continue.",
+      "not-set": "Not set"
     },
     "plan-assistance": {
-      "ask-draft-sql": "Ask Agent to draft SQL",
-      "review": "Review with Agent"
+      "ask-draft-sql": "Ask Agent to draft SQL"
     },
     "plan-draft": {
       "append-sql": "Append SQL",
@@ -204,9 +341,27 @@
       "existing-sql-title": "This Plan already contains SQL",
       "open": "Open Plan draft",
       "replace-sql": "Replace SQL",
+      "statement-source-changed": "This statement changed. Cancel this draft and reopen the statement to edit the latest version.",
       "unavailable": "Couldn't open the Plan draft. The database or SQL may have changed. Ask the Agent to generate it again."
     },
     "plan-reference-unavailable": "This plan is no longer available or you do not have access to it.",
+    "preferences": {
+      "back": "Back to chat",
+      "continue-last-chat": "Continue last chat",
+      "enter-help": "Shift+Enter inserts a new line.",
+      "invalid-token-limit": "Enter a positive limit with up to 3 decimal places.",
+      "newline-help": "Enter inserts a new line. Cmd/Ctrl+Enter sends.",
+      "reset": "Reset to defaults",
+      "reset-confirmation": "Reset preferences to defaults?",
+      "scope": "Saved for your account in this workspace and browser.",
+      "send-with-enter": "Send with Enter",
+      "show-landing": "Show landing page",
+      "storage-failed": "Couldn't save locally. Changes apply until this page is reloaded.",
+      "thousand-tokens": "K tokens",
+      "title": "Agent preferences",
+      "token-limit": "Token limit per run",
+      "when-opening": "When opening Agent"
+    },
     "project-attention": {
       "checking": "Checking items needing your attention...",
       "empty": "You have no open issues needing attention in this project.",
@@ -218,8 +373,13 @@
       "unavailable": "Unable to load items needing your attention in this project."
     },
     "project-reference-unavailable": "This project is no longer available or you do not have access to it.",
+    "provider-attempt-limit": "I stopped before making another AI request because this run reached its provider attempt limit. Earlier actions may already have completed; check their status before asking me to retry.",
     "query-result": {
+      "omitted-rows": "Row preview expired. {{received}} rows were received.",
+      "preview-expired": "Row previews have expired; query details and outcomes are preserved.",
+      "preview-partial": "Only a partial row preview is retained.",
       "returned-rows": "Rows returned: {{count}}",
+      "sampled-rows": "Preview retained {{retained}} of {{received}} received rows.",
       "showing-columns": "Showing {{shown}} of {{total}} columns",
       "showing-results": "Showing {{shown}} of {{total}} result sets",
       "showing-rows": "Showing {{shown}} of {{total}} returned rows"
@@ -233,11 +393,13 @@
       "unavailable": "Unable to load recent activity.",
       "unknown-time": "an unknown time"
     },
+    "rename-chat": "Rename",
     "rename-chat-placeholder": "Enter chat name",
     "reply": "Reply",
     "request-failed": "The assistant couldn't complete this request.",
     "request-stopped-by-user": "Request stopped by user",
     "request-stopped-retry-hint": "An action already sent may still complete. Check its status before retrying.",
+    "resend-message": "Resend message",
     "resource-picker": {
       "add-context": "Add context",
       "databases": "Databases",
@@ -262,14 +424,82 @@
     "result": "Result",
     "retry-last-chat-turn": "Retry",
     "self": "Agent",
+    "semantic-type-draft": {
+      "created": "Created",
+      "inactive": "This draft is no longer available. Check the current semantic types before preparing another draft.",
+      "open": "Open semantic type draft",
+      "opened": "Opened semantic type draft",
+      "save-failed": "Couldn't create the semantic type. Review the form and try again.",
+      "saved": "This semantic type was created. Refresh its configuration before using it in a masking rule.",
+      "unavailable": "Couldn't open this draft. The editor, permissions, or configuration may have changed. Review the current form and ask Agent to prepare it again.",
+      "unsaved": "Only fills the unsaved form. Review it before selecting Create."
+    },
     "send": "Send",
+    "sql-fix": {
+      "applied": "SQL applied to draft",
+      "apply": "Apply to draft",
+      "apply-failed": "SQL could not be applied. Nothing has been changed.",
+      "busy": "Wait for this diagnostic to finish before applying the suggestion.",
+      "checked-sql": "Checked SQL",
+      "loading": "Loading the original SQL editor...",
+      "original-unavailable": "The original SQL is no longer available in this tab. Start a new diagnosis from the problem.",
+      "permission-denied": "You don't have permission to edit this SQL.",
+      "proposed-sql": "Proposed SQL",
+      "readonly": "This SQL is read-only.",
+      "review": "Review SQL fix",
+      "review-current": "Review current SQL",
+      "stale": "SQL changed since this fix was prepared. Review the current SQL before preparing a new fix.",
+      "unavailable": "The original SQL editor is unavailable. Return to the original change to apply this suggestion.",
+      "unsaved-checks": "Unsaved SQL checks",
+      "unsaved-only": "Unsaved draft only"
+    },
     "stop": "Stop",
+    "storage": {
+      "free-and-retry": "Free space and retry",
+      "free-failed": "Could not free enough space. Close other Agent tabs or end active runs, then try again.",
+      "free-title": "Remove other saved Agent chats?",
+      "full": "Agent history storage is full.",
+      "load-unavailable": "Agent unavailable",
+      "load-unavailable-description": "The agent couldn't load conversations for this account and workspace. Saved history has not been deleted.",
+      "retention-info": "Chat history retention",
+      "retention-policy": "Query-result previews are cleared first. If more space is needed, older completed chats, archived or not, are removed. Open chats, unfinished runs, and drafts are kept.",
+      "retry": "Retry saving",
+      "retry-loading": "Retry",
+      "save-failed": "Couldn't save Agent history. Try again.",
+      "title": "Agent history storage"
+    },
+    "submitted-access-grant": {
+      "check-status": "Check status",
+      "observed-at": "Last observed {{time}}",
+      "open": "Open request",
+      "open-unavailable": "Couldn't open the request. It may no longer be available or you may no longer have access.",
+      "status-unavailable": "Couldn't check the request status. It may no longer be available or you may no longer have access."
+    },
+    "token-budget": {
+      "action-failed": "Couldn't update this run. Try again.",
+      "apply": "Apply",
+      "continuation-unavailable": "This run cannot be resumed safely. Your messages and draft are preserved. Start a new chat to continue.",
+      "end-run": "End run",
+      "increase": "Increase limit",
+      "increase-and-resume": "Increase and resume",
+      "increase-title": "Increase limit for this run",
+      "invalid-limit": "Enter a limit greater than {{minimum}} K tokens, with up to 3 decimal places.",
+      "partial": "Some token usage was not reported.",
+      "paused": "Run paused at its token limit.",
+      "reached": "This run's token limit has been reached.",
+      "recovery-unavailable": "This browser can't safely continue stored Agent runs. Use a supported, up-to-date browser.",
+      "run-limit": "This run's token limit",
+      "title": "Run token budget",
+      "usage": "{{used}} / {{limit}} tokens",
+      "warning": "Approaching this run's token limit."
+    },
     "token-usage": {
       "answer": "Answer",
       "answer-total": "Answer total",
       "at-least": "At least {{count}}",
       "cached-input": "Cached input",
       "chat-total": "Chat total",
+      "failed-attempts": "Failed or interrupted attempts: {{count}}",
       "follow-up-questions": "Follow-up questions",
       "input": "Input",
       "latest-answer": "Latest answer",
@@ -279,6 +509,8 @@
       "not-recorded": "Not recorded",
       "not-reported": "Not reported",
       "output": "Output",
+      "run-limit": "Run limit",
+      "run-usage": "Run usage",
       "title": "Token usage",
       "total": "Total"
     },
@@ -291,13 +523,14 @@
     "tool-completed-with-warnings": "Completed with warnings",
     "tool-default-value": "Default",
     "tool-failed": "Failed",
+    "tool-manual-required": "Manual action required",
     "tool-options": "Options",
     "tool-prompt": "Prompt",
     "tool-request-canceled": "Request canceled",
     "tool-response-submitted": "Response submitted",
     "tool-value": "Value",
     "unarchive-all-chats": "Unarchive all chats",
-    "unarchive-chat": "Unarchive chat",
+    "unarchive-chat": "Restore chat",
     "workspace-attention": {
       "checking": "Checking items needing your attention...",
       "empty": "You have no open issues needing attention.",
@@ -328,6 +561,11 @@
     },
     "export-finished": "Export finished",
     "export-tooltip": "Must select start time and end time within 30 days",
+    "federated-identity": {
+      "issuer": "Issuer",
+      "origin": "Signed in from an external workload",
+      "subject": "Subject"
+    },
     "mcp": {
       "badge": "MCP",
       "client-id": "Client ID",
@@ -465,6 +703,7 @@
       "add-group": "Add condition group",
       "add-raw-expression": "Add raw expression",
       "add-root-condition-placeholder": "Click \"Add condition\" or \"Add condition group\" to add condition",
+      "cannot-convert-to-selection": "This condition cannot be represented by a manual selection.",
       "description-tips": "A condition is a rule that can be configured via an expression. For example, the condition \"Environment is prod\" will match issues executed in the \"prod\" environment.",
       "group": {
         "and": {
@@ -504,6 +743,7 @@
     "admin": "Admin",
     "all": "All",
     "and": "and",
+    "apply": "Apply",
     "approve": "Approve",
     "approved": "Approved",
     "archive": "Archive",
@@ -609,6 +849,7 @@
     "id": "ID",
     "import": "Import",
     "in-progress": "In progress",
+    "inactive": "Inactive",
     "info": "Info",
     "input-value-press-enter": "Input value, press Enter to confirm",
     "instance": "Instance",
@@ -1038,6 +1279,7 @@
       "unspecified": "Unspecified"
     },
     "select": "Select database",
+    "select-no-environment": "No environment",
     "successfully-exported-schema": "Successfully exported schema",
     "successfully-transferred-databases": "Successfully transferred databases",
     "sync-complete-for-instance": "Sync complete for instance '{{0}}'",
@@ -1185,53 +1427,121 @@
     },
     "sharepoint": {
       "canceled-description": "The export was canceled while this database was exporting. Some files may exist in SharePoint.",
+      "error": {
+        "credential-rejected": "Microsoft Entra rejected the SharePoint app credentials. Ask a workspace admin to update them in workspace settings.",
+        "destination-not-folder": "The SharePoint destination is a file. Ask a project owner to set a document library or folder instead.",
+        "destination-not-found": "The SharePoint folder does not exist, or the SharePoint app cannot access it. Ask a project owner to check the export destination.",
+        "files-may-exist": "Some files may already be in the folder “{{folder}}”.",
+        "not-configured": "SharePoint export is not set up for this project. Ask an admin to check the SharePoint settings.",
+        "request-failed": "SharePoint could not complete the export. Try again. If it keeps failing, share the error details with an admin.",
+        "storage-full": "The SharePoint site is out of storage. Ask a SharePoint admin to free up space.",
+        "upload-unconfirmed": "Bytebase could not confirm that the upload finished."
+      },
       "exported-title": "Exported to SharePoint",
       "not-started-description": "The export was canceled before this database started. Nothing was exported.",
       "open": "Open in SharePoint",
       "result-title": "SharePoint export results",
+      "retry-failed": "Retry failed exports",
+      "retry-unconfirmed-warning": "A retry exports into a new folder. A database marked Not confirmed may already have files in its earlier folder, so SharePoint may end up with duplicate files.",
+      "retrying": "Retrying…",
       "status": {
         "canceled": "Canceled",
         "exported": "Exported",
         "failed": "Failed",
         "not-started": "Not exported",
+        "retrying": "Retrying",
         "unconfirmed": "Not confirmed"
       }
     }
   },
   "gitops": {
     "back-to-releases": "Back to Releases",
-    "checklist": {
-      "database-group-recommendation": "For databases sharing the same schema, a database group lets you migrate them together in one change. Define the group once and reuse it across migrations without picking individual databases every time.",
-      "external-url": "External URL",
-      "target-databases": "Target Databases",
-      "title": "Checks before we start",
-      "wif-notice-suffix": "to set up GitOps using a service account.",
-      "wif-notice-text": "Workload Identity Federation is currently supported for GitHub and GitLab only. For other VCS, refer to the tutorials for",
-      "workload-identity": "Workload Identity"
-    },
-    "documentation": "View Documentation",
-    "overview": {
-      "description": "Bytebase GitOps lets you manage Database as Code by integrating database schema changes into your CI/CD pipeline.",
-      "description-git": "Your database schema lives in Git alongside your application code. Pull requests trigger SQL review, and merging to the target branch automatically creates rollouts.",
-      "title": "What is GitOps"
-    },
-    "test-setup": {
-      "description": "Verify the workflow is working end-to-end with a sample migration file.",
-      "naming-convention": "Migration files are applied in lexicographic order. Use a timestamp or sequence prefix, e.g. 20240101000000_create_table.sql. Append _ddl or _dml to indicate the change type.",
-      "step-create-branch": "Create a new branch, add the file above, and open a pull request targeting {{branch}}.",
-      "step-merge": "Once the review passes, merge the PR. Bytebase will automatically create a rollout and deploy to the target environments.",
-      "step-sql-review": "SQL Review runs automatically on the pull request and posts review comments.",
-      "title": "Test your first GitOps migration"
-    },
-    "workflow": {
-      "description": "Copy the workflow files into your repository to automate SQL review and database rollouts.",
-      "file-hint": "Save as {{filePath}} in your repository {{repository}}",
-      "provider-not-match": "The selected workload identity only works for {{provider}}.",
-      "self-hosted-runner": "Self-hosted runner",
-      "title": "Workflow file generation"
-    },
-    "workload-identity": {
-      "select-placeholder": "Select a workload identity"
+    "setup": {
+      "continue": "Continue",
+      "databases": {
+        "create-group": "Create a database group",
+        "databases-hint": "These databases are written into the workflow files. To add one later, edit the files.",
+        "databases-label": "Databases",
+        "databases-placeholder": "Select databases",
+        "databases-tab": "Databases",
+        "deploy-order-hint": "Changes deploy one environment at a time, in this order.",
+        "description": "The workflow reviews and deploys every migration file against these databases.",
+        "group-hint": "A database that joins this group later is deployed too, with no change to the workflow files.",
+        "group-label": "Database group",
+        "group-matches-none": "This group matches no database yet, so there is nothing to deploy.",
+        "group-placeholder": "Select a database group",
+        "group-tab": "Database group",
+        "no-group-description": "A group is recommended because a database that joins it later is deployed too, with no change to the workflow files.",
+        "no-group-title": "This project has no database group",
+        "none-pickable-description": "Every database in this project has no environment, so none has a place in the deploy order. Assign an environment to a database to pick it.",
+        "none-pickable-title": "No database can be picked",
+        "question": "Which databases should GitOps deploy to?",
+        "recommended": "Recommended",
+        "view-databases": "View databases",
+        "view-group": "View group"
+      },
+      "deploy-order": {
+        "database-count_one": "{{count}} database",
+        "database-count_other": "{{count}} databases",
+        "environment-count_one": "{{count}} environment",
+        "environment-count_other": "{{count}} environments",
+        "label": "Deploy order",
+        "summary": "{{databases}} in {{environments}}",
+        "unassigned-description_one": "It has no environment, so the deploy skips it without an error. Assign an environment to include it.",
+        "unassigned-description_other": "They have no environment, so the deploy skips them without an error. Assign an environment to include them.",
+        "unassigned-title_one": "{{count}} database will not be deployed",
+        "unassigned-title_other": "{{count}} databases will not be deployed"
+      },
+      "external-url-description": "Your workflow uses this address to reach Bytebase. You can go through the steps now. The workflow files are complete once a workspace admin sets it.",
+      "files": {
+        "copy-off": "Copy is off until the External URL is set",
+        "description": "The files already contain your databases and your workload identity. Copy them as they are.",
+        "developers-github": "For developers: add a file such as <code>{{file}}</code> in a pull request. File names start with a version number. The workflow skips a file without one.",
+        "developers-gitlab": "For developers: add a file such as <code>{{file}}</code> in a merge request. File names start with a version number. The workflow skips a file without one.",
+        "folder-hint": "The workflow reviews and deploys the SQL files in this folder.",
+        "folder-invalid": "Enter a folder path relative to the repository root, such as migrations or db/migrations.",
+        "folder-label": "Migration folder",
+        "heading": "Add the files to your repository",
+        "next-github": "Once the files are on the default branch, the next pull request that changes the migration folder gets a Bytebase review comment. Merging it deploys.",
+        "next-gitlab": "Once the files are on the default branch, the next merge request that changes the migration folder gets a Bytebase review comment. Merging it deploys.",
+        "next-title": "What happens next",
+        "repository": "Repository",
+        "show-all": "Show all {{lines}} lines",
+        "url-missing": "The files show <code>{{placeholder}}</code> where the Bytebase address goes. Copy is off until the External URL is set, because a workflow with no address cannot reach Bytebase."
+      },
+      "identity": {
+        "create": "Create workload identity",
+        "description": "Your workflow signs in to Bytebase as this identity, so no secret is stored in the repository.",
+        "every-repository": "Every repository of {{owner}}",
+        "git-provider": "Git provider",
+        "label": "Workload identity",
+        "no-role-description": "Its workflow can sign in, but Bytebase will refuse the review and the deploy. Grant it the GitOps Service Agent role on the Members page.",
+        "no-role-title": "This identity has no role that allows GitOps",
+        "none": "This project has no workload identity yet.",
+        "open-members": "Open Members",
+        "other-provider": "Other OIDC. Setup has no workflow files for it.",
+        "placeholder": "Select a workload identity",
+        "question": "Which workload identity does your workflow sign in as?",
+        "read-from": "Read from this identity",
+        "repositories": "Repositories that can sign in",
+        "role": "Role in this project"
+      },
+      "no-database": {
+        "description": "GitOps deploys to the databases of this project. Add or transfer a database to this project first.",
+        "title": "This project has no database"
+      },
+      "no-identity": {
+        "description": "Your workflow signs in to Bytebase as a workload identity of this project. Ask a project owner to create one.",
+        "title": "This project has no workload identity"
+      },
+      "outcome": "Every pull request that changes the migration folder gets a Bytebase review. Merging it deploys.",
+      "scope": "Setup writes workflow files for GitHub Actions and GitLab CI. For other CI/CD platforms, see the <docs>GitOps docs</docs>.",
+      "steps": {
+        "databases": "Databases",
+        "workflow-files": "Workflow files",
+        "workload-identity": "Workload identity"
+      },
+      "title": "GitOps"
     }
   },
   "identity-provider": {
@@ -1361,6 +1671,61 @@
         },
         "title": "Check database engine support"
       }
+    },
+    "connection-string": {
+      "filled": "Filled from URL",
+      "filled-missing-password": "Filled from URL. Enter the database password.",
+      "filled-missing-token": "Filled from URL. Enter the access token.",
+      "filled-neon-pooled": "Filled from URL. Use the direct endpoint host, without -pooler.",
+      "help": {
+        "cassandra": "Paste a Cassandra connection URL to autofill hosts, ports, credentials, and TLS.",
+        "clickhouse": "Paste a ClickHouse connection URL to autofill host, port, credentials, and TLS.",
+        "cockroachdb": "Paste a CockroachDB connection URL or string to autofill host, port, credentials, database, and TLS.",
+        "databricks": "Paste a Databricks connection URL or warehouse URL to autofill workspace host, warehouse ID, and token.",
+        "doris": "Paste a Doris connection URL to autofill host, port, credentials, and TLS.",
+        "elasticsearch": "Paste an Elasticsearch URL to autofill host, port, credentials, and TLS.",
+        "hive": "Paste a Hive JDBC URL or beeline command to autofill host, port, and credentials.",
+        "mariadb": "Paste a MariaDB connection URL to autofill host, port, credentials, and TLS.",
+        "mongodb": "Paste a MongoDB connection URL or mongosh command to autofill host, port, credentials, replica set, authentication database, and TLS.",
+        "mssql": "Paste a SQL Server connection URL or string to autofill host, port, credentials, database, and TLS.",
+        "mysql": "Paste a MySQL connection URL to autofill host, port, credentials, and TLS.",
+        "neon": "Paste a Neon direct connection URL or string to autofill host, port, credentials, and database.",
+        "oceanbase": "Paste an OceanBase connection URL to autofill host, port, credentials, and TLS.",
+        "oracle": "Paste an Oracle connection URL or Easy Connect string to autofill host, port, credentials, service name or SID, and TLS.",
+        "postgres": "Paste a PostgreSQL connection URL or string to autofill host, port, credentials, database, and TLS.",
+        "redis": "Paste a Redis connection URL or redis-cli command to autofill host, port, credentials, cluster or sentinel settings, and TLS.",
+        "redshift": "Paste a Redshift connection URL or string to autofill host, port, credentials, and database.",
+        "snowflake": "Paste a Snowflake connection URL or account URL to autofill account locator and credentials.",
+        "starrocks": "Paste a StarRocks connection URL to autofill host, port, credentials, and TLS.",
+        "tidb": "Paste a TiDB connection URL to autofill host, port, credentials, and TLS.",
+        "trino": "Paste a Trino connection URL to autofill host, port, credentials, and TLS."
+      },
+      "invalid": {
+        "cassandra": "Enter a valid cassandra:// connection URL.",
+        "clickhouse": "Enter a valid clickhouse:// or clickhouses:// connection URL.",
+        "cockroachdb": "Enter a valid postgresql://, cockroachdb://, or key=value connection string.",
+        "databricks": "Enter a valid databricks://, jdbc:databricks://, or warehouse URL.",
+        "doris": "Enter a valid doris:// or mysql:// connection URL.",
+        "elasticsearch": "Enter a valid https://, http://, elasticsearch://, or opensearch:// URL.",
+        "engine-mismatch": "This looks like a {{detected}} connection string. Switch Engine to {{detected}} above, or enter a {{selected}} string.",
+        "hive": "Enter a valid jdbc:hive2:// URL or beeline command.",
+        "mariadb": "Enter a valid mariadb:// or mysql:// connection URL.",
+        "mongodb": "Enter a valid mongodb://, mongodb+srv://, or mongosh command.",
+        "mssql": "Enter a valid sqlserver:// URL or Server=…; connection string.",
+        "mysql": "Enter a valid mysql:// connection URL.",
+        "neon": "Enter a valid postgresql:// URL or key=value connection string with TLS enabled.",
+        "oceanbase": "Enter a valid mysql:// or oceanbase:// connection URL.",
+        "oracle": "Enter a valid oracle:// URL or Easy Connect string with a service name or SID.",
+        "postgres": "Enter a valid postgresql:// URL or key=value connection string.",
+        "redis": "Enter a valid redis://, rediss://, or redis-sentinel:// connection URL.",
+        "redshift": "Enter a valid redshift://, postgresql://, or key=value connection string.",
+        "snowflake": "Enter a valid snowflake://, jdbc:snowflake://, or .snowflakecomputing.com URL.",
+        "starrocks": "Enter a valid starrocks:// or mysql:// connection URL.",
+        "tidb": "Enter a valid mysql:// or tidb:// connection URL.",
+        "trino": "Enter a valid trino://, https://, or http:// connection URL."
+      },
+      "label": "Connection URL",
+      "trigger": "Import from URL"
     },
     "create-failed": "Instance creation failed",
     "create-gcp-credentials": "To create credentials, see",
@@ -1516,6 +1881,454 @@
     "master-name": "Master name",
     "master-password": "Master password",
     "master-username": "Master username",
+    "neon": {
+      "choose-role": "Choose role",
+      "close": {
+        "body_one": "{{count}} unresolved entry will be discarded. Created instances are kept.",
+        "body_other": "{{count}} unresolved entries will be discarded. Created instances are kept.",
+        "stay": "Stay",
+        "title": "Close setup with unresolved entries?"
+      },
+      "configure": {
+        "bulk": {
+          "apply": "Apply",
+          "choose-interval": "Choose an interval",
+          "environment-title_one": "Set environment for {{count}} row",
+          "environment-title_other": "Set environment for {{count}} rows",
+          "interval-title_one": "Set sync interval for {{count}} row",
+          "interval-title_other": "Set sync interval for {{count}} rows",
+          "remove": "Remove from import",
+          "remove-body": "You can re-select them in the Select branches step.",
+          "remove-title_one": "Remove {{count}} row from the import?",
+          "remove-title_other": "Remove {{count}} rows from the import?",
+          "set-environment": "Set environment",
+          "set-interval": "Set sync interval",
+          "use-shared": "Use shared settings",
+          "use-shared-setting": "Use shared setting"
+        },
+        "differ_one": "{{count}} row set differently.",
+        "differ_other": "{{count}} rows set differently.",
+        "edit-label": "Edit all settings for {{name}}",
+        "empty": "No rows.",
+        "empty-needs": "Nothing needs input.",
+        "footer-needs_one": "{{count}} instance needs input above",
+        "footer-needs_other": "{{count}} instances need input above",
+        "footer-over": "{{instances}} over the instance limit",
+        "group-select-label": "Select rows from Neon project {{project}}",
+        "interval": "Scheduled sync interval",
+        "limit": {
+          "over": "{{instances}} over the limit. Remove rows, or raise the limit in Settings, Subscription.",
+          "title": "Instance limit",
+          "unlimited": "Your plan has no instance limit.",
+          "usage": "{{count}} of {{capacity}} remaining"
+        },
+        "needs": {
+          "id-body": "The instance ID is not valid, or another row uses it.",
+          "id-title": "Fix the instance ID of {{name}}",
+          "label": "Instances that need input",
+          "name-title": "Enter an instance name for {{id}}",
+          "password-title": "Enter the password for role {{role}} on {{name}}",
+          "role-body": "Databases have different owners ({{owners}}).",
+          "role-label_one": "Role for this {{count}} instance",
+          "role-label_other": "Role for these {{count}} instances",
+          "role-title": "Choose a connection role for {{names}}",
+          "title_one": "{{count}} instance needs your input before import",
+          "title_other": "{{count}} instances need your input before import",
+          "use-neon": "Read it from Neon instead"
+        },
+        "needs-id": "Needs a valid ID",
+        "needs-name": "Needs a name",
+        "needs-password": "Needs a password",
+        "needs-role": "Needs a role",
+        "no-environment": "No environment",
+        "no-role": "no role",
+        "owners-differ": "Database owners differ",
+        "password-needed": "Password needed",
+        "password-typed": "Password typed",
+        "row-environment-label": "Environment for {{name}}",
+        "row-role-label": "Connection role for {{name}}",
+        "schedule": "Scheduled sync",
+        "select-shown": "Select all rows shown",
+        "set-on-row": "Set on this row",
+        "shared": {
+          "title": "Shared settings"
+        },
+        "shared-option": "{{value}} (shared)",
+        "show-all": "Show all",
+        "tab-all": "All {{count}}",
+        "tab-changed": "Changed {{count}}",
+        "tab-needs": "Needs input {{count}}",
+        "title_one": "Configure {{count}} instance",
+        "title_other": "Configure {{count}} instances"
+      },
+      "confirm": {
+        "instances-value": "{{instances}} from {{projects}}.",
+        "remain": "If an entry fails, instances already created are kept.",
+        "sync-all-scheduled": "Scheduled sync. Databases appear after the first sync.",
+        "sync-manual_one": "{{count}} manual sync only.",
+        "sync-manual_other": "{{count}} manual sync only.",
+        "sync-scheduled_one": "{{count}} syncs on a schedule.",
+        "sync-scheduled_other": "{{count}} sync on a schedule.",
+        "title_one": "Import {{count}} instance?",
+        "title_other": "Import {{count}} instances?"
+      },
+      "connect": {
+        "api-key": "API key",
+        "api-key-help": "Personal, organization, or project-scoped key. Never saved.",
+        "error": {
+          "key-empty": "Enter a Neon API key.",
+          "key-invalid": "Neon rejected this API key. Check that it is valid and has not expired.",
+          "other-body": "The request failed. Try again.",
+          "other-title": "Bytebase could not list branches",
+          "permission-body": "Your Bytebase role cannot create instances in {{destination}}.",
+          "permission-title": "You cannot add instances to this destination",
+          "project-id-invalid": "Enter a valid Neon project ID.",
+          "project-id-required": "This key cannot list projects. If it is project-scoped, enter its Neon project ID.",
+          "project-id-unreadable": "Neon could not access this project with this API key.",
+          "rate-limited-now": "You can retry now.",
+          "rate-limited-title": "Neon is limiting requests for this API key",
+          "rate-limited-wait": "Retry after {{time}}.",
+          "unavailable-body": "The request timed out or Neon is temporarily unavailable. Try again in a moment.",
+          "unavailable-title": "Neon did not respond"
+        },
+        "find": "Find branches",
+        "finding": "Contacting Neon…",
+        "project-id": "Neon project ID",
+        "project-id-help": "Required for project-scoped keys.",
+        "retry-in": "Try again in {{time}}",
+        "try-again": "Try again"
+      },
+      "count": {
+        "branches_one": "{{count}} branch",
+        "branches_other": "{{count}} branches",
+        "entries_one": "{{count}} entry",
+        "entries_other": "{{count}} entries",
+        "instances_one": "{{count}} instance",
+        "instances_other": "{{count}} instances",
+        "more-instances_one": "{{count}} more instance",
+        "more-instances_other": "{{count}} more instances",
+        "neon-projects_one": "{{count}} Neon project",
+        "neon-projects_other": "{{count}} Neon projects",
+        "postgres-instances_one": "{{count}} PostgreSQL instance",
+        "postgres-instances_other": "{{count}} PostgreSQL instances",
+        "rows-selected_one": "{{count}} row selected",
+        "rows-selected_other": "{{count}} rows selected"
+      },
+      "destination": {
+        "project": "Bytebase project · {{project}}",
+        "workspace": "Workspace"
+      },
+      "edit-settings": "Edit settings",
+      "import": {
+        "and-more": "and {{count}} more",
+        "awaiting": {
+          "description_one": "Batch {{index}} ({{count}}) · sent at {{time}}.",
+          "description_other": "Batch {{index}} ({{count}}) · sent at {{time}}.",
+          "retrying": "Retrying…"
+        },
+        "banner": {
+          "finished-body_one": "{{count}} entry was confirmed not created. Fix it below and retry when ready.",
+          "finished-body_other": "{{count}} entries were confirmed not created. Fix them below and retry when ready.",
+          "finished-title": "Every batch returned",
+          "paused-lost-body": "Bytebase sent the batch and the connection dropped before the result came back.",
+          "paused-lost-title": "Import paused: the response for a batch was lost",
+          "paused-note": "Remaining batches are paused until you continue.",
+          "paused-note-all-sent": "Check the unknown entries below before retrying.",
+          "paused-resolved-body": "No outcome is unknown now.",
+          "paused-resolved-title": "Import is still paused",
+          "paused-unknown-body": "A batch returned without a confirmed result for some entries.",
+          "paused-unknown-title_one": "Import paused: {{count}} outcome is unknown",
+          "paused-unknown-title_other": "Import paused: {{count}} outcomes are unknown",
+          "rejected-body": "Nothing in that batch was created.",
+          "rejected-title": "Bytebase rejected a batch",
+          "running": "Keep this tab open until the import finishes.",
+          "stopped-created": "Created instances stay.",
+          "stopped-title": "You stopped the import",
+          "stopped-unknown_one": "{{count}} entry in the batch that was already sent may or may not exist.",
+          "stopped-unknown_other": "{{count}} entries in the batch that was already sent may or may not exist.",
+          "stopped-unsent_one": "{{count}} entry was never sent.",
+          "stopped-unsent_other": "{{count}} entries were never sent.",
+          "unsent_one": "{{count}} entry has not been sent. Continue when you are ready.",
+          "unsent_other": "{{count}} entries have not been sent. Continue when you are ready."
+        },
+        "batch": {
+          "awaiting": "sent, awaiting result",
+          "lost": "sent, response lost",
+          "returned": "returned",
+          "stopped": "sent, stopped before its result",
+          "unknown": "returned, some outcomes unknown",
+          "unsent": "not sent"
+        },
+        "batch-label": "Batch {{index}} ({{size}}): {{state}}",
+        "close": "Close setup",
+        "created": {
+          "badge-manual": "Manual sync needed",
+          "badge-scheduled": "Scheduled sync",
+          "by-check": "Found in the instance list when you checked.",
+          "by-retry": "Created on retry.",
+          "description": "Databases appear after the first sync.",
+          "manual": "{{count}} with manual sync only.",
+          "manual-help_one": "Open the instance to sync manually.",
+          "manual-help_other": "Open each instance to sync manually.",
+          "open": "Open {{name}}",
+          "scheduled": "{{count}} with scheduled sync.",
+          "show-all": "Show all {{count}}",
+          "show-fewer": "Show fewer"
+        },
+        "failed": {
+          "choose-database": "Choose database",
+          "database-error": "Database {{database}} no longer exists on this branch.",
+          "database-help": "Choose another database.",
+          "description": "Fix the issues below and retry.",
+          "id-error": "Instance ID {{id}} already exists.",
+          "id-help": "Choose a different instance ID.",
+          "id-scope": "Must be unique in {{destination}}.",
+          "limit-error": "Workspace instance limit reached.",
+          "limit-help": "Remove unused instances or raise the limit in Settings > Subscription, then retry.",
+          "limit-title_one": "{{count}} entry: instance limit reached",
+          "limit-title_other": "{{count}} entries: instance limit reached",
+          "other-help": "Retry as is, or change this entry's settings first.",
+          "password-error": "Neon could not return the password for role {{role}} on this branch.",
+          "password-help": "Enter the password to retry.",
+          "ready": "Ready to retry.",
+          "retry-none": "Retry fixed entries",
+          "retry_one": "Retry {{count}} entry",
+          "retry_other": "Retry {{count}} entries",
+          "role-error": "Role {{role}} no longer exists on this branch.",
+          "role-help": "Choose another role."
+        },
+        "open-list": "Open instance list",
+        "progress": "{{processed}} of {{total}} processed",
+        "progress-batch_one": "Batch {{index}} of {{total}} ({{count}}) · sent at {{time}}",
+        "progress-batch_other": "Batch {{index}} of {{total}} ({{count}}) · sent at {{time}}",
+        "progress-batches_one": "{{count}} batch",
+        "progress-batches_other": "{{count}} batches",
+        "progress-label": "Import progress",
+        "progress-retry": "Waiting for the retried entries.",
+        "state": {
+          "awaiting": "Awaiting result",
+          "created": "Created",
+          "failed": "Not created",
+          "unknown": "Outcome unknown",
+          "unsent": "Not sent"
+        },
+        "stop": "Stop import",
+        "title": {
+          "done_one": "{{count}} instance was created",
+          "done_other": "All {{count}} instances were created",
+          "finished": "Import finished with entries to fix",
+          "paused": "Import paused",
+          "running_one": "Importing {{count}} instance",
+          "running_other": "Importing {{count}} instances",
+          "stopped": "Import stopped"
+        },
+        "unknown": {
+          "check": "Check instance list",
+          "check-again": "Check again",
+          "check-failed": "The check did not get an answer for this entry. Check again.",
+          "checked": "Not in the instance list at {{time}}. It may still appear if the first request is finishing.",
+          "checking": "Checking…",
+          "description": "The response was lost, so these instances may already exist. Check the instance list before retrying.",
+          "lost": "Sent in the batch whose response was lost.",
+          "reported": "Bytebase could not confirm whether this instance was created.",
+          "retry": "Retry this entry",
+          "stopped": "In the batch that was already sent when you stopped."
+        },
+        "unresolved_one": "{{count}} entry unresolved",
+        "unresolved_other": "{{count}} entries unresolved",
+        "unsent": {
+          "continue_one": "Continue with {{count}} entry",
+          "continue_other": "Continue with {{count}} entries",
+          "description_one": "{{count}} entry not sent yet.",
+          "description_other": "{{count}} entries not sent yet.",
+          "waiting": "Queued for the next batch."
+        },
+        "view-instances": "View instances"
+      },
+      "import-count_one": "Import {{count}} instance",
+      "import-count_other": "Import {{count}} instances",
+      "interval": {
+        "days_one": "{{count}} day",
+        "days_other": "{{count}} days",
+        "every-n-hours": "Every {{hours}} hours",
+        "hourly": "Every hour",
+        "hours_one": "{{count}} hour",
+        "hours_other": "{{count}} hours",
+        "minutes_one": "{{count}} minute",
+        "minutes_other": "{{count}} minutes",
+        "off": "Off"
+      },
+      "leave": {
+        "body": "Your branch selections and configuration will be discarded.",
+        "confirm": "Leave setup",
+        "title": "Leave Neon setup?"
+      },
+      "limit-reached": {
+        "body": "Your plan cannot add more instances. Remove instances you no longer need, or raise the limit in Settings, Subscription.",
+        "title": "Workspace instance limit reached"
+      },
+      "method": {
+        "discover": "Discover branches with a Neon API key",
+        "discover-help": "Select and import one or more branches at once.",
+        "manual": "Enter connection details",
+        "manual-help": "Connect a single branch by connection string or host.",
+        "title": "Setup method"
+      },
+      "neon-project": "Neon project",
+      "optional": "(optional)",
+      "password-for": "Password for {{role}}",
+      "reason": {
+        "access-denied": "Neon denied this API key access.",
+        "batch-rejected": "Bytebase rejected the batch before creating anything.",
+        "connection-auth-failed": "The database rejected this role and password.",
+        "connection-failed": "Bytebase could not connect with these settings.",
+        "connection-unreachable": "Bytebase could not reach the database endpoint in time.",
+        "database-not-found": "The initial connection database no longer exists on this branch.",
+        "destination-not-found": "The destination no longer exists.",
+        "endpoint-unavailable": "No direct read-write endpoint",
+        "inspection-failed": "Neon returned an error while this branch was inspected",
+        "instance-id-exists": "This instance ID already exists.",
+        "instance-limit": "The workspace reached its instance limit.",
+        "key-invalid": "Neon rejected the API key. Close setup and start again with a valid key.",
+        "no-databases": "No databases on this branch",
+        "not-processed": "The request ended before this entry was processed, so nothing was created for it.",
+        "other": "The request failed.",
+        "password-required": "Neon could not return the password for this role.",
+        "permission-denied": "Your Bytebase role cannot create instances in this destination.",
+        "rate-limited": "Neon is limiting requests for this API key. Wait a moment, then retry.",
+        "resource-not-found": "Neon could not find it with this API key.",
+        "response-invalid": "Neon returned a response Bytebase does not understand. Retrying will not fix it.",
+        "role-not-found": "The connection role no longer exists on this branch.",
+        "session-expired": "Your Bytebase session expired before the batch was accepted. Sign in again, then retry.",
+        "settings-invalid": "Bytebase rejected these instance settings.",
+        "unavailable": "Neon did not respond in time."
+      },
+      "retry-unknown": {
+        "body": "{{id}} was not in the instance list at {{time}}. If the first request is still finishing in Bytebase, the instance can appear after this check. The retry uses the same instance ID.",
+        "title": "Retry {{name}}?"
+      },
+      "scope": {
+        "all": "All databases",
+        "none": "No databases",
+        "some_one": "{{count}} of {{total}} database",
+        "some_other": "{{count}} of {{total}} databases"
+      },
+      "select": {
+        "all-selected-matching_one": "{{count}} matching branch selected",
+        "all-selected-matching_other": "All {{count}} matching branches selected",
+        "all-selected_one": "{{count}} branch selected",
+        "all-selected_other": "All {{count}} branches selected",
+        "available": "Available",
+        "cannot-import": "Cannot import",
+        "clear-filter": "Clear filter",
+        "col": {
+          "branch": "Branch",
+          "databases": "Databases",
+          "roles": "Roles"
+        },
+        "configure-none": "Configure instances",
+        "configure_one": "Configure {{count}} instance",
+        "configure_other": "Configure {{count}} instances",
+        "deselect-shown": "Deselect the selected branches shown",
+        "empty": "Neon returned no branches for this API key.",
+        "empty-filter": "No loaded branch matches “{{query}}”.",
+        "empty-more": "No branches on the pages loaded so far. More remain.",
+        "empty-selected": "No branches selected yet.",
+        "filter-label": "Filter loaded branches",
+        "filter-locked": "Load all branches to filter.",
+        "filter-placeholder": "Filter by name",
+        "footer-over": "{{branches}} over the instance limit",
+        "group-select-label": "Select loaded, available branches in Neon project {{project}}",
+        "group-select-shown-label": "Select the shown, available branches in Neon project {{project}}",
+        "group-shown_one": "{{count}} shown",
+        "group-shown_other": "{{count}} shown",
+        "group-summary": "{{selected}} / {{count}} selected",
+        "group-unavailable_one": "{{count}} cannot be imported",
+        "group-unavailable_other": "{{count}} cannot be imported",
+        "load-all": "Load all remaining",
+        "load-more": "Load more",
+        "loading": "Loading…",
+        "not-available": "Not available",
+        "over-limit-body": "Deselect {{branches}} to continue, or raise the limit in Settings > Subscription.",
+        "over-limit-title": "{{branches}} selected, and your plan can add {{instances}}",
+        "owner": "owner {{owner}}",
+        "page-error-key": "Neon rejected the API key. Go back and enter it again.",
+        "page-error-rate": "Neon is limiting requests for this API key.",
+        "page-error-retry-in": "You can retry at {{time}}.",
+        "page-error-retry-now": "You can retry now.",
+        "page-error-title": "The next page did not load",
+        "page-error-token": "This listing can no longer be continued. Restart discovery to list again.",
+        "page-error-unavailable": "Neon did not respond in time.",
+        "project-failed": "Neon project {{id}} could not be listed",
+        "restart": "Restart discovery",
+        "restart-help": "Lists branches again from the first page. Your selections are kept for branches that are returned again.",
+        "retry": "Retry",
+        "retry-page": "Retry this page",
+        "retry-project": "Retry Neon project {{id}}",
+        "retrying": "Retrying…",
+        "row-select-label": "Select {{name}}",
+        "select-all-label": "Select all loaded, available branches",
+        "select-all-matching_one": "Select {{count}} matching branch",
+        "select-all-matching_other": "Select all {{count}} matching branches",
+        "select-all_one": "Select {{count}} branch",
+        "select-all_other": "Select all {{count}} branches",
+        "selected-shown_one": "{{count}} selected branch shown",
+        "selected-shown_other": "{{count}} selected branches shown",
+        "status": {
+          "complete": "All branches loaded: {{count}} in {{projects}}.",
+          "failed-projects_one": "{{count}} Neon project could not be listed.",
+          "failed-projects_other": "{{count}} Neon projects could not be listed.",
+          "listing": "Listing branches from Neon…",
+          "partial_one": "{{count}} branch loaded from {{projects}}. More remain.",
+          "partial_other": "{{count}} branches loaded from {{projects}}. More remain."
+        },
+        "view-label": "Rows shown",
+        "view-loaded": "Loaded {{count}}",
+        "view-selected": "Selected {{count}}"
+      },
+      "sheet": {
+        "connection": "Connection",
+        "database": "Initial connection database",
+        "databases-legend": "Databases to sync",
+        "description": "Neon project {{project}} ({{projectId}}) · branch {{branchId}}",
+        "id-duplicate": "Another row uses this instance ID.",
+        "identity": "Identity",
+        "instance-id": "Instance ID",
+        "instance-id-help": "Cannot be changed after import.",
+        "password-neon": "Read from Neon during import",
+        "password-required": "Enter the password, or read it from Neon.",
+        "password-typed": "Enter password",
+        "reset": "Reset to shared settings",
+        "role": "Connection role",
+        "role-required": "Choose a role. The databases here have different owners.",
+        "scope-none": "No databases will be synced.",
+        "sync": "Sync",
+        "title-required": "Enter an instance name."
+      },
+      "steps": {
+        "configure": "Configure",
+        "connect": "Connect",
+        "import": "Import",
+        "label": "Setup steps",
+        "select": "Select branches"
+      },
+      "stop": {
+        "awaiting_one": "{{count}} in-flight instance will be marked as unknown.",
+        "awaiting_other": "{{count}} in-flight instances will be marked as unknown.",
+        "created_one": "{{count}} created instance is kept.",
+        "created_other": "{{count}} created instances are kept.",
+        "keep": "Keep importing",
+        "title": "Stop the import?",
+        "unsent_one": "{{count}} remaining instance will not be sent.",
+        "unsent_other": "{{count}} remaining instances will not be sent."
+      },
+      "sync": {
+        "default-help": "Every hour on the current plan.",
+        "manual": "Manual sync only",
+        "scheduled": "Scheduled every {{interval}}",
+        "unscheduled-help": "Manual sync only on the current plan."
+      }
+    },
     "new-instance": "New Instance",
     "no-environment": "This instance has not been bound to the environment",
     "no-extra-params-configured": "No extra connection parameters configured",
@@ -1667,6 +2480,7 @@
       "gcp-instance": "Use lowercase letters, numbers, or hyphens.",
       "gcp-project": "Use lowercase letters, numbers, periods, colons, or hyphens.",
       "keytab-resupply": "Upload the keytab again for the new connection destination.",
+      "neon-pooled-host": "This is a pooled endpoint. Use the direct endpoint host, without -pooler.",
       "oracle-service": "Enter a service name or SID.",
       "pem-certificate": "Enter a PEM certificate, including the BEGIN and END CERTIFICATE lines.",
       "pem-key": "Enter a PEM private key (PKCS#1, PKCS#8, or EC).",
@@ -1674,6 +2488,11 @@
       "specific-credential": "Provide specific credentials. Default credentials are unavailable in Bytebase Cloud.",
       "tls-pair": "Provide both the client certificate and private key.",
       "tls-source-conflict": "Use either PEM content or a file path, not both."
+    },
+    "vendor": {
+      "generic": "Any host or cloud",
+      "neon": "Neon",
+      "self": "Hosted on"
     },
     "your-snowflake-account-locator": "Your Snowflake account locator"
   },
@@ -1899,8 +2718,7 @@
       "visit-issues": "Visit Issues",
       "visit-prjects": "Visit Projects",
       "yours": "Your quick links"
-    },
-    "workspace": "Workspace"
+    }
   },
   "masking": {
     "reason": {
@@ -1973,12 +2791,27 @@
   "plan": {
     "add-spec": "Add Change",
     "add-spec-pending-draft": "Save or discard the pending change before adding another",
-    "ai-review": {
-      "failed-to-run": "Could not start the AI review",
-      "run": "Run AI review",
-      "run-again-description": "A run makes model calls for every database it reviews and may find different issues. Its findings replace the last run's, including the ones people resolved.",
-      "run-again-title": "Run the AI review again?",
-      "save-first": "Save or discard your edits to run the AI review."
+    "affected-rows": {
+      "details": "Details",
+      "estimate": "Estimate",
+      "estimated": "Estimated",
+      "estimated-on_one": "Estimated on {{count}} database",
+      "estimated-on_other": "Estimated on {{count}} databases",
+      "explanation": "Counts the rows that UPDATE, DELETE, and INSERT ... SELECT change, estimated with EXPLAIN on sample statements, plus the rows that INSERT ... VALUES adds and the row count of each table a DDL statement changes. Approval rules read this number for each database.",
+      "filter": "Databases to show",
+      "filter-all": "All {{n}}",
+      "filter-incomplete": "Incomplete {{n}}",
+      "go-to-line": "Go to line {{line}}",
+      "incomplete": "Incomplete",
+      "incomplete-on_one": "Incomplete on {{count}}",
+      "incomplete-on_other": "Incomplete on {{count}}",
+      "n-databases_one": "{{count}} database",
+      "n-databases_other": "{{count}} databases",
+      "not-estimated": "Not estimated",
+      "on": "{{rows}} on {{database}}",
+      "rerun": "Rerun",
+      "self": "Affected rows",
+      "up-to-on": "up to {{rows}} on {{database}}"
     },
     "automated-review": {
       "checks": "Plan check",
@@ -1988,15 +2821,11 @@
       "ghost": "Online migration dry run",
       "n-databases_one": "{{count}} database",
       "n-databases_other": "{{count}} databases",
-      "n-errors_one": "{{count}} error",
-      "n-errors_other": "{{count}} errors",
-      "n-open": "{{count}} open",
-      "n-warnings_one": "{{count}} warning",
-      "n-warnings_other": "{{count}} warnings",
       "needs-attention": "Needs attention: {{count}} of {{total}}",
       "no-findings": "No findings",
       "not-run": "Not run yet",
-      "nothing-needs-attention": "Nothing needs attention",
+      "off": "off",
+      "off-for-project": "Off for this project",
       "opens-in-sql": "Click to step through them in the SQL.",
       "out-of-date": "out of date",
       "outdated": "SQL changed after this run",
@@ -2005,12 +2834,15 @@
       "passed-on_other": "Passed on {{count}} databases",
       "policy": "Review policy",
       "project-rules": "Project rules: {{on}} of {{total}} on",
-      "report": "Statement report",
       "rerun": "Rerun",
       "rerun-all": "Re-run all",
       "retry": "Retry",
+      "reviewing": "Reviewing…",
+      "run-again-description": "A run makes model calls for every database it reviews and may find different issues. A finding it reports again keeps its thread, and one it no longer reports is resolved.",
+      "run-again-title": "Run the review again?",
       "running": "Running",
-      "sampled": "a sample of {{count}} of {{total}} databases",
+      "sampled": "The review covered a sample of {{count}} of {{total}} databases",
+      "save-first": "Save or discard your edits to run the review.",
       "scope": "Reviewed {{databases}}",
       "scope-label": "What this review covered",
       "scope-with-engines": "Reviewed {{databases}} ({{engines}})",
@@ -2044,17 +2876,43 @@
       "overridden_other": "{{count}} P0 findings in {{reviewer}} were resolved without a change",
       "ready-to-deploy": "Everything passed; ready to deploy.",
       "reviewer-failed": "{{reviewer}} couldn't run",
-      "reviewer-findings": "{{reviewer}}: {{findings}}",
+      "reviewer-findings": "{{reviewer}}: <findings />",
       "reviewer-not-run": "{{reviewer}} has not run",
       "reviewer-outdated": "SQL changed after {{reviewer}} ran",
       "reviewer-running": "{{reviewer}} is running",
       "show": "Show",
+      "statement-error": "The SQL has a syntax error",
       "submit": "Submit for review",
       "waiting-on": "Waiting on",
       "worth-a-look": "Does not hold the rollout, but worth a look"
     },
     "description": {
       "placeholder": "Add description"
+    },
+    "details": {
+      "approved": "Approved",
+      "approved-by": "Approved by {{user}}",
+      "awaiting-approval": "Awaiting approval",
+      "by-author": "by {{author}}",
+      "changes": "Changes",
+      "changes-on-targets": "{{kind}} on {{targets}}",
+      "created": "Created",
+      "database-groups_one": "{{count}} database group",
+      "database-groups_other": "{{count}} database groups",
+      "databases_one": "{{count}} database",
+      "databases_other": "{{count}} databases",
+      "labels": "Labels",
+      "migration-based_one": "Migration-based · {{count}} file · update to version {{version}}",
+      "migration-based_other": "Migration-based · {{count}} files · update to version {{version}}",
+      "no-approval": "No approval required",
+      "progress": "Progress",
+      "rejected": "Rejected",
+      "release": "Release",
+      "review": "Review",
+      "source": "Source",
+      "state-based": "State-based · {{version}}",
+      "triggered": "Triggered",
+      "waiting-for": "Waiting for {{role}}"
     },
     "draft-update-permission-required": "You can view this draft, but you need bb.issues.update to edit issue labels or submit it for review.",
     "editor": {
@@ -2097,6 +2955,8 @@
       "checking": "Checking…",
       "checks-failing": "Checks failing",
       "deployed": "Deployed",
+      "deployed-with-skipped_one": "Deployed, {{count}} task skipped",
+      "deployed-with-skipped_other": "Deployed, {{count}} tasks skipped",
       "gate-automated-review-passed": "Automated review passed",
       "gate-checks-failed": "Some checks were not successful",
       "gate-checks-failed-sub": "{{failing}} failing, {{passed}} passed",
@@ -2117,9 +2977,6 @@
       "run": "Run"
     },
     "list-description": "Change requests created in the UI and their deploy progress.",
-    "meta": {
-      "created-by": "Created by {{user}}"
-    },
     "navigator": {
       "changes": "Changes",
       "checks": "Checks",
@@ -2156,33 +3013,29 @@
         "add-a-comment": "Add a comment...",
         "created-this-plan": "created this plan",
         "marked-ready-for-review": "marked this plan ready for review",
-        "n-findings_one": "{{count}} finding",
-        "n-findings_other": "{{count}} findings",
         "n-hidden-events_one": "{{count}} hidden event",
         "n-hidden-events_other": "{{count}} hidden events",
-        "n-new_one": "{{count}} new",
-        "n-new_other": "{{count}} new",
-        "n-no-longer-found_one": "{{count}} no longer found",
-        "n-no-longer-found_other": "{{count}} no longer found",
-        "n-still-found_one": "{{count}} still found",
-        "n-still-found_other": "{{count}} still found",
-        "no-findings": "no findings",
+        "n-new-findings_one": "{{count}} new finding",
+        "n-new-findings_other": "{{count}} new findings",
+        "no-new-findings": "no new findings",
         "reviewed-the-sql": "reviewed the SQL",
         "self": "Activity",
         "show-all": "Show all"
       },
       "approval-after-submit": "Approval starts when you submit for review.",
       "approval-flow": {
-        "and-n-more_one": "and {{count}} more",
-        "and-n-more_other": "and {{count}} more",
         "approved-by": "Approved by {{user}}",
+        "clear-search": "Clear search",
+        "copy-email": "Copy email for {{user}}",
         "current": "Current",
         "n-approved": "{{n}} approved",
         "n-pending": "{{n}} pending",
         "n-reviewers_one": "{{count}} reviewer",
         "n-reviewers_other": "{{count}} reviewers",
+        "no-matching-reviewers": "No reviewers match “{{query}}”",
         "no-reviewers": "No reviewers",
-        "rejected-by": "Rejected by {{user}}"
+        "rejected-by": "Rejected by {{user}}",
+        "search-placeholder": "Search by name or email"
       },
       "candidate-last-changed-plan": "Can't approve — last changed this plan",
       "comment-required-to-reject": "A comment is required to reject",
@@ -2205,8 +3058,8 @@
         "confirm-unresolved-threads_one": "{{count}} unresolved thread",
         "confirm-unresolved-threads_other": "{{count}} unresolved threads",
         "creating-rollout-automatically": "creating rollout automatically...",
-        "errors-passed-not-created_one": "{{count}} error, {{passed}} passed. Rollout was not created automatically.",
-        "errors-passed-not-created_other": "{{count}} errors, {{passed}} passed. Rollout was not created automatically.",
+        "errors-passed-not-created_one": "{{count}} P0, {{passed}} passed. Rollout was not created automatically.",
+        "errors-passed-not-created_other": "{{count}} P0, {{passed}} passed. Rollout was not created automatically.",
         "gate-approval": "Issue approval",
         "gate-no-failed-checks": "No failed plan checks",
         "gates-blocked": "Required project gates are not met — deployment is blocked.",
@@ -2243,13 +3096,16 @@
         },
         "applies-to": "Applies to",
         "comment-on-lines": "Comment on lines",
+        "comment-on-plan": "Comment on the plan",
+        "comment-title_one": "Comment on line {{range}}",
+        "comment-title_other": "Comment on lines {{range}}",
+        "fold-label_one": "{{title}}, line {{range}}",
+        "fold-label_other": "{{title}}, lines {{range}}",
         "n-replies-hidden_one": "{{count}} reply hidden",
         "n-replies-hidden_other": "{{count}} replies hidden",
-        "n-replies_one": "{{count}} reply",
-        "n-replies_other": "{{count}} replies",
         "priority": {
           "p1": "Dangerous but legitimate. A person must accept it.",
-          "p2": "Advisory only."
+          "p2": "A suggestion. Resolve it once read, whether or not you apply it."
         },
         "publish": "Publish",
         "reopen-thread": "Reopen thread",
@@ -2259,6 +3115,18 @@
         "resolve": "Resolve",
         "resolve-thread": "Resolve thread",
         "resolved": "Resolved",
+        "targets": {
+          "clear-search": "Clear search",
+          "list-label": "Databases",
+          "more-environments": "+{{n}}",
+          "n-databases_one": "{{count}} database",
+          "n-databases_other": "{{count}} databases",
+          "n-of-m-databases_one": "{{count}} of {{total}} databases",
+          "n-of-m-databases_other": "{{count}} of {{total}} databases",
+          "no-match": "No databases match “{{query}}”",
+          "open-group": "Open group",
+          "search-placeholder": "Search databases"
+        },
         "threads-on-line_one": "{{count}} thread on this line",
         "threads-on-line_other": "{{count}} threads on this line",
         "walker": {
@@ -2304,10 +3172,6 @@
       "reopen-confirm": "Reopen this plan?",
       "reopen-review-confirm": "Reopen this review?"
     },
-    "statement-summary": {
-      "affected-rows_one": "~{{count}} row affected",
-      "affected-rows_other": "~{{count}} rows affected"
-    },
     "status-scope": {
       "description": "Filter by the current status of the plan's tasks",
       "waiting": "Waiting"
@@ -2319,13 +3183,11 @@
       "n-changes": "{{n}} changes",
       "n-database-groups": "{{n}} database groups",
       "n-databases": "{{n}} databases",
-      "n-error": "Errors: {{n}}",
       "n-of-m-approved": "{{n}} of {{m}} approved",
       "n-of-m-tasks": "{{n}}/{{m}} tasks",
       "n-passed": "{{n}} passed",
       "n-unresolved-threads_one": "{{count}} unresolved thread",
       "n-unresolved-threads_other": "{{count}} unresolved threads",
-      "n-warning": "Warnings: {{n}}",
       "no-approval-required": "No approval required"
     },
     "targets": {
@@ -2668,6 +3530,14 @@
   "release": {
     "and-n-more-files": "and {{count}} more files",
     "change-tip": "This change is linked to a release artifact.",
+    "changes": {
+      "load-all": "Load all ({{count}})",
+      "load-more": "Load {{count}} more",
+      "manifest_one": "{{count}} file · newest {{version}}",
+      "manifest_other": "{{count}} files · newest {{version}}",
+      "schema": "Schema",
+      "show-fewer": "Show fewer"
+    },
     "empty": {
       "description": "Changes your CI pipeline releases to Bytebase appear here with their deploy progress.",
       "read-guide": "Read the GitOps guide",
@@ -2690,7 +3560,16 @@
     "vcs-type": {
       "unspecified": "Unknown VCS"
     },
-    "view-all-files": "View all files"
+    "view-all-files": "View all files",
+    "viewer": {
+      "already-applied": "Already applied; this run passed over it",
+      "already-applied-before-run": "Applied before this rollout",
+      "applied-by-run": "Applied by this run",
+      "failed-on": "Failed on {{stage}}",
+      "open-at-commit": "Open in {{platform}} at {{sha}}",
+      "size": "{{size}} bytes",
+      "statement-unavailable": "The file's statement could not be loaded."
+    }
   },
   "remind": {
     "role-expire": {
@@ -2943,7 +3822,6 @@
           "api-key": {
             "description": "Supply API Key, read-only. {{viewDoc}}",
             "find-my-key": "Find my key",
-            "placeholder": "An API Key usually starts with sk-*****",
             "self": "API Key"
           },
           "available-in-saas": "AI Assistant is available in this workspace and managed by Bytebase.",
@@ -3200,6 +4078,10 @@
           "refused": "Not allowed"
         },
         "row": {
+          "add-instances": {
+            "details": "Add a PostgreSQL instance to a project, signed in with a user name and password · Each instance is confirmed in the user's MCP client before it is added · Its databases join that project for good",
+            "title": "Add instances to projects"
+          },
           "approval-rules": {
             "details": "Add, remove, reorder or change the rules that decide who approves a database change · Each change is confirmed in the user's MCP client before it is made · The fallback rules and the rules for other kinds of issues stay as they are",
             "title": "Manage approval rules for database changes"
@@ -3207,6 +4089,10 @@
           "approve": {
             "details": "Each decision is confirmed in the user's MCP client before it is made · Role requests are decided in the console · The approval rules and the project's self-approval setting apply, as in the console",
             "title": "Approve or reject issues"
+          },
+          "ci-identities": {
+            "details": "Create a workload identity that GitHub Actions or GitLab CI jobs in one repository sign in as, with the GitOps Service Agent role in one project, so it can roll out without approval · Each identity is confirmed in the user's MCP client before it is created · This policy does not limit what it does, and it lasts until it is removed",
+            "title": "Create CI identities"
           },
           "export": {
             "details": "Export results as files. Data leaves Bytebase.",
@@ -3229,7 +4115,7 @@
             "title": "Propose changes"
           },
           "read-access": {
-            "details": "Who holds which role in the workspace and its projects · Groups and their members · Roles and their permissions · Masking rules and exemptions · Rollout, data query, tag and review policies · Approval rules, environments, semantic types and data classification · Access grants, including pending requests",
+            "details": "Who holds which role in the workspace and its projects · Groups and their members · Roles and their permissions · Masking rules and exemptions · Rollout, data query, tag and review policies · Approval rules, environments, semantic types and data classification · Access grants, including pending requests · CI identities and who can sign in as them",
             "title": "Read members, roles and policies"
           },
           "read-data": {
@@ -3381,9 +4267,7 @@
         "self": "Groups",
         "workspace-domain-required": "Please set a workspace domain first."
       },
-      "inactive-service-accounts": "Inactive service accounts",
       "inactive-users": "Inactive users",
-      "inactive-workload-identities": "Inactive workload identities",
       "invite-email-hint": "Invitation emails will be sent to new members.",
       "pending-invite": "Invited",
       "reset-service-key": "Reset Service Key",
@@ -3411,31 +4295,8 @@
       "view-by-roles": "View by roles",
       "workload-identities": "Workload Identities",
       "workload-identity": "Workload Identity",
-      "workload-identity-advanced": "Advanced Settings",
-      "workload-identity-all-branches-tags": "All branches and tags",
-      "workload-identity-allowed-branches-tags": "Allowed Branches/Tags",
-      "workload-identity-audience": "Audience",
-      "workload-identity-audience-hint": "The audience your pipeline requests. Bytebase's generated workflows request bytebase; the setup guides request the provider default, so add that line too if your pipeline uses it.",
-      "workload-identity-branch": "Branch",
-      "workload-identity-branch-hint": "Leave empty for all branches",
       "workload-identity-config-rejected": "Bytebase cannot accept this configuration:",
-      "workload-identity-generic-oidc": "Generic OIDC",
-      "workload-identity-gitlab-url": "GitLab URL",
-      "workload-identity-gitlab-url-hint": "Your GitLab instance URL",
-      "workload-identity-group": "Group / Username",
-      "workload-identity-issuer": "Issuer URL",
-      "workload-identity-jwks-url": "JWKS URL",
-      "workload-identity-owner": "Organization / Username",
-      "workload-identity-platform": "Platform",
-      "workload-identity-project": "Project",
-      "workload-identity-project-hint": "Leave empty to allow all projects",
-      "workload-identity-repo": "Repository",
-      "workload-identity-repo-hint": "Leave empty for all repositories in the organization",
-      "workload-identity-specific-branch": "Specific branch",
-      "workload-identity-specific-tag": "Specific tag",
-      "workload-identity-subject": "Subject Pattern",
-      "workload-identity-tag": "Tag",
-      "workload-identity-tag-hint": "Leave empty to allow all tags"
+      "workload-identity-generic-oidc": "Generic OIDC"
     },
     "profile": {
       "display-name": "Your name",
@@ -3723,7 +4584,7 @@
     "access-type-export": "Export the query result",
     "access-type-unmask": "See unmasked sensitive data",
     "activate-access": "Activate",
-    "activate-confirm": "Are you sure you want to activate this access grant?",
+    "activate-confirm": "This access grant will allow its approved query to run.",
     "add-a-new-instance": "Add new instance",
     "admin-mode": {
       "exit": "Exit admin mode",
@@ -4032,7 +4893,7 @@
     },
     "result-view-mode": "Result view mode",
     "revoke-access": "Revoke",
-    "revoke-confirm": "Are you sure you want to revoke this access grant?",
+    "revoke-confirm": "This access grant will no longer authorize its approved query.",
     "rows": {
       "self": "rows"
     },
@@ -4257,7 +5118,7 @@
       },
       "sql-review": {
         "description": "Analyze the SQL statement for potential issues and provide recommendations. Includes built-in rules and your custom rules.",
-        "self": "SQL review"
+        "self": "Rule-based SQL review"
       }
     },
     "created": "Created",
@@ -4266,6 +5127,25 @@
     },
     "executed-by": "Executed by",
     "execution-time": "Execution time",
+    "folded": {
+      "about-rows_one": "about {{rows}} row",
+      "about-rows_other": "about {{rows}} rows",
+      "all-applied_one": "All {{count}} applied",
+      "all-applied_other": "All {{count}} applied",
+      "already-applied_one": "{{count}} already applied",
+      "already-applied_other": "{{count}} already applied",
+      "applying_one": "Applying {{count}} file",
+      "applying_other": "Applying {{count}} files",
+      "kind-ddl": "DDL",
+      "kind-dml": "DML",
+      "kind-mixed": "Mixed",
+      "nothing-to-apply": "Nothing to apply",
+      "scheduled": "scheduled",
+      "skipped-by": "Skipped by {{user}}",
+      "started": "started {{time}}",
+      "to-apply_one": "{{count}} to apply",
+      "to-apply_other": "{{count}} to apply"
+    },
     "no-cancelable-tasks": "No cancelable tasks",
     "no-permission": "No permission to perform this action",
     "no-runnable-tasks": "No runnable tasks",
@@ -4288,6 +5168,7 @@
     "select-task": "Select Task",
     "skip-prior-backup": "Skip prior backup",
     "skip-prior-backup-description": "Skip the automatic data backup before applying changes",
+    "skip-reason-required": "Enter why the task is skipped.",
     "skip-task": "Skip task | Skip tasks",
     "skipped-no-reason": "No reason provided",
     "started": "Started",
@@ -4353,11 +5234,71 @@
       }
     },
     "run-number": "Run #{{number}}",
+    "spine": {
+      "already-applied_one": "{{count}} file already applied to this database",
+      "already-applied_other": "{{count}} files already applied to this database",
+      "as-of": "As of rollout creation, {{time}}; the run re-checks the database.",
+      "count": {
+        "already-applied": "{{count}} already applied",
+        "applied": "{{count}} applied",
+        "canceled": "{{count}} canceled",
+        "failed": "{{count}} failed",
+        "files_one": "{{count}} file",
+        "files_other": "{{count}} files",
+        "pending": "{{count}} pending",
+        "running": "{{count}} running"
+      },
+      "load": {
+        "all": "Load all ({{count}})",
+        "applied": "Load {{count}} applied",
+        "files": "Load {{count}} files",
+        "more-applied": "Load {{count}} more applied",
+        "more-files": "Load {{count}} more files",
+        "more-pending": "Load {{count}} more pending",
+        "pending": "Load {{count}} pending"
+      },
+      "no-statement": "No statement was identified for this error.",
+      "not-applied": "Not applied",
+      "planned_one": "Planned at rollout creation · {{count}} file to apply",
+      "planned_other": "Planned at rollout creation · {{count}} files to apply",
+      "revision-deleted": "Earlier revision deleted {{date}} by {{user}}",
+      "revision-deleted-after-rollout": "Earlier revision deleted after this rollout was created",
+      "revisions-on": "Revisions on {{database}}",
+      "run-failed": "Run failed",
+      "status": {
+        "applied": "Applied",
+        "applied-again": "Applied again",
+        "canceled": "Canceled",
+        "failed": "Failed",
+        "running": "Running"
+      },
+      "will-apply": "Will apply",
+      "will-apply-again": "Will apply again · revision deleted"
+    },
     "status": {
       "enqueued": "Waiting for execution.",
       "enqueued-with-rollout-time": "Waiting to execute after {{time}}.",
       "waiting-max-tasks-per-rollout": "Waiting for other tasks to finish. Maximum running tasks limit per rollout has been reached. Last report at {{time}}."
     }
+  },
+  "time-range": {
+    "add-time": "Add time",
+    "all-time": "All time",
+    "clear": "Clear time range",
+    "end-day": "End day",
+    "from-time": "From time, 24-hour",
+    "invalid-time": "Use 24-hour time, like 09:30.",
+    "last-12-months": "Last 12 months",
+    "last-3-months": "Last 3 months",
+    "last-30-days": "Last 30 days",
+    "last-6-months": "Last 6 months",
+    "last-7-days": "Last 7 days",
+    "quick-ranges": "Quick ranges",
+    "remove-time": "Remove time",
+    "start-day": "Start day",
+    "to-before-from": "To is before From.",
+    "to-time": "To time, 24-hour",
+    "today": "Today"
   },
   "two-factor": {
     "description": "Two-factor authentication provides an extra layer of security for member accounts. When signing in, you will be required to enter the security code generated by your Authenticator App.",
@@ -4407,6 +5348,117 @@
       "copy-succeed": "Secret copied to clipboard. Paste it into your app.",
       "description": "Copy the code and enter it in your TOTP app manually.",
       "self": "Your two-factor secret"
+    }
+  },
+  "workload-identity": {
+    "account": {
+      "description-project": "Jobs that sign in act as this account in project {{project}}.",
+      "description-workspace": "Jobs that sign in act as this account in this workspace.",
+      "display-name": "Display name",
+      "display-name-hint": "Shown in member lists. Blank uses the email name.",
+      "email-hint": "Your workflow signs in with this email. It cannot be changed later.",
+      "email-invalid": "Use letters, digits, dots, hyphens and underscores.",
+      "email-required": "Enter a name for the email.",
+      "email-used": "Already used by another workload identity.",
+      "no-permission-project": "You can't grant roles in this project. The identity is created without a role and can't do anything until a project owner grants one.",
+      "no-permission-workspace": "You can't grant roles in this workspace. The identity is created without a role and can't do anything until a workspace admin grants one.",
+      "question": "Who is it in Bytebase?",
+      "role-hint-project": "What the account can do in this project. GitOps Service Agent is the role GitOps workflows need.",
+      "role-hint-workspace": "What the account can do in every project of this workspace.",
+      "role-required": "Choose a role."
+    },
+    "continue": "Continue",
+    "create-title": "Create workload identity",
+    "done": {
+      "description-oidc-project": "Tokens whose subject matches {{pattern}} can now sign in to project {{project}} as this identity.",
+      "description-oidc-workspace": "Tokens whose subject matches {{pattern}} can now sign in to this workspace as this identity.",
+      "description-project": "Jobs in {{target}} can now sign in to project {{project}} as this identity.",
+      "description-workspace": "Jobs in {{target}} can now sign in to this workspace as this identity.",
+      "email-hint": "Set it as <code>BYTEBASE_WORKLOAD_IDENTITY</code> in your workflow. Workflows generated on the GitOps page already use it.",
+      "external-url-placeholder": "The External URL is not set, so this file uses a placeholder. Replace {{placeholder}} with the address your CI jobs can reach, or set the External URL.",
+      "github-caption": "Commit this file on any branch of {{repository}} and push. It runs when this file changes, not on every push. A green job means the identity signs in; a red job prints the reason Bytebase refused the token.",
+      "gitlab-caption": "Commit it on any branch and press Run on the job in the pipeline.",
+      "gitlab-file-hint": "add this job",
+      "role-not-granted": "The identity was created, but the role was not granted: {{error}}. Grant it on the Members page.",
+      "target-any-project": "any project in {{owner}}",
+      "target-any-repository": "any repository of {{owner}}",
+      "test-description": "Run this workflow once to confirm the identity works before you rely on it.",
+      "test-title": "Check that it signs in",
+      "title": "Workload identity created",
+      "title-updated": "Changes saved",
+      "updated-oidc-project": "Tokens whose subject matches {{pattern}} can sign in to project {{project}} as this identity from their next run.",
+      "updated-oidc-workspace": "Tokens whose subject matches {{pattern}} can sign in to this workspace as this identity from their next run.",
+      "updated-project": "Jobs in {{target}} can sign in to project {{project}} as this identity from their next run.",
+      "updated-workspace": "Jobs in {{target}} can sign in to this workspace as this identity from their next run."
+    },
+    "edit-banner": "Editing {{email}}. Changes apply from its next sign-in.",
+    "edit-title": "Edit workload identity",
+    "optional": "(optional)",
+    "rail": {
+      "account": "Account",
+      "done": "Done",
+      "label": "Steps",
+      "repositories": "Repositories",
+      "subject": "Subject",
+      "token-source": "Token source"
+    },
+    "repositories": {
+      "any-environment-warning": "Only jobs that run in an environment can sign in. Jobs without one, such as the SQL review job, will fail.",
+      "description": "Every job in the matching repositories can sign in. Jobs from other accounts never can.",
+      "environment-warning": "Only jobs with <code>environment: {{environment}}</code> can sign in. Jobs without an environment, such as the SQL review job, will fail.",
+      "github-pattern-editing-hint": "Owner, Owner ID and Repository above update from what you type. Changing a field later replaces only its own part of the pattern. Reset builds the pattern from the fields again.",
+      "gitlab-pattern-editing-hint": "Group and Project above update from what you type. Changing a field later replaces only its own part of the pattern. Reset builds the pattern from the fields again.",
+      "group": "Group",
+      "group-hint": "The group (or user) that owns the project.",
+      "group-required": "Enter the group.",
+      "name-invalid": "Use a name without spaces, *, :, @ or /.",
+      "oidc-pattern-hint": "Must equal the token's <code>sub</code>. End with <code>*</code> to match a prefix.",
+      "oidc-question": "Which tokens can sign in?",
+      "owner": "Owner",
+      "owner-hint": "The organization (or user) that owns the repository.",
+      "owner-id": "Owner ID",
+      "owner-id-hint": "Get it with <code>gh api users/{{owner}} --jq .id</code>. It never changes, even when the account is renamed.",
+      "owner-id-invalid": "Use digits only.",
+      "owner-id-note": "Without it, the rule trusts the name alone. If the account is renamed or deleted, anyone can register the name and sign in as this identity.",
+      "owner-id-note-link": "GitHub changelog",
+      "owner-id-note-title": "The owner ID protects this rule from name reuse",
+      "owner-required": "Enter the owner.",
+      "pattern-hint": "Built from the fields above. Edit it only for a rule the fields can't express.",
+      "pattern-required": "Enter a subject pattern.",
+      "pattern-unreadable": "The fields above can't read this pattern, so they are disabled and the pattern is matched by prefix only. Reset builds the pattern from the fields again.",
+      "project": "Project",
+      "project-hint": "Leave blank to match any project in the group.",
+      "project-invalid": "Use a path without spaces, *, : or @.",
+      "question": "Which repositories can sign in?",
+      "repo-required": "The pattern names more than the repository. Reset it before clearing the repository.",
+      "repository": "Repository",
+      "repository-hint": "Leave blank to match any repository of the owner.",
+      "subject-pattern": "Subject pattern"
+    },
+    "token-source": {
+      "audiences": "Audiences",
+      "audiences-hint": "The token's audience must be one of these. Workflows from the GitOps page request <code>bytebase</code>.",
+      "audiences-placeholder": "Type and press Enter",
+      "audiences-required": "Add at least one audience.",
+      "description": "Pick the CI provider that signs your jobs' tokens. A workload identity lets those jobs sign in to Bytebase without a stored secret.",
+      "github-issuer-hint": "Change it only for GitHub Enterprise Server, GHE.com, or an enterprise custom issuer.",
+      "github-note": "GitHub signs every Actions job's token with one global issuer. Nothing to configure on the GitHub side.",
+      "github-subtitle": "CI/CD workflows",
+      "github-title": "GitHub Actions",
+      "gitlab-issuer-hint": "Change it only for a self-managed GitLab instance, to that instance's URL.",
+      "gitlab-note": "GitLab signs every job's token with your GitLab instance's URL as the issuer. Nothing to configure on the GitLab side.",
+      "gitlab-subtitle": "gitlab.com or self-managed",
+      "gitlab-title": "GitLab CI",
+      "issuer": "Issuer URL",
+      "issuer-required": "Enter the issuer URL.",
+      "jwks-url": "JWKS URL",
+      "jwks-url-hint": "Where Bytebase downloads the issuer's public keys. Leave blank if the issuer publishes <code>/.well-known/openid-configuration</code>.",
+      "oidc-audiences-hint": "The token's audience must be one of these.",
+      "oidc-subtitle": "Bring your own issuer",
+      "oidc-title": "Other OIDC",
+      "provider-required": "Choose where the tokens come from.",
+      "question": "Where do your CI jobs get their token?",
+      "remove-audience": "Remove {{audience}}"
     }
   },
   "workspace-setup": {

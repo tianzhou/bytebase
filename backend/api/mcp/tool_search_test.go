@@ -309,18 +309,18 @@ func TestSearchAPINamesWhatMCPCannotDo(t *testing.T) {
 		require.Contains(t, unavailable, "whatever the user's permissions")
 		require.Contains(t, unavailable, "Bytebase console")
 		require.NotContains(t, unavailable, "Request Body")
-		_, block, ok := strings.Cut(unavailable, "- **WorkloadIdentityService**")
+		_, block, ok := strings.Cut(unavailable, "- **ServiceAccountService**")
 		require.True(t, ok)
 		block, _, _ = strings.Cut(block, "\n- **")
-		require.Equal(t, ": manages workload identities for external CI/CD integrations.\n"+
+		require.Equal(t, ": manages service accounts for API integrations.\n"+
 			"  - Refused because "+mintsForOthers+".\n"+
-			"  - Refused because "+administers+".\n", block, "the service's reasons sit under it")
+			"  - Refused because "+administers+".", strings.TrimSuffix(block, "\n"), "the service's reasons sit under it")
 	})
 
 	t.Run("a service MCP cannot call is not reported as missing", func(t *testing.T) {
-		text := searchText(t, s, SearchInput{Service: "WorkloadIdentityService"})
-		require.Contains(t, text, "WorkloadIdentityService is not available over MCP")
-		require.Contains(t, text, "- WorkloadIdentityService/CreateWorkloadIdentity, WorkloadIdentityService/UpdateWorkloadIdentity: refused because "+mintsForOthers+".\n",
+		text := searchText(t, s, SearchInput{Service: "ServiceAccountService"})
+		require.Contains(t, text, "ServiceAccountService is not available over MCP")
+		require.Contains(t, text, "- ServiceAccountService/CreateServiceAccount, ServiceAccountService/UpdateServiceAccount: refused because "+mintsForOthers+".\n",
 			"operations refused for one reason share one line")
 		require.NotContains(t, text, "Unknown service")
 		require.NotContains(t, text, "Request Body")
@@ -331,14 +331,32 @@ func TestSearchAPINamesWhatMCPCannotDo(t *testing.T) {
 		served, unavailable, ok := strings.Cut(text, "## Not available over MCP")
 		require.True(t, ok)
 		require.Contains(t, served, "InstanceService/GetInstance")
-		require.NotContains(t, served, "InstanceService/CreateInstance")
-		require.Contains(t, unavailable, "InstanceService/CreateInstance")
+		require.NotContains(t, served, "InstanceService/DeleteInstance")
+		require.Contains(t, unavailable, "InstanceService/DeleteInstance")
 		require.Equal(t, 1, strings.Count(unavailable, "refused because "+administers), "one line per reason")
 	})
 
+	t.Run("the workload identity create names the tool and its fields", func(t *testing.T) {
+		text := searchText(t, s, SearchInput{OperationID: "WorkloadIdentityService/CreateWorkloadIdentity"})
+		for _, want := range []string{
+			"through the administer_workspace tool", "workloadIdentityId", "providerType GITHUB or GITLAB",
+			`\"repo:{owner}/{repo}:*\"`, `\"project_path:{group}/{project}:*\"`, "without it or the repository's ID", "no approval rule holds them",
+			"The pattern admits every job in the repository, which the GitOps workflows need", "say so when the user asked for one branch",
+			"call_api is refused for every workload identity write.", "Request Body",
+		} {
+			require.Contains(t, text, strings.ReplaceAll(want, `\"`, `"`))
+		}
+	})
+
+	t.Run("the project policy write names the one change MCP makes", func(t *testing.T) {
+		text := searchText(t, s, SearchInput{OperationID: "ProjectService/SetIamPolicy"})
+		require.Contains(t, text, "only when administer_workspace grants a workload identity it creates")
+		require.Contains(t, text, "change other members, roles and conditions signed in to the Bytebase console")
+	})
+
 	t.Run("detail mode gives the refusal, not the schema", func(t *testing.T) {
-		text := searchText(t, s, SearchInput{OperationID: "InstanceService/CreateInstance"})
-		require.Contains(t, text, "## InstanceService/CreateInstance")
+		text := searchText(t, s, SearchInput{OperationID: "InstanceService/DeleteInstance"})
+		require.Contains(t, text, "## InstanceService/DeleteInstance")
 		require.Contains(t, text, "Not available over MCP")
 		require.Contains(t, text, administers)
 		require.Contains(t, text, "Bytebase console")
@@ -377,6 +395,18 @@ func TestSearchAPINamesWhatMCPCannotDo(t *testing.T) {
 		detail := searchText(t, s, SearchInput{OperationID: "OrgPolicyService/UpdatePolicy"})
 		require.Contains(t, detail, "the workspace masking rules through the administer_workspace tool")
 		require.Contains(t, detail, "grant_masking_exemption and revoke_masking_exemption")
+		require.Contains(t, detail, "Request Body")
+	})
+
+	t.Run("the instance create names the tool that adds instances", func(t *testing.T) {
+		text := searchText(t, s, SearchInput{Service: "InstanceService"})
+		served, unavailable, ok := strings.Cut(text, "## Not available over MCP")
+		require.True(t, ok)
+		require.Contains(t, served, "InstanceService/CreateInstance")
+		require.NotContains(t, unavailable, "InstanceService/CreateInstance")
+
+		detail := searchText(t, s, SearchInput{OperationID: "InstanceService/CreateInstance"})
+		require.Contains(t, detail, "add a PostgreSQL instance that signs in with a user name and password to a project, through the administer_workspace tool")
 		require.Contains(t, detail, "Request Body")
 	})
 }

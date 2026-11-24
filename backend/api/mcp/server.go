@@ -24,7 +24,9 @@ import (
 	"github.com/bytebase/bytebase/backend/component/audit"
 	"github.com/bytebase/bytebase/backend/component/config"
 	"github.com/bytebase/bytebase/backend/component/review"
+	"github.com/bytebase/bytebase/backend/enterprise"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
+	v1pb "github.com/bytebase/bytebase/backend/generated-go/v1"
 	"github.com/bytebase/bytebase/backend/store"
 	"github.com/bytebase/bytebase/backend/utils"
 )
@@ -49,9 +51,23 @@ type Server struct {
 	// so NewServer binds it and tests replace it.
 	findUnapprovableStep func(ctx context.Context, workspace, issueName string) (*review.UnapprovableStep, error)
 
+	// maskingSkipsUnactivated reports whether the plan has masking but
+	// LicenseService.IsFeatureEnabledForInstance would refuse it to an instance
+	// that is not activated. It needs the license service, which
+	// newServerWithStore does not take, so NewServer binds it and tests replace it.
+	maskingSkipsUnactivated func(ctx context.Context, workspace string) bool
+
 	// planCheckPollBudgetOverride lets tests shorten the plan-check poll budget.
 	// Zero means use the default (planCheckPollBudget).
 	planCheckPollBudgetOverride time.Duration
+
+	// internalAPITimeoutOverride lets tests shorten the bound on one internal
+	// API call. Zero means use the default (internalAPITimeout).
+	internalAPITimeoutOverride time.Duration
+
+	// sessionIdleTimeout is the SessionTimeout the /mcp handler was built with,
+	// kept so a test can check the production value.
+	sessionIdleTimeout time.Duration
 }
 
 type serverStore interface {
@@ -74,7 +90,7 @@ type serverStore interface {
 // holding a nil pointer, which no later nil test catches, so without this the
 // failure moves from a returned error here to a nil-receiver panic on the first
 // ceiling read inside authMiddleware.
-func NewServer(stores *store.Store, profile *config.Profile, secret string, internalAPI http.Handler) (*Server, error) {
+func NewServer(stores *store.Store, profile *config.Profile, secret string, internalAPI http.Handler, licenses *enterprise.LicenseService) (*Server, error) {
 	if stores == nil {
 		return nil, errors.New("store is required")
 	}
@@ -85,10 +101,30 @@ func NewServer(stores *store.Store, profile *config.Profile, secret string, inte
 	s.findUnapprovableStep = func(ctx context.Context, workspace, issueName string) (*review.UnapprovableStep, error) {
 		return review.FindUnapprovableStep(ctx, stores, workspace, issueName)
 	}
+	s.maskingSkipsUnactivated = maskingSkipsUnactivatedUnder(licenses)
 	return s, nil
 }
 
+// instanceLicense is what the instance entry reads of a workspace's license.
+type instanceLicense interface {
+	IsFeatureEnabled(ctx context.Context, workspaceID string, f v1pb.PlanFeature) error
+	IsUnifiedInstanceLicense(ctx context.Context, workspaceID string) bool
+}
+
+func maskingSkipsUnactivatedUnder(licenses instanceLicense) func(ctx context.Context, workspace string) bool {
+	return func(ctx context.Context, workspace string) bool {
+		return licenses.IsFeatureEnabled(ctx, workspace, v1pb.PlanFeature_FEATURE_DATA_MASKING) == nil &&
+			!licenses.IsUnifiedInstanceLicense(ctx, workspace)
+	}
+}
+
 func newServerWithStore(stores serverStore, profile *config.Profile, secret string, internalAPI http.Handler) (*Server, error) {
+	return newServerWithIdleTimeout(stores, profile, secret, internalAPI, mcpSessionIdleTimeout)
+}
+
+// newServerWithIdleTimeout builds the server with a given session idle timeout,
+// so tests can shorten it without leaving the production construction.
+func newServerWithIdleTimeout(stores serverStore, profile *config.Profile, secret string, internalAPI http.Handler, idleTimeout time.Duration) (*Server, error) {
 	mcpServer := mcp.NewServer(&mcp.Implementation{
 		Name:    "bytebase",
 		Version: profile.Version,
@@ -107,6 +143,10 @@ func newServerWithStore(stores serverStore, profile *config.Profile, secret stri
 		secret:         secret,
 		openAPIIndex:   openAPIIndex,
 		internalClient: newInternalAPIClient(internalAPI),
+		// Until NewServer binds the license, the form warns whenever an
+		// instance is not activated.
+		maskingSkipsUnactivated: func(context.Context, string) bool { return true },
+		sessionIdleTimeout:      idleTimeout,
 	}
 	s.registerTools()
 
@@ -138,11 +178,22 @@ func newServerWithStore(stores serverStore, profile *config.Profile, secret stri
 	// DEFER: no tool-level statement cap, so an oversized body is refused by the
 	// transport with no code, size or remedy; upgrade when a caller reports it,
 	// or when a multi-file CreateRelease needs more than the cap.
+	//
+	// SessionTimeout closes a session once it has gone that long with no POST
+	// in flight. A GET, new or held open, does not reset the clock. The MCP spec
+	// only says clients SHOULD send DELETE, so a client may leave without one.
+	// Each session it leaves holds a goroutine and its state, and with a zero
+	// timeout the SDK keeps them until the process exits (BYT-10375). The
+	// abandoned sessions held at once are about the abandonment rate times this
+	// timeout. A client that returns after expiry gets 404 and must initialize
+	// again, as the spec requires. A call waiting on a form the client abandoned
+	// keeps its session open (BYT-10567).
 	streamable := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
 		return s.mcpServer
 	}, &mcp.StreamableHTTPOptions{
 		DisableLocalhostProtection: true,
 		MaxRequestBodyBytes:        maxMCPRequestBodyBytes,
+		SessionTimeout:             idleTimeout,
 	})
 
 	// Refresh per-request metadata that would otherwise be frozen at session
@@ -183,6 +234,9 @@ const (
 
 	// maxMCPRequestBodyBytes is documented at the handler that applies it.
 	maxMCPRequestBodyBytes = 4 << 20
+
+	// mcpSessionIdleTimeout is documented at the handler that applies it.
+	mcpSessionIdleTimeout = time.Hour
 )
 
 // negotiateLegacyProtocol keeps a session's recorded revision equal to the one
@@ -247,9 +301,9 @@ func askInChatWithoutForm(next mcp.MethodHandler) mcp.MethodHandler {
 // by opening a session: discover fills in InitializeParams, the field the
 // cleanup checks before closing a session nobody adopted, while a session ID is
 // returned only on an initialize response. The client never learns that ID and
-// never deletes it, and no SessionTimeout is set, so each connect would strand
-// one session for the process's life. Clients fall back to the initialize
-// handshake on any discover error, which is the path they take here anyway.
+// never deletes it, so each connect would strand one session until the idle
+// timeout closes it. Clients fall back to the initialize handshake on any
+// discover error, which is the path they take here anyway.
 //
 // DEFER: refuses the revision whole; upgrade when the transport can serve it.
 func refuseSessionlessProtocol(next http.Handler) http.Handler {
@@ -281,6 +335,7 @@ func (s *Server) registerTools() {
 	s.registerCallTool()
 	s.registerQueryTool()
 	s.registerSchemaTool()
+	s.registerGitOpsWorkflowTool()
 	s.registerChangeTool()
 	s.registerDecideIssueTool()
 	s.registerSetJustInTimeAccessTool()

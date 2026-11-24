@@ -43,7 +43,6 @@ func TestConvertToIssueCommentReviewResult(t *testing.T) {
 		Payload: &storepb.IssueCommentPayload{
 			Comment: "UPDATE without WHERE",
 			ReviewMetadata: &storepb.IssueCommentPayload_ReviewMetadata{
-				RunType:    storepb.ReviewRun_RULE,
 				RuleType:   storepb.ReviewRuleType_REQUIRE_WHERE,
 				Priority:   storepb.IssueCommentPayload_ReviewMetadata_P1,
 				Targets:    []string{"instances/i/databases/a", "instances/i/databases/b"},
@@ -54,7 +53,6 @@ func TestConvertToIssueCommentReviewResult(t *testing.T) {
 	})
 	require.Empty(t, got.Creator, "a review result has no creator")
 	require.Equal(t, &v1pb.IssueComment_ReviewMetadata{
-		RunType:    v1pb.ReviewRun_RULE,
 		RuleType:   v1pb.ReviewRuleType_REQUIRE_WHERE,
 		Priority:   v1pb.IssueComment_ReviewMetadata_P1,
 		Targets:    []string{"instances/i/databases/a", "instances/i/databases/b"},

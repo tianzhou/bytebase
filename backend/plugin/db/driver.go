@@ -3,7 +3,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,60 +26,12 @@ type InstanceMetadata struct {
 	Metadata  *storepb.Instance
 }
 
-// TableKey is the map key for table metadata.
-type TableKey struct {
-	Schema string
-	Table  string
-}
-
-type TableKeyWithColumns struct {
-	Schema  string
-	Table   string
-	Columns []*metadatapb.ColumnMetadata
-}
-
-// ColumnKey is the map key for table metadata.
-type ColumnKey struct {
-	Schema string
-	Table  string
-	Column string
-}
-
-// IndexKey is the map key for table metadata.
-type IndexKey struct {
-	Schema string
-	Table  string
-	Index  string
-}
-
-type ConstraintKey struct {
-	Schema     string
-	Constraint string
-}
-
-type SequenceKey struct {
-	Schema   string
-	Sequence string
-}
-
 var (
 	driversMu sync.RWMutex
 	drivers   = make(map[storepb.Engine]driverFunc)
 )
 
 type driverFunc func() Driver
-
-// MigrationStatus is the status of migration.
-type MigrationStatus string
-
-const (
-	// Pending is the migration status for PENDING.
-	Pending MigrationStatus = "PENDING"
-	// Done is the migration status for DONE.
-	Done MigrationStatus = "DONE"
-	// Failed is the migration status for FAILED.
-	Failed MigrationStatus = "FAILED"
-)
 
 // ConnectionConfig is the configuration for connections.
 type ConnectionConfig struct {
@@ -95,6 +46,7 @@ type ConnectionContext struct {
 	EnvironmentID string
 	InstanceID    string
 	EngineVersion string
+	Vendor        storepb.Vendor
 	// TenantMode indicates whether to use database owner role for PostgreSQL tenant mode.
 	TenantMode   bool
 	DatabaseName string
@@ -105,15 +57,8 @@ type ConnectionContext struct {
 	// they open: postgres, cockroachdb, and redshift outside a datashare
 	// database. Every other driver ignores it.
 	ReadOnly bool
-	// MessageBuffer is used for logging messages from the database server.
-	MessageBuffer []*v1pb.QueryResult_Message
 	// TaskRunUID is set when executing a task run, used to set application_name for connection identification.
 	TaskRunUID *int64
-}
-
-// AppendMessage appends a message to the message buffer.
-func (c *ConnectionContext) AppendMessage(message *v1pb.QueryResult_Message) {
-	c.MessageBuffer = append(c.MessageBuffer, message)
 }
 
 // QueryContext is the context to query.
@@ -152,11 +97,10 @@ type Driver interface {
 	// Remember to call Close to avoid connection leak
 	Close(ctx context.Context) error
 	Ping(ctx context.Context) error
-	GetDB() *sql.DB
 	// Execute will execute the statement.
 	Execute(ctx context.Context, statement string, opts ExecuteOptions) (int64, error)
 	// Used for execute readonly SELECT statement
-	QueryConn(ctx context.Context, conn *sql.Conn, statement string, queryContext QueryContext) ([]*v1pb.QueryResult, error)
+	QueryConn(ctx context.Context, statement string, queryContext QueryContext) ([]*v1pb.QueryResult, error)
 
 	// Sync schema
 	// SyncInstance syncs the instance metadata.
@@ -166,6 +110,15 @@ type Driver interface {
 
 	// Dump dumps the schema of database.
 	Dump(ctx context.Context, out io.Writer, dbMetadata *metadatapb.DatabaseSchemaMetadata) error
+}
+
+// TaskRunSessionReader is the capability a driver offers when its engine can
+// describe one of its own sessions by application_name, with the sessions it
+// blocks and the sessions blocking it (pg: pg_stat_activity and
+// pg_blocking_pids; cockroachdb: crdb_internal.cluster_queries and
+// crdb_internal.cluster_sessions).
+type TaskRunSessionReader interface {
+	TaskRunSession(ctx context.Context, applicationName string) (*v1pb.TaskRunSession, error)
 }
 
 // Register makes a database driver available by the provided type.
@@ -192,12 +145,7 @@ func Open(ctx context.Context, dbType storepb.Engine, connectionConfig Connectio
 		return nil, errors.Errorf("db: unknown driver %v", dbType)
 	}
 
-	driver, err := f().Open(ctx, dbType, connectionConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	return driver, nil
+	return f().Open(ctx, dbType, connectionConfig)
 }
 
 // ExecuteOptions is the options for execute.
@@ -212,115 +160,59 @@ type ExecuteOptions struct {
 	MaximumRetries int
 }
 
-func (o *ExecuteOptions) LogComputeDiffStart() {
+func (o *ExecuteOptions) log(action string, entry *storepb.TaskRunLog) {
 	if o == nil || o.CreateTaskRunLog == nil {
 		return
 	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	if err := o.CreateTaskRunLog(time.Now(), entry); err != nil {
+		slog.Warn("failed to log "+action, log.BBError(err))
+	}
+}
+
+func (o *ExecuteOptions) LogComputeDiffStart() {
+	o.log("compute diff start", &storepb.TaskRunLog{
 		Type:             storepb.TaskRunLog_COMPUTE_DIFF_START,
 		ComputeDiffStart: &storepb.TaskRunLog_ComputeDiffStart{},
 	})
-	if err != nil {
-		slog.Warn("failed to log compute diff start", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogComputeDiffEnd(e string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
-		Type: storepb.TaskRunLog_COMPUTE_DIFF_END,
-		ComputeDiffEnd: &storepb.TaskRunLog_ComputeDiffEnd{
-			Error: e,
-		},
+	o.log("compute diff end", &storepb.TaskRunLog{
+		Type:           storepb.TaskRunLog_COMPUTE_DIFF_END,
+		ComputeDiffEnd: &storepb.TaskRunLog_ComputeDiffEnd{Error: e},
 	})
-	if err != nil {
-		slog.Warn("failed to log compute diff end", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogDatabaseSyncStart() {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("database sync start", &storepb.TaskRunLog{
 		Type:              storepb.TaskRunLog_DATABASE_SYNC_START,
 		DatabaseSyncStart: &storepb.TaskRunLog_DatabaseSyncStart{},
 	})
-	if err != nil {
-		slog.Warn("failed to log database sync start", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogDatabaseSyncEnd(e string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
-		Type: storepb.TaskRunLog_DATABASE_SYNC_END,
-		DatabaseSyncEnd: &storepb.TaskRunLog_DatabaseSyncEnd{
-			Error: e,
-		},
+	o.log("database sync end", &storepb.TaskRunLog{
+		Type:            storepb.TaskRunLog_DATABASE_SYNC_END,
+		DatabaseSyncEnd: &storepb.TaskRunLog_DatabaseSyncEnd{Error: e},
 	})
-	if err != nil {
-		slog.Warn("failed to log database sync start", log.BBError(err))
-	}
-}
-
-func (o *ExecuteOptions) LogSchemaDumpStart() {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
-		Type:            storepb.TaskRunLog_SCHEMA_DUMP_START,
-		SchemaDumpStart: &storepb.TaskRunLog_SchemaDumpStart{},
-	})
-	if err != nil {
-		slog.Warn("failed to log schema dump start", log.BBError(err))
-	}
-}
-
-func (o *ExecuteOptions) LogSchemaDumpEnd(derr string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
-		Type: storepb.TaskRunLog_SCHEMA_DUMP_END,
-		SchemaDumpEnd: &storepb.TaskRunLog_SchemaDumpEnd{
-			Error: derr,
-		},
-	})
-	if err != nil {
-		slog.Warn("failed to log schema dump end", log.BBError(err))
-	}
 }
 
 // LogCommandExecute logs the execution of a command.
 func (o *ExecuteOptions) LogCommandExecute(commandRange *storepb.Range, commandText string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
 	ce := &storepb.TaskRunLog_CommandExecute{}
-	if o.LogCommandStatement {
+	if o != nil && o.LogCommandStatement {
 		ce.Statement = commandText
 	} else {
 		ce.Range = commandRange
 	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("command execute", &storepb.TaskRunLog{
 		Type:           storepb.TaskRunLog_COMMAND_EXECUTE,
 		CommandExecute: ce,
 	})
-	if err != nil {
-		slog.Warn("failed to log command execute", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogCommandResponse(affectedRows int64, allAffectedRows []int64, rerr string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("command response", &storepb.TaskRunLog{
 		Type: storepb.TaskRunLog_COMMAND_RESPONSE,
 		CommandResponse: &storepb.TaskRunLog_CommandResponse{
 			AffectedRows:    affectedRows,
@@ -328,44 +220,27 @@ func (o *ExecuteOptions) LogCommandResponse(affectedRows int64, allAffectedRows 
 			Error:           rerr,
 		},
 	})
-	if err != nil {
-		slog.Warn("failed to log command response", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogGhostMigrationStart() {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("gh-ost migration start", &storepb.TaskRunLog{
 		Type:                storepb.TaskRunLog_GHOST_MIGRATION_START,
 		GhostMigrationStart: &storepb.TaskRunLog_GhostMigrationStart{},
 	})
-	if err != nil {
-		slog.Warn("failed to log gh-ost migration start", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogGhostMigrationEnd(rerr string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
-		Type: storepb.TaskRunLog_GHOST_MIGRATION_END,
-		GhostMigrationEnd: &storepb.TaskRunLog_GhostMigrationEnd{
-			Error: rerr,
-		},
+	o.log("gh-ost migration end", &storepb.TaskRunLog{
+		Type:              storepb.TaskRunLog_GHOST_MIGRATION_END,
+		GhostMigrationEnd: &storepb.TaskRunLog_GhostMigrationEnd{Error: rerr},
 	})
-	if err != nil {
-		slog.Warn("failed to log gh-ost migration end", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogRetryInfo(err error, retryCount int) {
 	if o == nil || o.CreateTaskRunLog == nil {
 		return
 	}
-	err = o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("retry info", &storepb.TaskRunLog{
 		Type: storepb.TaskRunLog_RETRY_INFO,
 		RetryInfo: &storepb.TaskRunLog_RetryInfo{
 			Error:          err.Error(),
@@ -373,23 +248,14 @@ func (o *ExecuteOptions) LogRetryInfo(err error, retryCount int) {
 			MaximumRetries: int32(o.MaximumRetries),
 		},
 	})
-	if err != nil {
-		slog.Warn("failed to log retry info", log.BBError(err))
-	}
 }
 
 func (o *ExecuteOptions) LogTransactionControl(t storepb.TaskRunLog_TransactionControl_Type, rerr string) {
-	if o == nil || o.CreateTaskRunLog == nil {
-		return
-	}
-	err := o.CreateTaskRunLog(time.Now(), &storepb.TaskRunLog{
+	o.log("command transaction control", &storepb.TaskRunLog{
 		Type: storepb.TaskRunLog_TRANSACTION_CONTROL,
 		TransactionControl: &storepb.TaskRunLog_TransactionControl{
 			Type:  t,
 			Error: rerr,
 		},
 	})
-	if err != nil {
-		slog.Warn("failed to log command transaction control", log.BBError(err))
-	}
 }

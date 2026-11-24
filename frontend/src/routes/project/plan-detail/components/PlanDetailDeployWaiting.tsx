@@ -28,8 +28,9 @@ import { focusPlanPhase } from "../shell/focusPhase";
 import { usePlanDetailContext } from "../shell/PlanDetailContext";
 import { supportsAutomaticRollout } from "../utils/phaseSummary";
 import type { AutomatedReviewRow, PlanGate } from "../utils/planGates";
-import { reviewerLabel, reviewGateLabel } from "../utils/reviewLabels";
+import { reviewerLabel } from "../utils/reviewLabels";
 import { BypassAndDeploySheet, useBypassDeploy } from "./review/bypassDeploy";
+import { ReviewGateLabel } from "./review/ReviewGateLabel";
 
 const NO_COMMENTS: IssueComment[] = [];
 
@@ -112,7 +113,7 @@ function GateLine({ gate }: { gate: PlanGate }) {
   );
 
   let icon: ReactNode;
-  let label: string;
+  let label: ReactNode;
   let onShow: (() => void) | undefined;
   switch (gate.kind) {
     case "submit":
@@ -144,13 +145,18 @@ function GateLine({ gate }: { gate: PlanGate }) {
         ) : (
           <CircleDashed className="size-4 text-control-light" />
         );
-      label = reviewGateLabel(t, row);
+      label = <ReviewGateLabel row={row} />;
       onShow = () => {
         focusPlanPhase("review", page.expandPhase);
         storeApi.getState().requestReviewRow(row.reviewer);
       };
       break;
     }
+    case "statement-error":
+      icon = <CircleAlert className="size-4 text-error" />;
+      label = t("plan.deploy-waiting.statement-error");
+      onShow = () => focusPlanPhase("changes", page.expandPhase);
+      break;
     case "discussion":
       icon = <MessagesSquare className="size-4 text-warning" />;
       label = t("plan.deploy-waiting.open-discussions", { count: gate.open });

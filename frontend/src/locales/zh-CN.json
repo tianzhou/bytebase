@@ -1,4 +1,20 @@
 {
+  "account-list": {
+    "deactivate-description": "{{email}} 将无法再登录。你可以稍后恢复。",
+    "deactivate-title": "停用 {{name}}？",
+    "more-actions": "{{name}} 的更多操作",
+    "no-role": "无角色",
+    "no-service-accounts": "暂无服务账号",
+    "no-workload-identities": "暂无工作负载身份",
+    "nothing-matches": "没有匹配项",
+    "search-placeholder": "按名称或邮箱搜索",
+    "service-accounts-description": "服务账号使用密钥登录。适用于脚本、Terraform 和 API 调用。在 GitHub 或 GitLab 的 CI 中，工作负载身份无需存储密钥。",
+    "trust-any-environment": "仅限在环境中运行的作业",
+    "trust-environment": "仅限 <code>environment: {{environment}}</code> 的作业",
+    "trust-environment-plain": "仅限 environment: {{environment}} 的作业",
+    "trusts": "信任",
+    "workload-identities-description": "工作负载身份让 CI 作业使用自己的短期令牌登录，无需存储任何密钥。每个身份指明它信任的作业以及这些作业获得的角色。"
+  },
   "activity": {
     "n-similar-activities": "{{count}} 条相似活动",
     "sentence": {
@@ -23,9 +39,22 @@
   },
   "agent": {
     "access-grant-draft": {
+      "default-reason": "申请临时查询 {{database}} 的权限。",
+      "default-unmask-reason": "申请临时查询 {{database}} 的权限，并查看未脱敏的查询结果。",
       "open": "Open access request draft",
       "storage-failed": "Couldn't prepare the access request. Try again.",
       "unavailable": "Couldn't open the access request. The database or access settings may have changed."
+    },
+    "action-receipt": {
+      "changed": "保存后已更改",
+      "matching": "已找到匹配的配置",
+      "not-found": "未找到已保存的配置",
+      "open-exemption": "打开脱敏豁免",
+      "open-rule": "打开脱敏规则",
+      "open-unavailable": "无法打开已保存的配置，请检查当前页面和权限。",
+      "saved": "已保存",
+      "status-unavailable": "无法检查当前配置。保存结果不受影响，请检查权限后重试。",
+      "unavailable": "状态不可用"
     },
     "ai-not-configured": {
       "configure": "配置",
@@ -41,14 +70,32 @@
     "api-permission-expires-in": "{{time}} 后过期",
     "api-permission-request": "允许 AI 助手执行此 API 请求吗？",
     "api-permission-title": "请求执行许可",
+    "api-recovery": {
+      "acknowledged": "RPC 已确认",
+      "delete-warning": "删除此历史记录会移除本地恢复证据，但不会取消或撤销服务器上的操作。",
+      "failed-possible": "RPC 失败，但更改可能已生效",
+      "in-flight": "请求进行中",
+      "no-replay": "不会自动重新发送此请求。",
+      "none-created": "未创建任何实例",
+      "not-sent": "未发送",
+      "partial": "已确认部分生效",
+      "possible": "RPC 已确认，但影响尚不确定",
+      "rejected": "请求在生效前已被拒绝",
+      "repeat-risk": "之前的相同请求可能已生效。允许本次请求可能重复更改或覆盖后续编辑。",
+      "title": "请求恢复",
+      "unknown": "结果未知",
+      "verifying": "请求状态尚未核实"
+    },
     "archive-all-chats": "归档所有对话",
+    "archive-all-chats-confirmation": "归档所有对话（{{count}} 个）？",
     "archive-chat": "归档对话",
+    "archive-chat-confirmation": "归档此对话？",
     "archived-only-chats": "查看已归档对话",
     "args": "参数",
     "assistant-title": "AI 助手",
     "cancel": "取消",
     "cancel-request": "取消请求",
-    "chat-archived-label": "已归档",
+    "chat-archived-notice": "此对话已归档。",
     "chat-default-title": "新对话",
     "chat-list-label": "对话列表",
     "chat-total-tokens": "聊天 token 数：{{count}}",
@@ -60,7 +107,7 @@
     "context-workspace": "工作区",
     "contextual-start": {
       "active-request": "请先完成当前请求，再开始新的聊天。",
-      "continue-chat": "继续当前聊天",
+      "continue-chat": "继续上次聊天",
       "database-heading": "询问此数据库",
       "database-recent": "此数据库最近有什么变更？",
       "database-schema": "此数据库有哪些表？",
@@ -92,6 +139,9 @@
       "masking-global-effect": "Inner Mask 规则覆盖的值会向开发者显示成什么样？",
       "masking-global-exemptions": "例外可能让用户看到原始值吗？",
       "masking-global-heading": "询问数据脱敏",
+      "masking-rule-configure": "帮我配置此规则。",
+      "masking-rule-effect": "解释此规则的数据脱敏效果。",
+      "masking-rule-review": "审查此规则。",
       "masking-semantic-algorithm": "此脱敏算法会保留哪些部分？",
       "masking-semantic-heading": "询问语义类型",
       "masking-semantic-rules": "哪些脱敏规则使用此语义类型？",
@@ -105,11 +155,17 @@
       "project-heading": "询问此项目",
       "resource-unavailable": "此资源不可引用。"
     },
+    "custom-input-label": "详情",
+    "custom-input-placeholder": "输入内容",
     "database-reference-unavailable": "此数据库已不可用，或你没有访问权限。",
     "delete-all-chats": "删除所有对话",
-    "delete-all-chats-confirmation": "确定要删除所有已归档对话吗？此操作无法撤销。",
+    "delete-all-chats-confirmation": "删除所有已归档对话（{{count}} 个）？此操作无法撤销。",
     "delete-chat": "删除对话",
     "delete-chat-confirmation": "确定要删除此对话吗？此操作无法撤销。",
+    "diagnostic-help": {
+      "ask-agent": "询问 Agent",
+      "scope-mismatch": "此诊断对话已绑定原始资源。请为其他资源发起新的帮助请求。"
+    },
     "empty-chat": {
       "project-heading": "我能为这个项目做些什么？",
       "suggestions": "推荐问题",
@@ -122,7 +178,19 @@
       "references": "依据"
     },
     "follow-up": {
-      "ask-next": "接着问"
+      "ask-next": "接着问",
+      "query-mask": "如何对这些列进行脱敏?",
+      "query-mask-database": "如何对 {{database}} 中的列进行脱敏?",
+      "query-unmask": "如何申请访问未脱敏的数据?",
+      "query-unmask-database": "如何申请访问 {{database}} 中未脱敏的数据?"
+    },
+    "follow-up-queue": {
+      "enqueue": "加入队列",
+      "input-placeholder": "输入后续消息",
+      "paused": "已暂停",
+      "queued-count": "{{count}} 条消息排队中",
+      "remove": "移除队列中的第 {{position}} 条消息",
+      "resume": "继续处理队列"
     },
     "handoff": {
       "open-data-classification": "打开数据分类设置",
@@ -140,13 +208,11 @@
       "view-failed-tasks": "查看失败的任务"
     },
     "input-keyboard-hint": "按 Enter 发送 · 按 Shift+Enter 换行",
+    "input-keyboard-hint-newline": "按 Enter 换行 · 按 Cmd/Ctrl+Enter 发送",
     "input-placeholder": "向 AI 提问，或输入 @ 选择资源",
     "input-processing-placeholder": "正在处理...",
     "interrupted": "已中断",
     "interrupted-retry-hint": "对话已中断。您可以重试或发送新消息。",
-    "issue-assistance": {
-      "review": "与 Agent 一起审核"
-    },
     "issue-comment-draft": {
       "existing": "This issue already has an unsent comment. Review it before opening another draft.",
       "open": "Draft review comment",
@@ -175,25 +241,96 @@
       "workspace-setup-first": "我应该先设置什么？"
     },
     "masking": {
-      "ask-agent": "向 Agent 询问数据脱敏"
+      "ask-agent-short": "询问 Agent",
+      "exemption-scope": {
+        "another-database": "其他数据库",
+        "database-placeholder": "输入数据库名称",
+        "only-database": "仅 {{database}}",
+        "project": "此项目中的所有数据库",
+        "question": "此脱敏豁免应适用于哪些数据库？"
+      },
+      "rule-scope": {
+        "choose-project": "选择项目",
+        "question": "此脱敏规则应覆盖哪些数据库？",
+        "workspace": "工作空间内的所有数据库"
+      },
+      "semantic-type-choice": {
+        "create": "创建自定义脱敏类型…",
+        "create-description": "按所需脱敏配置准备新的语义类型。",
+        "create-placeholder": "描述希望如何对数据进行脱敏",
+        "question": "应使用哪种语义类型对这些列进行脱敏？"
+      },
+      "unmask-method": {
+        "exemption": "脱敏豁免",
+        "exemption-description": "适合你本人或指定成员通过不同查询访问所选数据。可设置到期时间或选择永不过期。仍需已有查询权限。",
+        "exemption-feature-unavailable": "当前订阅不支持数据脱敏。",
+        "exemption-permission-denied": "你尚未具备准备脱敏豁免所需的全部权限。",
+        "exemption-query-access-required": "脱敏豁免无法授予你缺少的查询权限。",
+        "exemption-unverified": "无法确认脱敏豁免是否可用。",
+        "jit": "访问授权",
+        "jit-description": "适合短期任务或调查。按照项目的审批策略，为你本人申请一条确定的只读查询的访问权限，直至到期。解除脱敏会应用于该查询的全部结果。",
+        "jit-disabled": "此项目未启用访问授权。",
+        "jit-feature-unavailable": "当前订阅不支持访问授权。",
+        "jit-permission-denied": "你没有在此项目中申请访问授权的权限。",
+        "jit-self-only": "访问授权仅支持为你本人申请。",
+        "jit-unverified": "无法确认访问授权是否可用。",
+        "question": "你希望通过哪种方式访问未脱敏数据？"
+      }
+    },
+    "masking-exemption-draft": {
+      "applied": "已填入草稿",
+      "apply": "应用到草稿",
+      "inactive": "此草稿已不可用。请先检查当前脱敏豁免，再准备新的草稿。",
+      "open": "打开豁免草稿",
+      "opened": "已打开豁免草稿",
+      "unavailable": "无法应用此草稿。编辑器、权限或配置可能已更改。请检查当前表单，并让 Agent 重新准备草稿。",
+      "unsaved": "仅填写未保存的表单。请检查后再选择授予豁免。"
+    },
+    "masking-rule-draft": {
+      "all-databases": "工作空间内所有数据库",
+      "applied": "已填入草稿",
+      "apply": "应用到草稿",
+      "help-prompt": "先使用 get_masking_rule_draft 读取当前未保存的规则。以实际字段为准，不要使用先前的提案。只询问缺失的信息。不要保存设置。",
+      "inactive": "此草稿已不可用。请先检查当前脱敏规则，再准备新的草稿。",
+      "open": "打开规则草稿",
+      "opened": "已打开规则草稿",
+      "queue": {
+        "created": "已创建",
+        "editing": "编辑中",
+        "needs-recheck": "脱敏规则或语义类型已更改。请重新检查草稿后再继续。",
+        "pending": "待处理",
+        "recheck": "重新检查草稿",
+        "review": "审核",
+        "title": "规则草稿"
+      },
+      "review-many": "审核 {{count}} 条规则草稿",
+      "scope": "数据库范围",
+      "semantic-type": "语义类型",
+      "unavailable": "无法应用此草稿。编辑器、权限或配置可能已更改。请检查当前表单，并让 Agent 重新准备草稿。",
+      "unsaved": "仅填写未保存的表单。请检查后再选择创建规则。"
     },
     "minimize": "最小化",
     "new-chat": "新对话",
     "other-chats": "其他对话",
-    "pending-choose-hint": "请在上方选择一个选项",
+    "pending-choose-hint": "选择一个选项，然后点击“回复”。",
     "pending-confirm-hint": "请在上方确认或取消",
     "pending-input-hint": "请在上方提供输入",
     "permission": {
+      "after": "变更后",
+      "before": "变更前",
+      "database-environment": "更新数据库环境",
+      "database-labels": "更新数据库标签",
+      "exact-request": "确切的 API 请求",
       "issue-approval": "此次审批将工单推进到下一审核步骤，尚不会创建部署。",
       "issue-approval-access-grant": "这是最后一步审批。批准后可能立即激活所请求的访问权限，无需部署。",
       "issue-approval-final": "这将完成审批决定，但仅凭此次审批并不能保证创建部署或执行任务。",
       "issue-approval-role-grant": "这是最后一步审批。批准后可能立即授予所请求的项目角色，无需部署。",
       "issue-approval-rollout": "这是最后一步审批。通过所需检查和审核后，此次审批可能创建部署，但不保证任务会执行。",
-      "issue-rejection": "拒绝此工单会停止当前审批流程。处理拒绝原因后才能继续审批。"
+      "issue-rejection": "拒绝此工单会停止当前审批流程。处理拒绝原因后才能继续审批。",
+      "not-set": "未设置"
     },
     "plan-assistance": {
-      "ask-draft-sql": "让 Agent 起草 SQL",
-      "review": "与 Agent 一起审核"
+      "ask-draft-sql": "让 Agent 起草 SQL"
     },
     "plan-draft": {
       "append-sql": "追加 SQL",
@@ -204,9 +341,27 @@
       "existing-sql-title": "此 Plan 已包含 SQL",
       "open": "打开计划草稿",
       "replace-sql": "替换 SQL",
+      "statement-source-changed": "此语句已更改。请取消此草稿并重新打开语句，以编辑最新版本。",
       "unavailable": "无法打开计划草稿。数据库或 SQL 可能已更改。请让 Agent 重新生成。"
     },
     "plan-reference-unavailable": "此计划已不可用，或你没有访问权限。",
+    "preferences": {
+      "back": "返回对话",
+      "continue-last-chat": "继续上次对话",
+      "enter-help": "按 Shift+Enter 换行。",
+      "invalid-token-limit": "请输入最多保留 3 位小数的正数。",
+      "newline-help": "按 Enter 换行，按 Cmd/Ctrl+Enter 发送。",
+      "reset": "恢复默认设置",
+      "reset-confirmation": "将偏好设置恢复为默认值？",
+      "scope": "设置仅保存在此浏览器中，适用于当前账号和工作空间。",
+      "send-with-enter": "按 Enter 发送",
+      "show-landing": "显示起始页",
+      "storage-failed": "无法保存到本地。更改仅在刷新此页面前生效。",
+      "thousand-tokens": "千 Token",
+      "title": "Agent 偏好设置",
+      "token-limit": "每次运行的 Token 上限",
+      "when-opening": "打开 Agent 时"
+    },
     "project-attention": {
       "checking": "正在检查需要你关注的事项...",
       "empty": "此项目中没有需要你关注的开放 issue。",
@@ -218,8 +373,13 @@
       "unavailable": "无法加载此项目中需要你关注的事项。"
     },
     "project-reference-unavailable": "此项目已不可用，或你没有访问权限。",
+    "provider-attempt-limit": "此轮运行已达到 AI 服务请求次数上限，因此我已停止发送新的 AI 请求。之前的操作可能已经完成；请先检查其状态，再让我重试。",
     "query-result": {
+      "omitted-rows": "行预览已过期。共收到 {{received}} 行。",
+      "preview-expired": "行预览已过期；查询详情和执行结果仍保留。",
+      "preview-partial": "仅保留了部分行预览。",
       "returned-rows": "返回行数：{{count}}",
+      "sampled-rows": "预览保留了收到的 {{received}} 行中的 {{retained}} 行。",
       "showing-columns": "显示 {{total}} 列中的 {{shown}} 列",
       "showing-results": "显示 {{total}} 个结果集中的 {{shown}} 个",
       "showing-rows": "显示返回的 {{total}} 行中的 {{shown}} 行"
@@ -233,11 +393,13 @@
       "unavailable": "无法加载最近活动。",
       "unknown-time": "未知时间"
     },
+    "rename-chat": "重命名",
     "rename-chat-placeholder": "输入对话名称",
     "reply": "回复",
     "request-failed": "助手未能完成此请求。",
     "request-stopped-by-user": "用户已停止请求",
     "request-stopped-retry-hint": "已发送的操作仍可能完成。重试前请先检查其状态。",
+    "resend-message": "重新发送消息",
     "resource-picker": {
       "add-context": "添加上下文",
       "databases": "数据库",
@@ -262,14 +424,82 @@
     "result": "结果",
     "retry-last-chat-turn": "重试",
     "self": "助手",
+    "semantic-type-draft": {
+      "created": "已创建",
+      "inactive": "此草稿已不可用。请先检查当前语义类型，再准备新草稿。",
+      "open": "打开语义类型草稿",
+      "opened": "已打开语义类型草稿",
+      "save-failed": "无法创建语义类型。请检查表单并重试。",
+      "saved": "此语义类型已创建。请刷新其配置，再用于脱敏规则。",
+      "unavailable": "无法打开此草稿。编辑器、权限或配置可能已发生变化。请检查当前表单，并让 Agent 重新准备。",
+      "unsaved": "仅填充尚未保存的表单。请检查后再点击创建。"
+    },
     "send": "发送",
+    "sql-fix": {
+      "applied": "SQL 已应用到草稿",
+      "apply": "应用到草稿",
+      "apply-failed": "无法应用 SQL，未进行任何更改。",
+      "busy": "请等待本次诊断完成后再应用建议。",
+      "checked-sql": "已检查的 SQL",
+      "loading": "正在加载原 SQL 编辑器...",
+      "original-unavailable": "当前标签页中的原 SQL 已不可用，请从问题处重新发起诊断。",
+      "permission-denied": "您没有编辑此 SQL 的权限。",
+      "proposed-sql": "建议的 SQL",
+      "readonly": "此 SQL 为只读。",
+      "review": "审阅 SQL 修复",
+      "review-current": "查看当前 SQL",
+      "stale": "准备此修复后 SQL 已发生更改，请先查看当前 SQL 再生成新的修复。",
+      "unavailable": "原 SQL 编辑器不可用，请返回原变更以应用此建议。",
+      "unsaved-checks": "未保存 SQL 的检查",
+      "unsaved-only": "仅应用到未保存的草稿"
+    },
     "stop": "停止",
+    "storage": {
+      "free-and-retry": "释放空间并重试",
+      "free-failed": "无法释放足够的空间。请关闭其他 Agent 标签页或结束正在进行的运行，然后重试。",
+      "free-title": "删除其他已保存的 Agent 聊天？",
+      "full": "Agent 历史记录存储空间已满。",
+      "load-unavailable": "Agent 暂不可用",
+      "load-unavailable-description": "无法加载当前账号和工作空间的对话。已保存的历史记录未被删除。",
+      "retention-info": "聊天历史保留",
+      "retention-policy": "优先清理查询结果预览。如果仍需释放空间，则删除较早完成的聊天，无论是否已归档。已打开的聊天、未完成的运行和草稿会被保留。",
+      "retry": "重新保存",
+      "retry-loading": "重试",
+      "save-failed": "无法保存 Agent 历史记录。请重试。",
+      "title": "Agent 历史记录存储"
+    },
+    "submitted-access-grant": {
+      "check-status": "检查状态",
+      "observed-at": "上次查看于 {{time}}",
+      "open": "打开请求",
+      "open-unavailable": "无法打开请求。请求可能已不可用，或你已无权访问。",
+      "status-unavailable": "无法检查请求状态。请求可能已不可用，或你已无权访问。"
+    },
+    "token-budget": {
+      "action-failed": "无法更新此轮运行，请重试。",
+      "apply": "应用",
+      "continuation-unavailable": "无法安全地继续此轮运行。你的消息和草稿均已保留。请开始新对话以继续。",
+      "end-run": "结束运行",
+      "increase": "提高上限",
+      "increase-and-resume": "提高上限并继续",
+      "increase-title": "提高此轮运行的上限",
+      "invalid-limit": "请输入大于 {{minimum}} K Token 的数值，最多保留 3 位小数。",
+      "partial": "部分 Token 使用量未报告。",
+      "paused": "此轮运行已达到 Token 上限，现已暂停。",
+      "reached": "此轮运行已达到 Token 上限。",
+      "recovery-unavailable": "此浏览器无法安全地继续已保存的 Agent 运行。请使用受支持且已更新的浏览器。",
+      "run-limit": "此轮运行的 Token 上限",
+      "title": "运行 Token 预算",
+      "usage": "{{used}} / {{limit}} Token",
+      "warning": "此轮运行即将达到 Token 上限。"
+    },
     "token-usage": {
       "answer": "回答",
       "answer-total": "回答总计",
       "at-least": "至少 {{count}}",
       "cached-input": "缓存输入",
       "chat-total": "聊天总计",
+      "failed-attempts": "失败或中断的尝试次数：{{count}}",
       "follow-up-questions": "后续问题",
       "input": "输入",
       "latest-answer": "最近的回答",
@@ -279,6 +509,8 @@
       "not-recorded": "未记录",
       "not-reported": "未报告",
       "output": "输出",
+      "run-limit": "运行上限",
+      "run-usage": "运行使用量",
       "title": "Token 使用量",
       "total": "总计"
     },
@@ -291,13 +523,14 @@
     "tool-completed-with-warnings": "已完成，但有警告",
     "tool-default-value": "默认",
     "tool-failed": "失败",
+    "tool-manual-required": "需要手动操作",
     "tool-options": "选项",
     "tool-prompt": "提示",
     "tool-request-canceled": "请求已取消",
     "tool-response-submitted": "已提交回复",
     "tool-value": "值",
     "unarchive-all-chats": "取消归档所有对话",
-    "unarchive-chat": "取消归档",
+    "unarchive-chat": "恢复对话",
     "workspace-attention": {
       "checking": "正在检查需要你关注的事项...",
       "empty": "没有需要你关注的开放 issue。",
@@ -328,6 +561,11 @@
     },
     "export-finished": "导出完成",
     "export-tooltip": "必须选择 30 天范围内的开始和结束日期",
+    "federated-identity": {
+      "issuer": "签发方",
+      "origin": "由外部工作负载登录",
+      "subject": "Subject"
+    },
     "mcp": {
       "badge": "MCP",
       "client-id": "客户端 ID",
@@ -465,6 +703,7 @@
       "add-group": "添加条件组",
       "add-raw-expression": "添加 Raw 表达式",
       "add-root-condition-placeholder": "点击「添加条件」或「添加条件组」以添加条件",
+      "cannot-convert-to-selection": "此条件无法通过手动选择表示。",
       "description-tips": "条件是通过表达式配置的规则。例如：条件「环境 为 prod」将会匹配在「prod」环境中执行的工单。",
       "group": {
         "and": {
@@ -504,6 +743,7 @@
     "admin": "管理员",
     "all": "全部",
     "and": "和",
+    "apply": "应用",
     "approve": "批准",
     "approved": "已批准",
     "archive": "归档",
@@ -609,6 +849,7 @@
     "id": "ID",
     "import": "导入",
     "in-progress": "进行中",
+    "inactive": "已停用",
     "info": "信息",
     "input-value-press-enter": "输入值，按回车确认",
     "instance": "实例",
@@ -1038,6 +1279,7 @@
       "unspecified": "未指定"
     },
     "select": "选择数据库",
+    "select-no-environment": "无环境",
     "successfully-exported-schema": "成功导出 Schema",
     "successfully-transferred-databases": "成功转移数据库",
     "sync-complete-for-instance": "实例 '{{0}}' 同步完成",
@@ -1185,53 +1427,121 @@
     },
     "sharepoint": {
       "canceled-description": "导出此数据库时导出已取消。SharePoint 中可能已存在文件。",
+      "error": {
+        "credential-rejected": "Microsoft Entra 拒绝了 SharePoint 应用的凭据。请联系工作空间管理员在工作空间设置中更新。",
+        "destination-not-folder": "SharePoint 导出目标是一个文件。请联系项目所有者改为设置文档库或文件夹。",
+        "destination-not-found": "SharePoint 文件夹不存在，或 SharePoint 应用无法访问它。请联系项目所有者检查导出目标。",
+        "files-may-exist": "文件夹“{{folder}}”中可能已有部分文件。",
+        "not-configured": "此项目尚未设置导出到 SharePoint。请联系管理员检查 SharePoint 设置。",
+        "request-failed": "SharePoint 无法完成导出。请重试；如果仍然失败，请将错误详情提供给管理员。",
+        "storage-full": "SharePoint 站点存储空间已满。请联系 SharePoint 管理员释放空间。",
+        "upload-unconfirmed": "Bytebase 无法确认上传是否完成。"
+      },
       "exported-title": "已导出到 SharePoint",
       "not-started-description": "导出在此数据库开始前已取消，未导出任何内容。",
       "open": "在 SharePoint 中打开",
       "result-title": "SharePoint 导出结果",
+      "retry-failed": "重试失败项",
+      "retry-unconfirmed-warning": "每次重试都会导出到新的文件夹。标记为“未确认”的数据库在之前的文件夹中可能已有文件，因此 SharePoint 中可能出现重复文件。",
+      "retrying": "正在重试…",
       "status": {
         "canceled": "已取消",
         "exported": "已导出",
         "failed": "失败",
         "not-started": "未导出",
+        "retrying": "重试中",
         "unconfirmed": "未确认"
       }
     }
   },
   "gitops": {
     "back-to-releases": "返回发布包",
-    "checklist": {
-      "database-group-recommendation": "对于具有相同 Schema 的数据库，数据库分组可以让您在一次变更中同时迁移它们。只需定义一次分组，即可在多次迁移中复用，无需每次都逐个选择数据库。",
-      "external-url": "外部访问地址",
-      "target-databases": "目标数据库",
-      "title": "开始前检查",
-      "wif-notice-suffix": "以使用服务账号配置 GitOps。",
-      "wif-notice-text": "Workload Identity Federation 目前仅支持 GitHub 和 GitLab。对于其他 VCS，请参考以下教程：",
-      "workload-identity": "工作负载身份"
-    },
-    "documentation": "查看文档",
-    "overview": {
-      "description": "Bytebase GitOps 让您通过将数据库架构变更集成到 CI/CD 流水线中，以 Database as Code 的方式管理数据库。",
-      "description-git": "数据库架构与应用代码一起存储在 Git 中。拉取请求会触发 SQL 审查，合并到目标分支后会自动创建变更发布。",
-      "title": "什么是 GitOps"
-    },
-    "test-setup": {
-      "description": "使用示例迁移文件验证整个工作流是否正常运行。",
-      "naming-convention": "迁移文件按字典顺序执行。请使用时间戳或序号前缀，例如 20240101000000_create_table.sql。在文件名末尾添加 _ddl 或 _dml 来标识变更类型。",
-      "step-create-branch": "创建新分支，添加上面的文件，然后向 {{branch}} 提交拉取请求。",
-      "step-merge": "审查通过后，合并 PR。Bytebase 将自动创建 rollout 并部署到目标环境。",
-      "step-sql-review": "SQL Review 会自动在拉取请求上运行并发布审查评论。",
-      "title": "测试您的首次 GitOps 迁移"
-    },
-    "workflow": {
-      "description": "将工作流文件复制到您的代码仓库中，以自动化 SQL 审查和数据库变更发布。",
-      "file-hint": "保存为仓库 {{repository}} 中的 {{filePath}}",
-      "provider-not-match": "所选的 工作负载标识 (Workload Identity) 仅适用于 {{provider}}。",
-      "self-hosted-runner": "自托管 runner",
-      "title": "工作流文件生成"
-    },
-    "workload-identity": {
-      "select-placeholder": "选择工作负载身份"
+    "setup": {
+      "continue": "继续",
+      "databases": {
+        "create-group": "创建数据库组",
+        "databases-hint": "这些数据库会写入工作流文件。之后如需添加，请编辑这些文件。",
+        "databases-label": "数据库",
+        "databases-placeholder": "选择数据库",
+        "databases-tab": "数据库",
+        "deploy-order-hint": "变更按此顺序逐个环境部署。",
+        "description": "工作流针对这些数据库审核并部署每个迁移文件。",
+        "group-hint": "之后加入此组的数据库也会被部署，无需修改工作流文件。",
+        "group-label": "数据库组",
+        "group-matches-none": "此组尚未匹配任何数据库，因此没有可部署的内容。",
+        "group-placeholder": "选择数据库组",
+        "group-tab": "数据库组",
+        "no-group-description": "推荐使用数据库组，因为之后加入组的数据库也会被部署，无需修改工作流文件。",
+        "no-group-title": "此项目没有数据库组",
+        "none-pickable-description": "此项目中的所有数据库都没有环境，因此都不在部署顺序中。为数据库分配环境后即可选择。",
+        "none-pickable-title": "没有可选择的数据库",
+        "question": "GitOps 应部署到哪些数据库？",
+        "recommended": "推荐",
+        "view-databases": "查看数据库",
+        "view-group": "查看组"
+      },
+      "deploy-order": {
+        "database-count_one": "{{count}} 个数据库",
+        "database-count_other": "{{count}} 个数据库",
+        "environment-count_one": "{{count}} 个环境",
+        "environment-count_other": "{{count}} 个环境",
+        "label": "部署顺序",
+        "summary": "{{environments}}中的{{databases}}",
+        "unassigned-description_one": "它没有环境，部署会跳过它且不报错。为它指定环境即可纳入部署。",
+        "unassigned-description_other": "它们没有环境，部署会跳过它们且不报错。为它们指定环境即可纳入部署。",
+        "unassigned-title_one": "{{count}} 个数据库不会被部署",
+        "unassigned-title_other": "{{count}} 个数据库不会被部署"
+      },
+      "external-url-description": "你的工作流通过此地址访问 Bytebase。你现在就可以完成这些步骤。工作区管理员设置该地址后，工作流文件即完整。",
+      "files": {
+        "copy-off": "设置外部 URL 之前无法复制",
+        "description": "这些文件已包含你的数据库和工作负载身份。请原样复制。",
+        "developers-github": "开发者：在拉取请求中添加一个文件，例如 <code>{{file}}</code>。文件名以版本号开头。没有版本号的文件会被工作流跳过。",
+        "developers-gitlab": "开发者：在合并请求中添加一个文件，例如 <code>{{file}}</code>。文件名以版本号开头。没有版本号的文件会被工作流跳过。",
+        "folder-hint": "工作流审核并部署此文件夹中的 SQL 文件。",
+        "folder-invalid": "请输入相对于仓库根目录的文件夹路径，例如 migrations 或 db/migrations。",
+        "folder-label": "迁移文件夹",
+        "heading": "将文件添加到你的仓库",
+        "next-github": "文件进入默认分支后，下一个修改迁移文件夹的拉取请求会收到 Bytebase 审核评论。合并后即部署。",
+        "next-gitlab": "文件进入默认分支后，下一个修改迁移文件夹的合并请求会收到 Bytebase 审核评论。合并后即部署。",
+        "next-title": "接下来会发生什么",
+        "repository": "仓库",
+        "show-all": "显示全部 {{lines}} 行",
+        "url-missing": "文件中 Bytebase 地址的位置显示为 <code>{{placeholder}}</code>。设置外部 URL 之前无法复制，因为没有地址的工作流无法访问 Bytebase。"
+      },
+      "identity": {
+        "create": "创建工作负载身份",
+        "description": "你的工作流以此身份登录 Bytebase，因此仓库中不存储任何密钥。",
+        "every-repository": "{{owner}} 的所有仓库",
+        "git-provider": "Git 提供商",
+        "label": "工作负载身份",
+        "no-role-description": "其工作流可以登录，但 Bytebase 会拒绝审核和部署。请在成员页面为其授予 GitOps Service Agent 角色。",
+        "no-role-title": "此身份没有允许 GitOps 的角色",
+        "none": "此项目还没有工作负载身份。",
+        "open-members": "打开成员",
+        "other-provider": "其他 OIDC。设置中没有适用于它的工作流文件。",
+        "placeholder": "选择工作负载身份",
+        "question": "你的工作流以哪个工作负载身份登录？",
+        "read-from": "从此身份读取",
+        "repositories": "可登录的仓库",
+        "role": "在此项目中的角色"
+      },
+      "no-database": {
+        "description": "GitOps 部署到此项目的数据库。请先向此项目添加或转移一个数据库。",
+        "title": "此项目没有数据库"
+      },
+      "no-identity": {
+        "description": "你的工作流以此项目的工作负载身份登录 Bytebase。请让项目所有者创建一个。",
+        "title": "此项目没有工作负载身份"
+      },
+      "outcome": "每个修改迁移文件夹的拉取请求都会获得 Bytebase 审核。合并后即部署。",
+      "scope": "设置会为 GitHub Actions 和 GitLab CI 生成工作流文件。其他 CI/CD 平台请参阅 <docs>GitOps 文档</docs>。",
+      "steps": {
+        "databases": "数据库",
+        "workflow-files": "工作流文件",
+        "workload-identity": "工作负载身份"
+      },
+      "title": "GitOps"
     }
   },
   "identity-provider": {
@@ -1361,6 +1671,61 @@
         },
         "title": "检查数据库引擎支持"
       }
+    },
+    "connection-string": {
+      "filled": "已从 URL 填充",
+      "filled-missing-password": "已从 URL 填充，请输入数据库密码。",
+      "filled-missing-token": "已从 URL 填充，请输入访问令牌。",
+      "filled-neon-pooled": "已从 URL 填充。请使用不含 -pooler 的直连端点主机。",
+      "help": {
+        "cassandra": "粘贴 Cassandra 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "clickhouse": "粘贴 ClickHouse 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "cockroachdb": "粘贴 CockroachDB 连接 URL 或连接字符串以自动填充主机、端口、凭据、数据库和 TLS。",
+        "databricks": "粘贴 Databricks 连接 URL 或仓库 URL 以自动填充工作区主机、Warehouse ID 和令牌。",
+        "doris": "粘贴 Doris 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "elasticsearch": "粘贴 Elasticsearch URL 以自动填充主机、端口、凭据和 TLS。",
+        "hive": "粘贴 Hive JDBC URL 或 beeline 命令以自动填充主机、端口和凭据。",
+        "mariadb": "粘贴 MariaDB 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "mongodb": "粘贴 MongoDB 连接 URL 或 mongosh 命令以自动填充主机、端口、凭据、副本集、认证数据库和 TLS。",
+        "mssql": "粘贴 SQL Server 连接 URL 或连接字符串以自动填充主机、端口、凭据、数据库和 TLS。",
+        "mysql": "粘贴 MySQL 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "neon": "粘贴 Neon 直连 URL 或连接字符串以自动填充主机、端口、凭据和数据库。",
+        "oceanbase": "粘贴 OceanBase 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "oracle": "粘贴 Oracle 连接 URL 或 Easy Connect 字符串以自动填充主机、端口、凭据、服务名或 SID 以及 TLS。",
+        "postgres": "粘贴 PostgreSQL 连接 URL 或连接字符串以自动填充主机、端口、凭据、数据库和 TLS。",
+        "redis": "粘贴 Redis 连接 URL 或 redis-cli 命令以自动填充主机、端口、凭据、集群或哨兵设置以及 TLS。",
+        "redshift": "粘贴 Redshift 连接 URL 或连接字符串以自动填充主机、端口、凭据和数据库。",
+        "snowflake": "粘贴 Snowflake 连接 URL 或账户 URL 以自动填充账户定位符和凭据。",
+        "starrocks": "粘贴 StarRocks 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "tidb": "粘贴 TiDB 连接 URL 以自动填充主机、端口、凭据和 TLS。",
+        "trino": "粘贴 Trino 连接 URL 以自动填充主机、端口、凭据和 TLS。"
+      },
+      "invalid": {
+        "cassandra": "请输入有效的 cassandra:// 连接 URL。",
+        "clickhouse": "请输入有效的 clickhouse:// 或 clickhouses:// 连接 URL。",
+        "cockroachdb": "请输入有效的 postgresql://、cockroachdb:// 或 key=value 连接字符串。",
+        "databricks": "请输入有效的 databricks://、jdbc:databricks:// 或仓库 URL。",
+        "doris": "请输入有效的 doris:// 或 mysql:// 连接 URL。",
+        "elasticsearch": "请输入有效的 https://、http://、elasticsearch:// 或 opensearch:// URL。",
+        "engine-mismatch": "这看起来是 {{detected}} 连接字符串。请在上方将数据库引擎切换为 {{detected}}，或输入 {{selected}} 连接字符串。",
+        "hive": "请输入有效的 jdbc:hive2:// URL 或 beeline 命令。",
+        "mariadb": "请输入有效的 mariadb:// 或 mysql:// 连接 URL。",
+        "mongodb": "请输入有效的 mongodb://、mongodb+srv:// 或 mongosh 命令。",
+        "mssql": "请输入有效的 sqlserver:// URL 或 Server=…; 连接字符串。",
+        "mysql": "请输入有效的 mysql:// 连接 URL。",
+        "neon": "请输入启用了 TLS 的有效 postgresql:// URL 或 key=value 连接字符串。",
+        "oceanbase": "请输入有效的 mysql:// 或 oceanbase:// 连接 URL。",
+        "oracle": "请输入包含服务名或 SID 的有效 oracle:// URL 或 Easy Connect 字符串。",
+        "postgres": "请输入有效的 postgresql:// URL 或 key=value 连接字符串。",
+        "redis": "请输入有效的 redis://、rediss:// 或 redis-sentinel:// 连接 URL。",
+        "redshift": "请输入有效的 redshift://、postgresql:// 或 key=value 连接字符串。",
+        "snowflake": "请输入有效的 snowflake://、jdbc:snowflake:// 或 .snowflakecomputing.com URL。",
+        "starrocks": "请输入有效的 starrocks:// 或 mysql:// 连接 URL。",
+        "tidb": "请输入有效的 mysql:// 或 tidb:// 连接 URL。",
+        "trino": "请输入有效的 trino://、https:// 或 http:// 连接 URL。"
+      },
+      "label": "连接 URL",
+      "trigger": "从 URL 导入"
     },
     "create-failed": "实例创建失败",
     "create-gcp-credentials": "创建凭据的方法见",
@@ -1516,6 +1881,454 @@
     "master-name": "主节点名称",
     "master-password": "主节点密码",
     "master-username": "主节点用户名",
+    "neon": {
+      "choose-role": "选择角色",
+      "close": {
+        "body_one": "将丢弃 {{count}} 个未完成的条目，已创建的实例会保留。",
+        "body_other": "将丢弃 {{count}} 个未完成的条目，已创建的实例会保留。",
+        "stay": "留下",
+        "title": "仍有未解决的条目，确定关闭设置？"
+      },
+      "configure": {
+        "bulk": {
+          "apply": "应用",
+          "choose-interval": "选择间隔",
+          "environment-title_one": "为 {{count}} 行设置环境",
+          "environment-title_other": "为 {{count}} 行设置环境",
+          "interval-title_one": "为 {{count}} 行设置同步间隔",
+          "interval-title_other": "为 {{count}} 行设置同步间隔",
+          "remove": "从导入中移除",
+          "remove-body": "仍可在“选择分支”步骤中重新选择。",
+          "remove-title_one": "从导入中移除 {{count}} 行？",
+          "remove-title_other": "从导入中移除 {{count}} 行？",
+          "set-environment": "设置环境",
+          "set-interval": "设置同步间隔",
+          "use-shared": "使用共享设置",
+          "use-shared-setting": "使用共享设置"
+        },
+        "differ_one": "{{count}} 行另有设置。",
+        "differ_other": "{{count}} 行另有设置。",
+        "edit-label": "编辑 {{name}} 的全部设置",
+        "empty": "没有行。",
+        "empty-needs": "没有需要补充的内容。",
+        "footer-needs_one": "上方有 {{count}} 个实例需要补充信息",
+        "footer-needs_other": "上方有 {{count}} 个实例需要补充信息",
+        "footer-over": "超出实例上限{{instances}}",
+        "group-select-label": "选择 Neon 项目 {{project}} 的行",
+        "interval": "定时同步间隔",
+        "limit": {
+          "over": "超出上限{{instances}}。请移除部分行，或在“设置”>“订阅”中提高上限。",
+          "title": "实例上限",
+          "unlimited": "当前方案没有实例上限。",
+          "usage": "本次使用 {{count}} / 剩余可用 {{capacity}}"
+        },
+        "needs": {
+          "id-body": "实例 ID 无效，或已被其他行使用。",
+          "id-title": "修正 {{name}} 的实例 ID",
+          "label": "需要补充信息的实例",
+          "name-title": "为 {{id}} 填写实例名称",
+          "password-title": "输入 {{name}} 上角色 {{role}} 的密码",
+          "role-body": "数据库所有者不同（{{owners}}）。",
+          "role-label_one": "这 {{count}} 个实例的角色",
+          "role-label_other": "这 {{count}} 个实例的角色",
+          "role-title": "为 {{names}} 选择连接角色",
+          "title_one": "{{count}} 个实例需要你补充信息后才能导入",
+          "title_other": "{{count}} 个实例需要你补充信息后才能导入",
+          "use-neon": "改为从 Neon 读取"
+        },
+        "needs-id": "需要有效的 ID",
+        "needs-name": "需要名称",
+        "needs-password": "需要密码",
+        "needs-role": "需要角色",
+        "no-environment": "无环境",
+        "no-role": "无角色",
+        "owners-differ": "数据库所有者不同",
+        "password-needed": "需要密码",
+        "password-typed": "已输入密码",
+        "row-environment-label": "{{name}} 的环境",
+        "row-role-label": "{{name}} 的连接角色",
+        "schedule": "定时同步",
+        "select-shown": "选择显示的所有行",
+        "set-on-row": "在此行单独设置",
+        "shared": {
+          "title": "共享设置"
+        },
+        "shared-option": "{{value}}（共享）",
+        "show-all": "显示全部",
+        "tab-all": "全部 {{count}}",
+        "tab-changed": "已修改 {{count}}",
+        "tab-needs": "待补充 {{count}}",
+        "title_one": "配置 {{count}} 个实例",
+        "title_other": "配置 {{count}} 个实例"
+      },
+      "confirm": {
+        "instances-value": "来自{{projects}}的{{instances}}。",
+        "remain": "若部分条目失败，已创建的实例会保留。",
+        "sync-all-scheduled": "定时同步，首次同步后列出数据库。",
+        "sync-manual_one": "{{count}} 个仅手动同步。",
+        "sync-manual_other": "{{count}} 个仅手动同步。",
+        "sync-scheduled_one": "{{count}} 个按计划同步。",
+        "sync-scheduled_other": "{{count}} 个按计划同步。",
+        "title_one": "导入 {{count}} 个实例？",
+        "title_other": "导入 {{count}} 个实例？"
+      },
+      "connect": {
+        "api-key": "API 密钥",
+        "api-key-help": "个人、组织或项目级密钥，不会保存。",
+        "error": {
+          "key-empty": "请输入 Neon API 密钥。",
+          "key-invalid": "Neon 拒绝了此 API 密钥，请确认密钥有效且未过期。",
+          "other-body": "请求失败，请重试。",
+          "other-title": "Bytebase 无法列出分支",
+          "permission-body": "你的角色无权在 {{destination}} 中创建实例。",
+          "permission-title": "你无法向此目标添加实例",
+          "project-id-invalid": "请输入有效的 Neon 项目 ID。",
+          "project-id-required": "此密钥无法列出项目。如果是项目级密钥，请填写对应的 Neon 项目 ID。",
+          "project-id-unreadable": "此 API 密钥无法访问该 Neon 项目。",
+          "rate-limited-now": "现在可以重试。",
+          "rate-limited-title": "Neon 正在限制此 API 密钥的请求",
+          "rate-limited-wait": "请在 {{time}} 后重试。",
+          "unavailable-body": "请求超时或 Neon 暂时不可用，请稍后重试。",
+          "unavailable-title": "Neon 没有响应"
+        },
+        "find": "查找分支",
+        "finding": "正在连接 Neon…",
+        "project-id": "Neon 项目 ID",
+        "project-id-help": "项目级密钥必填。",
+        "retry-in": "{{time}} 后重试",
+        "try-again": "重试"
+      },
+      "count": {
+        "branches_one": "{{count}} 个分支",
+        "branches_other": "{{count}} 个分支",
+        "entries_one": "{{count}} 个条目",
+        "entries_other": "{{count}} 个条目",
+        "instances_one": "{{count}} 个实例",
+        "instances_other": "{{count}} 个实例",
+        "more-instances_one": "{{count}} 个实例",
+        "more-instances_other": "{{count}} 个实例",
+        "neon-projects_one": "{{count}} 个 Neon 项目",
+        "neon-projects_other": "{{count}} 个 Neon 项目",
+        "postgres-instances_one": "{{count}} 个 PostgreSQL 实例",
+        "postgres-instances_other": "{{count}} 个 PostgreSQL 实例",
+        "rows-selected_one": "已选择 {{count}} 行",
+        "rows-selected_other": "已选择 {{count}} 行"
+      },
+      "destination": {
+        "project": "Bytebase 项目 · {{project}}",
+        "workspace": "工作空间"
+      },
+      "edit-settings": "编辑设置",
+      "import": {
+        "and-more": "以及另外 {{count}} 个",
+        "awaiting": {
+          "description_one": "第 {{index}} 批（{{count}} 个）· {{time}} 发送。",
+          "description_other": "第 {{index}} 批（{{count}} 个）· {{time}} 发送。",
+          "retrying": "正在重试…"
+        },
+        "banner": {
+          "finished-body_one": "已确认 {{count}} 个条目未创建。请在下方修正，准备好后重试。",
+          "finished-body_other": "已确认 {{count}} 个条目未创建。请在下方修正，准备好后重试。",
+          "finished-title": "所有批次均已返回",
+          "paused-lost-body": "Bytebase 已发送该批次，但连接在结果返回前中断。",
+          "paused-lost-title": "导入已暂停：某一批的响应丢失",
+          "paused-note": "剩余批次已暂停，点击继续后才会发送。",
+          "paused-note-all-sent": "重试前请先检查下方结果未知的条目。",
+          "paused-resolved-body": "目前没有未知的结果。",
+          "paused-resolved-title": "导入仍处于暂停状态",
+          "paused-unknown-body": "某一批返回时，部分条目没有确认的结果。",
+          "paused-unknown-title_one": "导入已暂停：{{count}} 个结果未知",
+          "paused-unknown-title_other": "导入已暂停：{{count}} 个结果未知",
+          "rejected-body": "该批次中没有创建任何实例。",
+          "rejected-title": "Bytebase 拒绝了一个批次",
+          "running": "导入完成前请勿关闭此标签页。",
+          "stopped-created": "已创建的实例会保留。",
+          "stopped-title": "你已停止导入",
+          "stopped-unknown_one": "已发送批次中的 {{count}} 个条目可能已创建，也可能未创建。",
+          "stopped-unknown_other": "已发送批次中的 {{count}} 个条目可能已创建，也可能未创建。",
+          "stopped-unsent_one": "{{count}} 个条目从未发送。",
+          "stopped-unsent_other": "{{count}} 个条目从未发送。",
+          "unsent_one": "还有 {{count}} 个条目未发送。准备好后可以继续。",
+          "unsent_other": "还有 {{count}} 个条目未发送。准备好后可以继续。"
+        },
+        "batch": {
+          "awaiting": "已发送，等待结果",
+          "lost": "已发送，响应丢失",
+          "returned": "已返回",
+          "stopped": "已发送，在结果返回前被停止",
+          "unknown": "已返回，部分结果未知",
+          "unsent": "未发送"
+        },
+        "batch-label": "第 {{index}} 批（{{size}}）：{{state}}",
+        "close": "关闭设置",
+        "created": {
+          "badge-manual": "需要手动同步",
+          "badge-scheduled": "定时同步",
+          "by-check": "检查时在实例列表中找到。",
+          "by-retry": "重试时已创建。",
+          "description": "首次同步后会列出数据库。",
+          "manual": "{{count}} 个仅手动同步。",
+          "manual-help_one": "打开实例即可手动同步。",
+          "manual-help_other": "打开各实例即可手动同步。",
+          "open": "打开 {{name}}",
+          "scheduled": "{{count}} 个按计划同步。",
+          "show-all": "显示全部 {{count}} 个",
+          "show-fewer": "收起"
+        },
+        "failed": {
+          "choose-database": "选择数据库",
+          "database-error": "此分支上已不存在数据库 {{database}}。",
+          "database-help": "请选择其他初始连接数据库。",
+          "description": "修正以下问题后重试。",
+          "id-error": "实例 ID {{id}} 已存在。",
+          "id-help": "请使用其他实例 ID。",
+          "id-scope": "在 {{destination}} 中必须唯一。",
+          "limit-error": "已达到工作空间实例上限。",
+          "limit-help": "请移除不用的实例，或在“设置 > 订阅”中提高上限后重试。",
+          "limit-title_one": "{{count}} 个条目：已达到实例上限",
+          "limit-title_other": "{{count}} 个条目：已达到实例上限",
+          "other-help": "可以直接重试，或先修改此条目的设置。",
+          "password-error": "Neon 无法返回此分支上角色 {{role}} 的密码。",
+          "password-help": "请输入密码后重试。",
+          "ready": "可以重试。",
+          "retry-none": "重试已修正的条目",
+          "retry_one": "重试 {{count}} 个条目",
+          "retry_other": "重试 {{count}} 个条目",
+          "role-error": "此分支上已不存在角色 {{role}}。",
+          "role-help": "请选择其他角色。"
+        },
+        "open-list": "打开实例列表",
+        "progress": "已处理 {{processed}} / {{total}}",
+        "progress-batch_one": "第 {{index}} / {{total}} 批（{{count}} 个）· {{time}} 发送",
+        "progress-batch_other": "第 {{index}} / {{total}} 批（{{count}} 个）· {{time}} 发送",
+        "progress-batches_one": "共 {{count}} 批",
+        "progress-batches_other": "共 {{count}} 批",
+        "progress-label": "导入进度",
+        "progress-retry": "正在等待重试的条目。",
+        "state": {
+          "awaiting": "等待结果",
+          "created": "已创建",
+          "failed": "未创建",
+          "unknown": "结果未知",
+          "unsent": "未发送"
+        },
+        "stop": "停止导入",
+        "title": {
+          "done_one": "全部 {{count}} 个实例已创建",
+          "done_other": "全部 {{count}} 个实例已创建",
+          "finished": "导入已完成，但有条目需要修正",
+          "paused": "导入已暂停",
+          "running_one": "正在导入 {{count}} 个实例",
+          "running_other": "正在导入 {{count}} 个实例",
+          "stopped": "导入已停止"
+        },
+        "unknown": {
+          "check": "检查实例列表",
+          "check-again": "再次检查",
+          "check-failed": "此条目的检查未得到答复。请再次检查。",
+          "checked": "{{time}} 检查时不在实例列表中。如果首次请求仍在完成中，它之后仍可能出现。",
+          "checking": "正在检查…",
+          "description": "响应未返回，这些实例可能已创建。重试前请先检查实例列表。",
+          "lost": "在响应丢失的批次中发送。",
+          "reported": "Bytebase 无法确认此实例是否已创建。",
+          "retry": "重试此条目",
+          "stopped": "在你停止时已发送的批次中。"
+        },
+        "unresolved_one": "{{count}} 个条目未解决",
+        "unresolved_other": "{{count}} 个条目未解决",
+        "unsent": {
+          "continue_one": "继续处理 {{count}} 个条目",
+          "continue_other": "继续处理 {{count}} 个条目",
+          "description_one": "{{count}} 个条目尚未发送。",
+          "description_other": "{{count}} 个条目尚未发送。",
+          "waiting": "等待下一批发送。"
+        },
+        "view-instances": "查看实例"
+      },
+      "import-count_one": "导入 {{count}} 个实例",
+      "import-count_other": "导入 {{count}} 个实例",
+      "interval": {
+        "days_one": "{{count}} 天",
+        "days_other": "{{count}} 天",
+        "every-n-hours": "每 {{hours}} 小时",
+        "hourly": "每小时",
+        "hours_one": "{{count}} 小时",
+        "hours_other": "{{count}} 小时",
+        "minutes_one": "{{count}} 分钟",
+        "minutes_other": "{{count}} 分钟",
+        "off": "关闭"
+      },
+      "leave": {
+        "body": "已选择的分支和配置将被丢弃。",
+        "confirm": "离开设置",
+        "title": "离开 Neon 设置？"
+      },
+      "limit-reached": {
+        "body": "当前订阅方案无法再添加实例。请移除不再需要的实例，或在“设置”>“订阅”中提高上限。",
+        "title": "工作空间已达到实例上限"
+      },
+      "method": {
+        "discover": "使用 Neon API 密钥发现分支",
+        "discover-help": "选择并批量导入一个或多个分支。",
+        "manual": "填写连接信息",
+        "manual-help": "使用连接字符串或主机连接单个分支。",
+        "title": "设置方式"
+      },
+      "neon-project": "Neon 项目",
+      "optional": "（可选）",
+      "password-for": "{{role}} 的密码",
+      "reason": {
+        "access-denied": "Neon 拒绝了此 API 密钥的访问。",
+        "batch-rejected": "Bytebase 在创建任何实例之前拒绝了该批次。",
+        "connection-auth-failed": "数据库拒绝了此角色和密码。",
+        "connection-failed": "Bytebase 无法使用这些设置建立连接。",
+        "connection-unreachable": "Bytebase 未能及时连接到数据库端点。",
+        "database-not-found": "此分支上已不存在该初始连接数据库。",
+        "destination-not-found": "目标已不存在。",
+        "endpoint-unavailable": "没有直连的读写端点",
+        "inspection-failed": "检查此分支时 Neon 返回了错误",
+        "instance-id-exists": "此实例 ID 已存在。",
+        "instance-limit": "工作空间已达到实例上限。",
+        "key-invalid": "Neon 拒绝了 API 密钥。请关闭设置并使用有效密钥重新开始。",
+        "no-databases": "此分支上没有数据库",
+        "not-processed": "请求在处理此条目之前已结束，因此没有为它创建任何内容。",
+        "other": "请求失败。",
+        "password-required": "Neon 无法返回此角色的密码。",
+        "permission-denied": "你的 Bytebase 角色无法在此目标中创建实例。",
+        "rate-limited": "Neon 正在限制此 API 密钥的请求。请稍候再重试。",
+        "resource-not-found": "Neon 使用此 API 密钥找不到该资源。",
+        "response-invalid": "Neon 返回了 Bytebase 无法识别的响应。重试无法解决此问题。",
+        "role-not-found": "此分支上已不存在该连接角色。",
+        "session-expired": "在批次被接受之前，你的 Bytebase 会话已过期。请重新登录后重试。",
+        "settings-invalid": "Bytebase 拒绝了这些实例设置。",
+        "unavailable": "Neon 未及时响应。"
+      },
+      "retry-unknown": {
+        "body": "{{time}} 检查时，{{id}} 不在实例列表中。如果首次请求仍在 Bytebase 中完成，实例可能会在此次检查之后出现。重试会使用相同的实例 ID。",
+        "title": "重试 {{name}}？"
+      },
+      "scope": {
+        "all": "所有数据库",
+        "none": "无数据库",
+        "some_one": "{{total}} 个数据库中的 {{count}} 个",
+        "some_other": "{{total}} 个数据库中的 {{count}} 个"
+      },
+      "select": {
+        "all-selected-matching_one": "已选择 {{count}} 个匹配的分支",
+        "all-selected-matching_other": "已选择全部 {{count}} 个匹配的分支",
+        "all-selected_one": "已选择 {{count}} 个分支",
+        "all-selected_other": "已选择全部 {{count}} 个分支",
+        "available": "可用",
+        "cannot-import": "无法导入",
+        "clear-filter": "清除筛选",
+        "col": {
+          "branch": "分支",
+          "databases": "数据库",
+          "roles": "角色"
+        },
+        "configure-none": "配置实例",
+        "configure_one": "配置 {{count}} 个实例",
+        "configure_other": "配置 {{count}} 个实例",
+        "deselect-shown": "取消选择显示的已选分支",
+        "empty": "Neon 未为此 API 密钥返回任何分支。",
+        "empty-filter": "没有已加载的分支匹配“{{query}}”。",
+        "empty-more": "目前已加载的页面中没有分支。还有更多。",
+        "empty-selected": "尚未选择分支。",
+        "filter-label": "筛选已加载的分支",
+        "filter-locked": "加载全部分支后可筛选。",
+        "filter-placeholder": "按名称筛选",
+        "footer-over": "超出实例上限{{branches}}",
+        "group-select-label": "选择 Neon 项目 {{project}} 中已加载的可用分支",
+        "group-select-shown-label": "选择 Neon 项目 {{project}} 中显示的可用分支",
+        "group-shown_one": "显示 {{count}} 个",
+        "group-shown_other": "显示 {{count}} 个",
+        "group-summary": "已选择 {{selected}} / {{count}}",
+        "group-unavailable_one": "{{count}} 个无法导入",
+        "group-unavailable_other": "{{count}} 个无法导入",
+        "load-all": "加载全部剩余分支",
+        "load-more": "加载更多",
+        "loading": "加载中…",
+        "not-available": "不可用",
+        "over-limit-body": "请取消选择{{branches}}后继续，或在“设置 > 订阅”中提高实例上限。",
+        "over-limit-title": "已选择{{branches}}，而当前方案还能添加{{instances}}",
+        "owner": "所有者 {{owner}}",
+        "page-error-key": "Neon 拒绝了 API 密钥。请返回并重新输入。",
+        "page-error-rate": "Neon 正在限制此 API 密钥的请求。",
+        "page-error-retry-in": "{{time}} 起可重试。",
+        "page-error-retry-now": "现在可以重试。",
+        "page-error-title": "下一页未能加载",
+        "page-error-token": "此次列出无法继续。请重新发现以再次列出。",
+        "page-error-unavailable": "Neon 未及时响应。",
+        "project-failed": "无法列出 Neon 项目 {{id}}",
+        "restart": "重新发现",
+        "restart-help": "从第一页重新列出分支。再次返回的分支会保留你的选择。",
+        "retry": "重试",
+        "retry-page": "重试此页",
+        "retry-project": "重试 Neon 项目 {{id}}",
+        "retrying": "正在重试…",
+        "row-select-label": "选择 {{name}}",
+        "select-all-label": "选择所有已加载的可用分支",
+        "select-all-matching_one": "选择 {{count}} 个匹配的分支",
+        "select-all-matching_other": "选择全部 {{count}} 个匹配的分支",
+        "select-all_one": "选择 {{count}} 个分支",
+        "select-all_other": "选择全部 {{count}} 个分支",
+        "selected-shown_one": "显示 {{count}} 个已选择的分支",
+        "selected-shown_other": "显示 {{count}} 个已选择的分支",
+        "status": {
+          "complete": "已加载全部分支：{{projects}}中共 {{count}} 个。",
+          "failed-projects_one": "{{count}} 个 Neon 项目无法列出。",
+          "failed-projects_other": "{{count}} 个 Neon 项目无法列出。",
+          "listing": "正在从 Neon 列出分支…",
+          "partial_one": "已从{{projects}}加载 {{count}} 个分支。还有更多。",
+          "partial_other": "已从{{projects}}加载 {{count}} 个分支。还有更多。"
+        },
+        "view-label": "显示的行",
+        "view-loaded": "已加载 {{count}}",
+        "view-selected": "已选择 {{count}}"
+      },
+      "sheet": {
+        "connection": "连接",
+        "database": "初始连接数据库",
+        "databases-legend": "要同步的数据库",
+        "description": "Neon 项目 {{project}}（{{projectId}}）· 分支 {{branchId}}",
+        "id-duplicate": "其他行已使用此实例 ID。",
+        "identity": "标识",
+        "instance-id": "实例 ID",
+        "instance-id-help": "导入后无法更改。",
+        "password-neon": "导入时从 Neon 读取",
+        "password-required": "请输入密码，或改为从 Neon 读取。",
+        "password-typed": "输入密码",
+        "reset": "重置为共享设置",
+        "role": "连接角色",
+        "role-required": "请选择角色。此处的数据库所有者不同。",
+        "scope-none": "不会同步任何数据库。",
+        "sync": "同步",
+        "title-required": "请输入实例名称。"
+      },
+      "steps": {
+        "configure": "配置",
+        "connect": "连接",
+        "import": "导入",
+        "label": "设置步骤",
+        "select": "选择分支"
+      },
+      "stop": {
+        "awaiting_one": "正在发送的 {{count}} 个实例结果将标记为未知。",
+        "awaiting_other": "正在发送的 {{count}} 个实例结果将标记为未知。",
+        "created_one": "保留已创建的 {{count}} 个实例。",
+        "created_other": "保留已创建的 {{count}} 个实例。",
+        "keep": "继续导入",
+        "title": "停止导入？",
+        "unsent_one": "剩余 {{count}} 个实例将不再发送。",
+        "unsent_other": "剩余 {{count}} 个实例将不再发送。"
+      },
+      "sync": {
+        "default-help": "当前方案固定每小时同步一次。",
+        "manual": "仅手动同步",
+        "scheduled": "每 {{interval}} 定时同步",
+        "unscheduled-help": "当前方案仅支持手动同步。"
+      }
+    },
     "new-instance": "新实例",
     "no-environment": "此实例尚未绑定到环境",
     "no-extra-params-configured": "没有配置的额外连接参数",
@@ -1667,6 +2480,7 @@
       "gcp-instance": "请使用小写字母、数字或连字符。",
       "gcp-project": "请使用小写字母、数字、句点、冒号或连字符。",
       "keytab-resupply": "连接目标已更改，请重新上传 keytab 文件。",
+      "neon-pooled-host": "这是连接池端点。请使用不含 -pooler 的直连端点主机。",
       "oracle-service": "请输入服务名称或 SID。",
       "pem-certificate": "请输入 PEM 格式的证书，包含 BEGIN 和 END CERTIFICATE 行。",
       "pem-key": "请输入 PEM 格式的私钥（PKCS#1、PKCS#8 或 EC）。",
@@ -1674,6 +2488,11 @@
       "specific-credential": "请提供指定凭证。Bytebase Cloud 不支持默认凭证。",
       "tls-pair": "请同时提供客户端证书和私钥。",
       "tls-source-conflict": "请选择 PEM 内容或文件路径，不可同时使用。"
+    },
+    "vendor": {
+      "generic": "任意主机或云服务",
+      "neon": "Neon",
+      "self": "托管于"
     },
     "your-snowflake-account-locator": "您的 Snowflake 账户定位符"
   },
@@ -1899,8 +2718,7 @@
       "visit-issues": "访问工单",
       "visit-prjects": "访问项目",
       "yours": "你的快捷链接"
-    },
-    "workspace": "工作空间"
+    }
   },
   "masking": {
     "reason": {
@@ -1973,12 +2791,27 @@
   "plan": {
     "add-spec": "添加变更",
     "add-spec-pending-draft": "请先保存或放弃当前的待处理变更，然后再添加新变更",
-    "ai-review": {
-      "failed-to-run": "无法启动 AI 审核",
-      "run": "运行 AI 审核",
-      "run-again-description": "每次运行都会为所审核的每个数据库调用模型，结果可能不同。新结果会替换上次运行的发现，包括已被解决的问题。",
-      "run-again-title": "再次运行 AI 审核？",
-      "save-first": "请先保存或放弃修改，再运行 AI 审核。"
+    "affected-rows": {
+      "details": "详情",
+      "estimate": "估算",
+      "estimated": "已估算",
+      "estimated-on_one": "已在 {{count}} 个数据库上估算",
+      "estimated-on_other": "已在 {{count}} 个数据库上估算",
+      "explanation": "统计 UPDATE、DELETE 和 INSERT ... SELECT 修改的行数（对抽样语句执行 EXPLAIN 估算），加上 INSERT ... VALUES 插入的行数，以及 DDL 语句所修改的每张表的行数。审批规则按数据库读取这个数字。",
+      "filter": "显示的数据库",
+      "filter-all": "全部 {{n}}",
+      "filter-incomplete": "不完整 {{n}}",
+      "go-to-line": "跳到第 {{line}} 行",
+      "incomplete": "不完整",
+      "incomplete-on_one": "{{count}} 个不完整",
+      "incomplete-on_other": "{{count}} 个不完整",
+      "n-databases_one": "{{count}} 个数据库",
+      "n-databases_other": "{{count}} 个数据库",
+      "not-estimated": "未估算",
+      "on": "{{database}} 上 {{rows}} 行",
+      "rerun": "重新运行",
+      "self": "影响行数",
+      "up-to-on": "最多 {{database}} 上 {{rows}} 行"
     },
     "automated-review": {
       "checks": "计划检查",
@@ -1988,15 +2821,11 @@
       "ghost": "在线迁移试运行",
       "n-databases_one": "{{count}} 个数据库",
       "n-databases_other": "{{count}} 个数据库",
-      "n-errors_one": "{{count}} 个错误",
-      "n-errors_other": "{{count}} 个错误",
-      "n-open": "{{count}} 个待处理",
-      "n-warnings_one": "{{count}} 个警告",
-      "n-warnings_other": "{{count}} 个警告",
       "needs-attention": "{{total}} 项中有 {{count}} 项需要处理",
       "no-findings": "未发现问题",
       "not-run": "尚未运行",
-      "nothing-needs-attention": "无需处理",
+      "off": "已关闭",
+      "off-for-project": "此项目已关闭审核",
       "opens-in-sql": "点击在 SQL 中逐条查看。",
       "out-of-date": "已过期",
       "outdated": "本次运行后 SQL 已变更",
@@ -2005,12 +2834,15 @@
       "passed-on_other": "在 {{count}} 个数据库上通过",
       "policy": "审核策略",
       "project-rules": "项目规则：开启 {{on}}/{{total}} 条",
-      "report": "语句报告",
       "rerun": "重新运行",
       "rerun-all": "全部重新运行",
       "retry": "重试",
+      "reviewing": "审核中…",
+      "run-again-description": "每次运行都会为所审核的每个数据库调用模型，结果可能不同。再次报告的发现会保留原有讨论，不再报告的发现会被标记为已解决。",
+      "run-again-title": "再次运行审核？",
       "running": "运行中",
-      "sampled": "抽样 {{count}}/{{total}} 个数据库",
+      "sampled": "审核抽样了 {{count}}/{{total}} 个数据库",
+      "save-first": "请先保存或放弃修改，再运行审核。",
       "scope": "审核了 {{databases}}",
       "scope-label": "本次审核的范围",
       "scope-with-engines": "审核了 {{databases}}（{{engines}}）",
@@ -2044,17 +2876,43 @@
       "overridden_other": "{{reviewer}} 中有 {{count}} 个 P0 问题未修改就被解决",
       "ready-to-deploy": "全部通过，可以部署。",
       "reviewer-failed": "{{reviewer}} 无法运行",
-      "reviewer-findings": "{{reviewer}}：{{findings}}",
+      "reviewer-findings": "{{reviewer}}：<findings />",
       "reviewer-not-run": "{{reviewer}} 尚未运行",
       "reviewer-outdated": "{{reviewer}} 运行后 SQL 已变更",
       "reviewer-running": "{{reviewer}} 运行中",
       "show": "查看",
+      "statement-error": "SQL 有语法错误",
       "submit": "提交审核",
       "waiting-on": "正在等待",
       "worth-a-look": "不会挡住发布，但值得看一下"
     },
     "description": {
       "placeholder": "添加描述"
+    },
+    "details": {
+      "approved": "已批准",
+      "approved-by": "由 {{user}} 批准",
+      "awaiting-approval": "等待审批",
+      "by-author": "作者 {{author}}",
+      "changes": "变更",
+      "changes-on-targets": "{{targets}}上的 {{kind}}",
+      "created": "创建",
+      "database-groups_one": "{{count}} 个数据库组",
+      "database-groups_other": "{{count}} 个数据库组",
+      "databases_one": "{{count}} 个数据库",
+      "databases_other": "{{count}} 个数据库",
+      "labels": "标签",
+      "migration-based_one": "基于迁移 · {{count}} 个文件 · 更新到版本 {{version}}",
+      "migration-based_other": "基于迁移 · {{count}} 个文件 · 更新到版本 {{version}}",
+      "no-approval": "无需审批",
+      "progress": "进度",
+      "rejected": "已拒绝",
+      "release": "发布",
+      "review": "审核",
+      "source": "来源",
+      "state-based": "基于状态 · {{version}}",
+      "triggered": "触发",
+      "waiting-for": "等待 {{role}} 审批"
     },
     "draft-update-permission-required": "你可以查看此草稿，但需要 bb.issues.update 才能编辑工单标签或提交审批。",
     "editor": {
@@ -2097,6 +2955,8 @@
       "checking": "检查中…",
       "checks-failing": "检查失败",
       "deployed": "已部署",
+      "deployed-with-skipped_one": "已部署，{{count}} 个任务已跳过",
+      "deployed-with-skipped_other": "已部署，{{count}} 个任务已跳过",
       "gate-automated-review-passed": "自动审核已通过",
       "gate-checks-failed": "部分检查未通过",
       "gate-checks-failed-sub": "{{failing}} 项失败，{{passed}} 项通过",
@@ -2117,9 +2977,6 @@
       "run": "执行"
     },
     "list-description": "在界面中创建的变更请求及其部署进度。",
-    "meta": {
-      "created-by": "由 {{user}} 创建"
-    },
     "navigator": {
       "changes": "变更项",
       "checks": "检查",
@@ -2156,33 +3013,29 @@
         "add-a-comment": "添加评论...",
         "created-this-plan": "创建了此计划",
         "marked-ready-for-review": "将此计划提交审批",
-        "n-findings_one": "{{count}} 个发现",
-        "n-findings_other": "{{count}} 个发现",
         "n-hidden-events_one": "{{count}} 条隐藏活动",
         "n-hidden-events_other": "{{count}} 条隐藏活动",
-        "n-new_one": "{{count}} 个新发现",
-        "n-new_other": "{{count}} 个新发现",
-        "n-no-longer-found_one": "{{count}} 个已不存在",
-        "n-no-longer-found_other": "{{count}} 个已不存在",
-        "n-still-found_one": "{{count}} 个仍存在",
-        "n-still-found_other": "{{count}} 个仍存在",
-        "no-findings": "没有发现",
+        "n-new-findings_one": "{{count}} 个新发现",
+        "n-new-findings_other": "{{count}} 个新发现",
+        "no-new-findings": "没有新发现",
         "reviewed-the-sql": "审核了 SQL",
         "self": "活动",
         "show-all": "显示全部"
       },
       "approval-after-submit": "提交审核后开始审批。",
       "approval-flow": {
-        "and-n-more_one": "还有 {{count}} 位",
-        "and-n-more_other": "还有 {{count}} 位",
         "approved-by": "由 {{user}} 批准",
+        "clear-search": "清除搜索",
+        "copy-email": "复制 {{user}} 的邮箱",
         "current": "当前",
         "n-approved": "{{n}} 人已批准",
         "n-pending": "{{n}} 个待审批",
         "n-reviewers_one": "{{count}} 位审批人",
         "n-reviewers_other": "{{count}} 位审批人",
+        "no-matching-reviewers": "没有与“{{query}}”匹配的审批人",
         "no-reviewers": "无审批人",
-        "rejected-by": "由 {{user}} 拒绝"
+        "rejected-by": "由 {{user}} 拒绝",
+        "search-placeholder": "按姓名或邮箱搜索"
       },
       "candidate-last-changed-plan": "无法审批 — 最后修改了此计划",
       "comment-required-to-reject": "拒绝时必须填写评论",
@@ -2205,8 +3058,8 @@
         "confirm-unresolved-threads_one": "{{count}} 个未解决的讨论",
         "confirm-unresolved-threads_other": "{{count}} 个未解决的讨论",
         "creating-rollout-automatically": "正在自动创建发布...",
-        "errors-passed-not-created_one": "{{count}} 项错误，{{passed}} 项通过。未自动创建发布。",
-        "errors-passed-not-created_other": "{{count}} 项错误，{{passed}} 项通过。未自动创建发布。",
+        "errors-passed-not-created_one": "{{count}} 项 P0，{{passed}} 项通过。未自动创建发布。",
+        "errors-passed-not-created_other": "{{count}} 项 P0，{{passed}} 项通过。未自动创建发布。",
         "gate-approval": "工单审批",
         "gate-no-failed-checks": "无失败的检查",
         "gates-blocked": "项目所设置的条件未满足，无法部署。",
@@ -2243,13 +3096,16 @@
         },
         "applies-to": "适用于",
         "comment-on-lines": "评论所选行",
+        "comment-on-plan": "对计划的评论",
+        "comment-title_one": "第 {{range}} 行的评论",
+        "comment-title_other": "第 {{range}} 行的评论",
+        "fold-label_one": "{{title}}，第 {{range}} 行",
+        "fold-label_other": "{{title}}，第 {{range}} 行",
         "n-replies-hidden_one": "已隐藏 {{count}} 条回复",
         "n-replies-hidden_other": "已隐藏 {{count}} 条回复",
-        "n-replies_one": "{{count}} 条回复",
-        "n-replies_other": "{{count}} 条回复",
         "priority": {
           "p1": "有风险但合理，需要有人确认接受。",
-          "p2": "仅供参考。"
+          "p2": "建议项。阅读后即可解决，不要求采纳。"
         },
         "publish": "发布",
         "reopen-thread": "重新打开线程",
@@ -2259,6 +3115,18 @@
         "resolve": "解决",
         "resolve-thread": "解决线程",
         "resolved": "已解决",
+        "targets": {
+          "clear-search": "清除搜索",
+          "list-label": "数据库",
+          "more-environments": "+{{n}}",
+          "n-databases_one": "{{count}} 个数据库",
+          "n-databases_other": "{{count}} 个数据库",
+          "n-of-m-databases_one": "{{total}} 个中的 {{count}} 个数据库",
+          "n-of-m-databases_other": "{{total}} 个中的 {{count}} 个数据库",
+          "no-match": "没有与“{{query}}”匹配的数据库",
+          "open-group": "打开分组",
+          "search-placeholder": "搜索数据库"
+        },
         "threads-on-line_one": "此行有 {{count}} 个讨论",
         "threads-on-line_other": "此行有 {{count}} 个讨论",
         "walker": {
@@ -2304,10 +3172,6 @@
       "reopen-confirm": "确认重新打开这个计划？",
       "reopen-review-confirm": "确认重新打开这个审批？"
     },
-    "statement-summary": {
-      "affected-rows_one": "约影响 {{count}} 行",
-      "affected-rows_other": "约影响 {{count}} 行"
-    },
     "status-scope": {
       "description": "按计划中任务的当前状态筛选",
       "waiting": "等待中"
@@ -2319,13 +3183,11 @@
       "n-changes": "{{n}} 个变更",
       "n-database-groups": "{{n}} 个数据库组",
       "n-databases": "{{n}} 个数据库",
-      "n-error": "{{n}} 错误",
       "n-of-m-approved": "{{n}}/{{m}} 已审批",
       "n-of-m-tasks": "{{n}}/{{m}} 任务",
       "n-passed": "{{n}} 通过",
       "n-unresolved-threads_one": "{{count}} 个未解决的讨论",
       "n-unresolved-threads_other": "{{count}} 个未解决的讨论",
-      "n-warning": "{{n}} 警告",
       "no-approval-required": "无需审批"
     },
     "targets": {
@@ -2668,6 +3530,14 @@
   "release": {
     "and-n-more-files": "以及另外 {{count}} 个文件",
     "change-tip": "该变更关联到了一个发布包。",
+    "changes": {
+      "load-all": "全部加载（{{count}}）",
+      "load-more": "再加载 {{count}} 个",
+      "manifest_one": "{{count}} 个文件 · 最新 {{version}}",
+      "manifest_other": "{{count}} 个文件 · 最新 {{version}}",
+      "schema": "Schema",
+      "show-fewer": "收起"
+    },
     "empty": {
       "description": "CI 流水线发布到 Bytebase 的变更会连同部署进度显示在这里。",
       "read-guide": "阅读 GitOps 指南",
@@ -2690,7 +3560,16 @@
     "vcs-type": {
       "unspecified": "未知 VCS"
     },
-    "view-all-files": "查看全部文件"
+    "view-all-files": "查看全部文件",
+    "viewer": {
+      "already-applied": "此前已应用；本次运行已跳过",
+      "already-applied-before-run": "在此部署之前已应用",
+      "applied-by-run": "由本次运行应用",
+      "failed-on": "在 {{stage}} 失败",
+      "open-at-commit": "在 {{platform}} 中打开 {{sha}}",
+      "size": "{{size}} 字节",
+      "statement-unavailable": "无法加载该文件的语句。"
+    }
   },
   "remind": {
     "role-expire": {
@@ -2943,7 +3822,6 @@
           "api-key": {
             "description": "提供 API 密钥，只读。{{viewDoc}}",
             "find-my-key": "找到我的 Key",
-            "placeholder": "API Key 通常以 sk-***** 开头",
             "self": "API Key"
           },
           "available-in-saas": "AI 助手已在此工作空间中启用，并由 Bytebase 管理。",
@@ -3200,6 +4078,10 @@
           "refused": "不允许"
         },
         "row": {
+          "add-instances": {
+            "details": "向项目添加使用用户名和密码登录的 PostgreSQL 实例 · 每个实例都会先在用户的 MCP 客户端中确认，然后才会添加 · 其数据库将永久归属该项目",
+            "title": "向项目添加实例"
+          },
           "approval-rules": {
             "details": "添加、删除、调整顺序或修改决定由谁审批数据库变更的规则 · 每项变更都会先在用户的 MCP 客户端中确认，然后才会执行 · 兜底规则和其他类型工单的规则保持不变",
             "title": "管理数据库变更的审批规则"
@@ -3207,6 +4089,10 @@
           "approve": {
             "details": "每项决定都会先在用户的 MCP 客户端中确认，然后才会执行 · 角色申请需在控制台中批准或拒绝 · 审批规则和项目的自我审批设置照常适用，与控制台相同",
             "title": "批准或拒绝工单"
+          },
+          "ci-identities": {
+            "details": "创建一个工作负载身份，供某个仓库中的 GitHub Actions 或 GitLab CI 任务登录，并在一个项目中授予其 GitOps 服务代理角色，因此它无需审批即可部署 · 每个身份都会先在用户的 MCP 客户端中确认，然后才会创建 · 此策略不限制它的操作，它会一直存在，直到被删除",
+            "title": "创建 CI 身份"
           },
           "export": {
             "details": "将结果导出为文件。数据会离开 Bytebase。",
@@ -3229,7 +4115,7 @@
             "title": "提议变更"
           },
           "read-access": {
-            "details": "谁在工作空间及其项目中拥有哪个角色 · 群组及其成员 · 角色及其权限 · 脱敏规则和脱敏豁免 · 发布、数据查询、标签和审核策略 · 审批规则、环境、语义类型和数据分类 · 访问授权，包括待审批的申请",
+            "details": "谁在工作空间及其项目中拥有哪个角色 · 群组及其成员 · 角色及其权限 · 脱敏规则和脱敏豁免 · 发布、数据查询、标签和审核策略 · 审批规则、环境、语义类型和数据分类 · 访问授权，包括待审批的申请 · CI 身份及哪些任务可以以其身份登录",
             "title": "读取成员、角色和策略"
           },
           "read-data": {
@@ -3381,9 +4267,7 @@
         "self": "群组",
         "workspace-domain-required": "请先设置工作空间的域名。"
       },
-      "inactive-service-accounts": "未激活服务账号",
       "inactive-users": "未激活用户",
-      "inactive-workload-identities": "未激活工作负载身份",
       "invite-email-hint": "将向新成员发送邀请邮件。",
       "pending-invite": "已邀请",
       "reset-service-key": "重置 Service Key",
@@ -3411,31 +4295,8 @@
       "view-by-roles": "按角色查看",
       "workload-identities": "工作负载身份",
       "workload-identity": "工作负载标识",
-      "workload-identity-advanced": "高级设置",
-      "workload-identity-all-branches-tags": "所有分支和标签",
-      "workload-identity-allowed-branches-tags": "允许的分支/标签",
-      "workload-identity-audience": "受众",
-      "workload-identity-audience-hint": "流水线请求的 audience。Bytebase 生成的工作流请求 bytebase；配置指南请求提供方默认值，如果流水线使用该值，请另起一行添加。",
-      "workload-identity-branch": "分支",
-      "workload-identity-branch-hint": "留空表示允许所有分支",
       "workload-identity-config-rejected": "Bytebase 无法接受此配置：",
-      "workload-identity-generic-oidc": "通用 OIDC",
-      "workload-identity-gitlab-url": "GitLab 地址",
-      "workload-identity-gitlab-url-hint": "您的 GitLab 实例地址",
-      "workload-identity-group": "Group / 用户名",
-      "workload-identity-issuer": "发行者 URL",
-      "workload-identity-jwks-url": "JWKS URL",
-      "workload-identity-owner": "组织 / 用户名",
-      "workload-identity-platform": "平台",
-      "workload-identity-project": "项目",
-      "workload-identity-project-hint": "留空则允许所有项目",
-      "workload-identity-repo": "仓库",
-      "workload-identity-repo-hint": "留空表示允许组织内所有仓库",
-      "workload-identity-specific-branch": "指定分支",
-      "workload-identity-specific-tag": "指定标签",
-      "workload-identity-subject": "主题模式",
-      "workload-identity-tag": "标签",
-      "workload-identity-tag-hint": "留空则允许所有标签"
+      "workload-identity-generic-oidc": "通用 OIDC"
     },
     "profile": {
       "display-name": "您的姓名",
@@ -3723,7 +4584,7 @@
     "access-type-export": "导出查询结果",
     "access-type-unmask": "查看未脱敏的敏感数据",
     "activate-access": "激活",
-    "activate-confirm": "确定要激活此访问授权吗？",
+    "activate-confirm": "激活后，可通过此访问授权执行已批准的查询。",
     "add-a-new-instance": "添加新实例",
     "admin-mode": {
       "exit": "退出管理员模式",
@@ -4032,7 +4893,7 @@
     },
     "result-view-mode": "结果视图模式",
     "revoke-access": "撤销",
-    "revoke-confirm": "确定要撤销此访问授权吗？",
+    "revoke-confirm": "撤销后，此访问授权将不再允许执行已批准的查询。",
     "rows": {
       "self": "行"
     },
@@ -4257,7 +5118,7 @@
       },
       "sql-review": {
         "description": "分析 SQL 语句中的潜在问题并提供建议，包括内置规则和自定义规则。",
-        "self": "SQL 审核"
+        "self": "基于规则的 SQL 审核"
       }
     },
     "created": "创建时间",
@@ -4266,6 +5127,25 @@
     },
     "executed-by": "执行人",
     "execution-time": "执行时间",
+    "folded": {
+      "about-rows_one": "约 {{rows}} 行",
+      "about-rows_other": "约 {{rows}} 行",
+      "all-applied_one": "全部 {{count}} 个已应用",
+      "all-applied_other": "全部 {{count}} 个已应用",
+      "already-applied_one": "{{count}} 个此前已应用",
+      "already-applied_other": "{{count}} 个此前已应用",
+      "applying_one": "正在应用 {{count}} 个文件",
+      "applying_other": "正在应用 {{count}} 个文件",
+      "kind-ddl": "DDL",
+      "kind-dml": "DML",
+      "kind-mixed": "混合",
+      "nothing-to-apply": "无需应用",
+      "scheduled": "计划于",
+      "skipped-by": "由 {{user}} 跳过",
+      "started": "开始于 {{time}}",
+      "to-apply_one": "{{count}} 个待应用",
+      "to-apply_other": "{{count}} 个待应用"
+    },
     "no-cancelable-tasks": "没有可取消的任务",
     "no-permission": "无权限执行该操作",
     "no-runnable-tasks": "没有可运行的任务",
@@ -4288,6 +5168,7 @@
     "select-task": "选择任务",
     "skip-prior-backup": "跳过预备份",
     "skip-prior-backup-description": "跳过变更前的自动数据备份",
+    "skip-reason-required": "请填写跳过任务的原因。",
     "skip-task": "跳过任务 | 跳过任务",
     "skipped-no-reason": "未提供原因",
     "started": "开始于",
@@ -4353,11 +5234,71 @@
       }
     },
     "run-number": "第 {{number}} 次运行",
+    "spine": {
+      "already-applied_one": "{{count}} 个文件此前已应用到此数据库",
+      "already-applied_other": "{{count}} 个文件此前已应用到此数据库",
+      "as-of": "截至部署创建时（{{time}}）；运行时会重新检查数据库。",
+      "count": {
+        "already-applied": "{{count}} 个此前已应用",
+        "applied": "{{count}} 个已应用",
+        "canceled": "{{count}} 个已取消",
+        "failed": "{{count}} 个失败",
+        "files_one": "{{count}} 个文件",
+        "files_other": "{{count}} 个文件",
+        "pending": "{{count}} 个待应用",
+        "running": "{{count}} 个运行中"
+      },
+      "load": {
+        "all": "全部加载（{{count}}）",
+        "applied": "加载 {{count}} 个已应用",
+        "files": "加载 {{count}} 个文件",
+        "more-applied": "再加载 {{count}} 个已应用",
+        "more-files": "再加载 {{count}} 个文件",
+        "more-pending": "再加载 {{count}} 个待应用",
+        "pending": "加载 {{count}} 个待应用"
+      },
+      "no-statement": "未能确定此错误对应的语句。",
+      "not-applied": "未应用",
+      "planned_one": "发布创建时的计划 · {{count}} 个文件待应用",
+      "planned_other": "发布创建时的计划 · {{count}} 个文件待应用",
+      "revision-deleted": "更早的修订已于 {{date}} 被 {{user}} 删除",
+      "revision-deleted-after-rollout": "更早的修订在此发布创建后被删除",
+      "revisions-on": "{{database}} 上的修订",
+      "run-failed": "运行失败",
+      "status": {
+        "applied": "已应用",
+        "applied-again": "已再次应用",
+        "canceled": "已取消",
+        "failed": "失败",
+        "running": "运行中"
+      },
+      "will-apply": "将应用",
+      "will-apply-again": "将再次应用 · 修订已删除"
+    },
     "status": {
       "enqueued": "等待执行。",
       "enqueued-with-rollout-time": "等待执行，{{time}} 后执行。",
       "waiting-max-tasks-per-rollout": "正在等待其他任务完成。已达到每次发布的最大运行任务数限制。上次报告时间：{{time}}。"
     }
+  },
+  "time-range": {
+    "add-time": "添加时间",
+    "all-time": "全部时间",
+    "clear": "清除时间范围",
+    "end-day": "结束日期",
+    "from-time": "开始时间（24 小时制）",
+    "invalid-time": "请使用 24 小时制时间，例如 09:30。",
+    "last-12-months": "最近 12 个月",
+    "last-3-months": "最近 3 个月",
+    "last-30-days": "最近 30 天",
+    "last-6-months": "最近 6 个月",
+    "last-7-days": "最近 7 天",
+    "quick-ranges": "快捷范围",
+    "remove-time": "移除时间",
+    "start-day": "开始日期",
+    "to-before-from": "结束时间早于开始时间。",
+    "to-time": "结束时间（24 小时制）",
+    "today": "今天"
   },
   "two-factor": {
     "description": "双重认证为系统成员提供了一个额外的安全层。在登录时，用户需要输入由认证器应用程序生成的安全代码。",
@@ -4407,6 +5348,117 @@
       "copy-succeed": "复制成功。请输入到您的应用程序中。",
       "description": "复制密钥并在您的应用程序中手动输入。",
       "self": "双重认证密钥"
+    }
+  },
+  "workload-identity": {
+    "account": {
+      "description-project": "登录的任务将以此账号身份在项目 {{project}} 中操作。",
+      "description-workspace": "登录的任务将以此账号身份在此工作空间中操作。",
+      "display-name": "显示名称",
+      "display-name-hint": "显示在成员列表中。留空则使用邮箱名称。",
+      "email-hint": "你的工作流使用此邮箱登录。之后无法更改。",
+      "email-invalid": "只能使用字母、数字、点、连字符和下划线。",
+      "email-required": "请输入邮箱名称。",
+      "email-used": "已被其他工作负载身份使用。",
+      "no-permission-project": "你无法在此项目中授予角色。该身份将在没有角色的情况下创建，在项目所有者授予角色前无法执行任何操作。",
+      "no-permission-workspace": "你无法在此工作空间中授予角色。该身份将在没有角色的情况下创建，在工作空间管理员授予角色前无法执行任何操作。",
+      "question": "它在 Bytebase 中是谁？",
+      "role-hint-project": "此账号在该项目中可以做什么。GitOps Service Agent 是 GitOps 工作流所需的角色。",
+      "role-hint-workspace": "此账号在该工作空间的每个项目中可以做什么。",
+      "role-required": "请选择一个角色。"
+    },
+    "continue": "继续",
+    "create-title": "创建工作负载身份",
+    "done": {
+      "description-oidc-project": "subject 匹配 {{pattern}} 的令牌现在可以以此身份登录项目 {{project}}。",
+      "description-oidc-workspace": "subject 匹配 {{pattern}} 的令牌现在可以以此身份登录此工作空间。",
+      "description-project": "{{target}} 中的任务现在可以以此身份登录项目 {{project}}。",
+      "description-workspace": "{{target}} 中的任务现在可以以此身份登录此工作空间。",
+      "email-hint": "在工作流中将其设置为 <code>BYTEBASE_WORKLOAD_IDENTITY</code>。GitOps 页面生成的工作流已在使用它。",
+      "external-url-placeholder": "尚未设置外部 URL，因此此文件使用了占位符。请将 {{placeholder}} 替换为 CI 任务可以访问的地址，或设置外部 URL。",
+      "github-caption": "将此文件提交到 {{repository}} 的任意分支并推送。它仅在此文件变化时运行，而不是每次推送都运行。任务成功表示身份可以登录；任务失败会打印 Bytebase 拒绝令牌的原因。",
+      "gitlab-caption": "在任意分支提交，然后在流水线中对该任务点击运行。",
+      "gitlab-file-hint": "添加此任务",
+      "role-not-granted": "身份已创建，但角色未授予：{{error}}。请在成员页面授予。",
+      "target-any-project": "{{owner}} 中的任意项目",
+      "target-any-repository": "{{owner}} 的任意仓库",
+      "test-description": "在依赖此身份之前，运行一次此工作流以确认它可以正常工作。",
+      "test-title": "检查能否登录",
+      "title": "工作负载身份已创建",
+      "title-updated": "更改已保存",
+      "updated-oidc-project": "从下次运行起，subject 匹配 {{pattern}} 的令牌可以以此身份登录项目 {{project}}。",
+      "updated-oidc-workspace": "从下次运行起，subject 匹配 {{pattern}} 的令牌可以以此身份登录此工作空间。",
+      "updated-project": "从下次运行起，{{target}} 中的任务可以以此身份登录项目 {{project}}。",
+      "updated-workspace": "从下次运行起，{{target}} 中的任务可以以此身份登录此工作空间。"
+    },
+    "edit-banner": "正在编辑 {{email}}。更改从其下次登录起生效。",
+    "edit-title": "编辑工作负载身份",
+    "optional": "（可选）",
+    "rail": {
+      "account": "账号",
+      "done": "完成",
+      "label": "步骤",
+      "repositories": "仓库",
+      "subject": "Subject",
+      "token-source": "令牌来源"
+    },
+    "repositories": {
+      "any-environment-warning": "只有在某个环境中运行的任务可以登录。没有环境的任务（例如 SQL 审核任务）将会失败。",
+      "description": "匹配仓库中的每个任务都可以登录。其他账号的任务永远不能登录。",
+      "environment-warning": "只有 <code>environment: {{environment}}</code> 的任务可以登录。没有环境的任务（例如 SQL 审核任务）将会失败。",
+      "github-pattern-editing-hint": "上方的所有者、所有者 ID 和仓库会根据你的输入更新。之后修改某个字段只会替换模式中它自己的部分。重置会再次根据字段生成模式。",
+      "gitlab-pattern-editing-hint": "上方的群组和项目会根据你的输入更新。之后修改某个字段只会替换模式中它自己的部分。重置会再次根据字段生成模式。",
+      "group": "群组",
+      "group-hint": "拥有该项目的群组（或用户）。",
+      "group-required": "请输入群组。",
+      "name-invalid": "名称不能包含空格、*、:、@ 或 /。",
+      "oidc-pattern-hint": "必须等于令牌的 <code>sub</code>。以 <code>*</code> 结尾可按前缀匹配。",
+      "oidc-question": "哪些令牌可以登录？",
+      "owner": "所有者",
+      "owner-hint": "拥有该仓库的组织（或用户）。",
+      "owner-id": "所有者 ID",
+      "owner-id-hint": "通过 <code>gh api users/{{owner}} --jq .id</code> 获取。即使账号被重命名，它也不会改变。",
+      "owner-id-invalid": "只能使用数字。",
+      "owner-id-note": "没有它，此规则只信任名称。如果该账号被重命名或删除，任何人都可以注册该名称并以此身份登录。",
+      "owner-id-note-link": "GitHub 更新日志",
+      "owner-id-note-title": "所有者 ID 可防止此规则因名称被重新注册而失效",
+      "owner-required": "请输入所有者。",
+      "pattern-hint": "由上方字段生成。仅当字段无法表达某条规则时才编辑它。",
+      "pattern-required": "请输入 Subject 模式。",
+      "pattern-unreadable": "上方字段无法解析此模式，因此已禁用，模式仅按前缀匹配。重置会再次根据字段生成模式。",
+      "project": "项目",
+      "project-hint": "留空则匹配该群组中的任意项目。",
+      "project-invalid": "路径不能包含空格、*、: 或 @。",
+      "question": "哪些仓库可以登录？",
+      "repo-required": "该模式不只指定了仓库。清空仓库前请先重置模式。",
+      "repository": "仓库",
+      "repository-hint": "留空则匹配该所有者的任意仓库。",
+      "subject-pattern": "Subject 模式"
+    },
+    "token-source": {
+      "audiences": "受众",
+      "audiences-hint": "令牌的受众必须是其中之一。GitOps 页面生成的工作流请求的是 <code>bytebase</code>。",
+      "audiences-placeholder": "输入后按回车",
+      "audiences-required": "请至少添加一个受众。",
+      "description": "选择为任务签发令牌的 CI 提供方。工作负载身份让这些任务无需存储密钥即可登录 Bytebase。",
+      "github-issuer-hint": "仅在使用 GitHub Enterprise Server、GHE.com 或企业自定义签发方时修改。",
+      "github-note": "GitHub 用同一个全局签发方为每个 Actions 任务签发令牌。GitHub 一侧无需任何配置。",
+      "github-subtitle": "CI/CD 工作流",
+      "github-title": "GitHub Actions",
+      "gitlab-issuer-hint": "仅在使用自托管 GitLab 实例时修改为该实例的 URL。",
+      "gitlab-note": "GitLab 以你的 GitLab 实例 URL 作为签发方为每个任务签发令牌。GitLab 一侧无需任何配置。",
+      "gitlab-subtitle": "gitlab.com 或自托管",
+      "gitlab-title": "GitLab CI",
+      "issuer": "签发方 URL",
+      "issuer-required": "请输入签发方 URL。",
+      "jwks-url": "JWKS URL",
+      "jwks-url-hint": "Bytebase 下载签发方公钥的地址。如果签发方发布了 <code>/.well-known/openid-configuration</code>，可留空。",
+      "oidc-audiences-hint": "令牌的受众必须是其中之一。",
+      "oidc-subtitle": "使用你自己的签发方",
+      "oidc-title": "其他 OIDC",
+      "provider-required": "请选择令牌来源。",
+      "question": "你的 CI 任务从哪里获取令牌？",
+      "remove-audience": "移除 {{audience}}"
     }
   },
   "workspace-setup": {

@@ -178,6 +178,7 @@ export function ReviewAIPolicyField({
   title,
   description,
   emptyText,
+  standardRules = true,
 }: {
   policy: ReviewAIPolicyDraft;
   // Example rules for this level, shown while the field is empty.
@@ -185,6 +186,8 @@ export function ReviewAIPolicyField({
   title?: ReactNode;
   description?: ReactNode;
   emptyText?: ReactNode;
+  // Whether the standard rules review beside the AI.
+  standardRules?: boolean;
 }) {
   const { t } = useTranslation();
   const id = useId();
@@ -212,7 +215,16 @@ export function ReviewAIPolicyField({
           {title ?? t("sql-review.ai-review.policy.self")}
         </span>
       }
-      description={description ?? t("sql-review.ai-review.policy.description")}
+      description={
+        <>
+          <p>{description ?? t("sql-review.ai-review.policy.description")}</p>
+          {/* The AI review leaves the standard rules' conditions alone unless
+              the policy names one. */}
+          {standardRules && (
+            <p>{t("sql-review.ai-review.policy.standard-rules-hint")}</p>
+          )}
+        </>
+      }
     >
       <FormControlGroup>
         {policy.loaded && policy.paused && (

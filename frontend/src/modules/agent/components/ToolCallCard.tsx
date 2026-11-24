@@ -4,12 +4,14 @@ import { useTranslation } from "react-i18next";
 import { PlainCellValue } from "@/components/PlainCellValue";
 import { QueryResultVerticalBody } from "@/components/QueryResultVerticalBody";
 import { QueryResultVerticalRow } from "@/components/QueryResultVerticalRow";
+import { Alert } from "@/components/ui/alert";
 import {
   Collapsible,
   CollapsiblePanel,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Separator } from "@/components/ui/separator";
 import { getPlainValue } from "@/modules/sql-editor/components/ResultView/cell-value";
 import { QueryResultTableGrid } from "@/modules/sql-editor/components/ResultView/QueryResultTableGrid";
 import type {
@@ -18,21 +20,26 @@ import type {
 } from "@/modules/sql-editor/components/ResultView/types";
 import type { RowValue } from "@/types/proto-es/v1/sql_service_pb";
 import { extractSQLRowValuePlain } from "@/utils/v1/sql";
+import type { AgentApiAttempt } from "../logic/apiAttempt";
 import { parseCallApiResult } from "../logic/callApiResult";
 import {
   type AgentQueryResultPreview,
   type AgentQueryResultSetPreview,
   parseAgentQueryResult,
 } from "../logic/queryResult";
+import { apiCallNeedsConfirmation } from "../logic/tools/apiMethodClass";
 import type {
   AgentAskUserOption,
   AgentAskUserResponse,
   ToolCall,
 } from "../logic/types";
+import { AgentApiOutcome } from "./AgentApiOutcome";
 
 interface Props {
   toolCall: ToolCall;
   result?: string;
+  missingResultAttempt?: AgentApiAttempt;
+  hasRecoveryDraft?: boolean;
 }
 
 const parseJson = (value?: string): unknown => {
@@ -135,7 +142,7 @@ function AgentQueryResultTable({
         }}
         className="max-h-80"
       />
-      {rows.length === 0 && (
+      {rows.length === 0 && resultSet.returnedRowCount === 0 && (
         <div className="px-2 py-3 text-center text-control-light">
           {t("common.no-data")}
         </div>
@@ -186,7 +193,7 @@ function AgentQueryResultVertical({
           />
         )}
       />
-      {resultSet.rows.length === 0 && (
+      {resultSet.rows.length === 0 && resultSet.returnedRowCount === 0 && (
         <div className="px-2 py-3 text-center text-control-light">
           {t("common.no-data")}
         </div>
@@ -215,14 +222,32 @@ function QueryResultPreview({ preview }: { preview: AgentQueryResultPreview }) {
                 {t("agent.result")}
                 {preview.totalResultSets > 1 ? ` #${resultIndex + 1}` : ""}
               </span>
-              {resultSet.rowsTruncated
-                ? t("agent.query-result.showing-rows", {
-                    shown: resultSet.displayedRowCount,
-                    total: resultSet.returnedRowCount,
+              {resultSet.previewLevel === "omitted" &&
+              resultSet.returnedRowCount > 0
+                ? t("agent.query-result.omitted-rows", {
+                    received: resultSet.returnedRowCount,
                   })
-                : t("agent.query-result.returned-rows", {
-                    count: resultSet.returnedRowCount,
-                  })}
+                : resultSet.previewLevel === "sampled" &&
+                    resultSet.retainedRowCount < resultSet.returnedRowCount
+                  ? t("agent.query-result.sampled-rows", {
+                      retained: resultSet.retainedRowCount,
+                      received: resultSet.returnedRowCount,
+                    })
+                  : resultSet.rowsTruncated
+                    ? t("agent.query-result.showing-rows", {
+                        shown: resultSet.displayedRowCount,
+                        total: resultSet.returnedRowCount,
+                      })
+                    : t("agent.query-result.returned-rows", {
+                        count: resultSet.returnedRowCount,
+                      })}
+              {resultSet.previewLevel === "sampled" &&
+                resultSet.retainedRowCount < resultSet.returnedRowCount &&
+                resultSet.displayedRowCount < resultSet.retainedRowCount &&
+                t("agent.query-result.showing-rows", {
+                  shown: resultSet.displayedRowCount,
+                  total: resultSet.returnedRowCount,
+                })}
               {resultSet.columnsTruncated &&
                 t("agent.query-result.showing-columns", {
                   shown: resultSet.displayedColumnCount,
@@ -310,7 +335,12 @@ const parseAskUserOption = (value: unknown): AgentAskUserOption | null => {
   };
 };
 
-export function ToolCallCard({ toolCall, result }: Props) {
+export function ToolCallCard({
+  toolCall,
+  result,
+  missingResultAttempt,
+  hasRecoveryDraft,
+}: Props) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
@@ -320,21 +350,68 @@ export function ToolCallCard({ toolCall, result }: Props) {
     [toolCall.arguments]
   );
   const parsedResult = useMemo(() => parseJson(resultText), [resultText]);
-  const hasErrorResult =
+  const resultRecord =
     typeof parsedResult === "object" &&
     parsedResult !== null &&
-    !Array.isArray(parsedResult) &&
-    typeof (parsedResult as Record<string, unknown>).error === "string";
+    !Array.isArray(parsedResult)
+      ? (parsedResult as Record<string, unknown>)
+      : undefined;
+  const errorMessage =
+    typeof resultRecord?.error === "string"
+      ? resultRecord.error
+      : resultRecord?.kind === "error" &&
+          typeof resultRecord.message === "string"
+        ? resultRecord.message
+        : undefined;
+  const hasErrorResult =
+    errorMessage !== undefined || resultRecord?.kind === "error";
+  const unmaskMethodExplanation = useMemo(() => {
+    if (
+      toolCall.name !== "ask_unmask_method" ||
+      hasErrorResult ||
+      resultRecord?.needsScope !== false ||
+      (resultRecord.method !== "just-in-time" &&
+        resultRecord.method !== "masking-exemption")
+    ) {
+      return undefined;
+    }
+    const explanation = resultRecord.methodExplanation;
+    if (
+      typeof explanation !== "object" ||
+      explanation === null ||
+      Array.isArray(explanation)
+    ) {
+      return undefined;
+    }
+    const { label, description, alternativeReason } = explanation as Record<
+      string,
+      unknown
+    >;
+    if (
+      typeof label !== "string" ||
+      !label.trim() ||
+      typeof description !== "string" ||
+      !description.trim() ||
+      typeof alternativeReason !== "string" ||
+      !alternativeReason.trim()
+    ) {
+      return undefined;
+    }
+    return { label, description, alternativeReason };
+  }, [hasErrorResult, resultRecord, toolCall.name]);
   const operationId =
+    toolCall.name === "call_api" &&
     typeof parsedArguments === "object" &&
     parsedArguments !== null &&
     !Array.isArray(parsedArguments) &&
     typeof (parsedArguments as Record<string, unknown>).operationId === "string"
       ? ((parsedArguments as Record<string, unknown>).operationId as string)
       : undefined;
-  const callApiError =
-    toolCall.name === "call_api"
-      ? parseCallApiResult(resultText, operationId).error
+  const callApi =
+    toolCall.name === "call_api" ||
+    (toolCall.name === "dom_action" &&
+      resultRecord?.agentExecution !== undefined)
+      ? parseCallApiResult(resultText, operationId)
       : undefined;
   const queryPreview = useMemo(() => {
     if (
@@ -354,7 +431,19 @@ export function ToolCallCard({ toolCall, result }: Props) {
       ? preview
       : undefined;
   }, [parsedArguments, resultText, toolCall.name]);
-  const isAskUser = toolCall.name === "ask_user";
+  const runtimeQuestionKey = {
+    ask_masking_exemption_scope: "agent.masking.exemption-scope.question",
+    ask_masking_rule_scope: "agent.masking.rule-scope.question",
+    ask_masking_semantic_type: "agent.masking.semantic-type-choice.question",
+  }[toolCall.name];
+  const isAskUser = toolCall.name === "ask_user" || !!runtimeQuestionKey;
+  const askError = isAskUser
+    ? hasErrorResult
+      ? errorMessage
+      : resultText.startsWith("Error:")
+        ? resultText
+        : undefined
+    : undefined;
   const isDone = toolCall.name === "done";
   const isCanceledAsk =
     isAskUser &&
@@ -362,8 +451,17 @@ export function ToolCallCard({ toolCall, result }: Props) {
     parsedResult !== null &&
     !Array.isArray(parsedResult) &&
     (parsedResult as Record<string, unknown>).kind === "cancelled";
+  const isSkippedAsk =
+    isAskUser &&
+    typeof parsedResult === "object" &&
+    parsedResult !== null &&
+    !Array.isArray(parsedResult) &&
+    (parsedResult as Record<string, unknown>).skipped === true;
 
   const askPrompt = useMemo(() => {
+    if (runtimeQuestionKey) {
+      return t(runtimeQuestionKey);
+    }
     if (
       typeof parsedArguments === "object" &&
       parsedArguments &&
@@ -373,9 +471,10 @@ export function ToolCallCard({ toolCall, result }: Props) {
       return (parsedArguments as Record<string, unknown>).prompt as string;
     }
     return "";
-  }, [parsedArguments]);
+  }, [runtimeQuestionKey, parsedArguments, t]);
 
   const askKind = useMemo(() => {
+    if (runtimeQuestionKey) return "choose" as const;
     if (
       typeof parsedArguments === "object" &&
       parsedArguments &&
@@ -386,7 +485,7 @@ export function ToolCallCard({ toolCall, result }: Props) {
       if (kind === "choose") return "choose" as const;
     }
     return "input" as const;
-  }, [parsedArguments]);
+  }, [runtimeQuestionKey, parsedArguments]);
 
   const askDefaultValue = useMemo(() => {
     if (
@@ -490,8 +589,39 @@ export function ToolCallCard({ toolCall, result }: Props) {
       "number" &&
     ((parsedResult as Record<string, unknown>).failedApiCallCount as number) >
       0;
+  const doneHasRecoveryDraft =
+    isDone &&
+    hasRecoveryDraft &&
+    resultRecord?.success === false &&
+    typeof resultRecord.text === "string" &&
+    resultRecord.text.trim().length > 0 &&
+    resultRecord.skipped !== true;
   const renderStatus = () => {
-    if (hasErrorResult || callApiError) {
+    if (!resultText && missingResultAttempt) {
+      return (
+        <span className="text-warning">
+          <AgentApiOutcome execution={missingResultAttempt.execution} />
+        </span>
+      );
+    }
+    if (callApi?.execution && apiCallNeedsConfirmation(operationId ?? "")) {
+      return (
+        <span
+          className={callApi.requiresRecovery ? "text-warning" : "text-control"}
+        >
+          <AgentApiOutcome execution={callApi.execution} />
+        </span>
+      );
+    }
+    if (toolCall.name === "dom_action" && resultRecord?.success === false) {
+      const manual = resultRecord.code === "manual-required";
+      return (
+        <span className={manual ? "text-warning" : "text-error"}>
+          {manual ? t("agent.tool-manual-required") : t("agent.tool-failed")}
+        </span>
+      );
+    }
+    if (hasErrorResult || callApi?.error || askError) {
       return <span className="text-error">{t("agent.tool-failed")}</span>;
     }
     if (isAskUser) {
@@ -502,16 +632,23 @@ export function ToolCallCard({ toolCall, result }: Props) {
           </span>
         );
       }
-      return resultText ? (
+      if (isSkippedAsk) {
+        return (
+          <span className="text-control-light">{t("common.skipped")}</span>
+        );
+      }
+      return askResponse ? (
         <span className="text-success">
           {t("agent.tool-response-submitted")}
         </span>
+      ) : resultText ? (
+        <span className="text-control-light">{t("agent.tool-completed")}</span>
       ) : (
         <span className="text-warning">{t("agent.tool-ask-user")}</span>
       );
     }
     if (isDone) {
-      if (doneHasApiWarnings) {
+      if (doneHasApiWarnings || doneHasRecoveryDraft) {
         return (
           <span className="text-warning">
             {t("agent.tool-completed-with-warnings")}
@@ -623,10 +760,23 @@ export function ToolCallCard({ toolCall, result }: Props) {
         {resultText && (
           <>
             <div className="text-control-light">{t("agent.result")}</div>
+            {queryPreview?.previewLevel &&
+              queryPreview.rowsPartiallyRetained && (
+                <div className="text-control-light">
+                  {queryPreview.previewLevel === "omitted"
+                    ? t("agent.query-result.preview-expired")
+                    : t("agent.query-result.preview-partial")}
+                </div>
+              )}
             <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-all text-control">
               {formatJson(resultText)}
             </pre>
           </>
+        )}
+        {!resultText && missingResultAttempt && (
+          <p className="text-control-light">
+            {t("agent.api-recovery.no-replay")}
+          </p>
         )}
       </>
     );
@@ -646,7 +796,38 @@ export function ToolCallCard({ toolCall, result }: Props) {
         </span>
       </CollapsibleTrigger>
 
+      {askError && (
+        <Alert
+          variant="error"
+          appearance="caption"
+          aria-label={t("agent.tool-failed")}
+          className="max-h-32 overflow-y-auto border-t border-block-border px-2 py-1.5 whitespace-pre-wrap break-words"
+        >
+          {askError}
+        </Alert>
+      )}
+
       {queryPreview && <QueryResultPreview preview={queryPreview} />}
+
+      {unmaskMethodExplanation && (
+        <>
+          <Separator />
+          <div
+            className="flex flex-col gap-1 px-2 py-1.5 break-words"
+            data-agent-unmask-method-explanation
+          >
+            <p className="font-medium text-main">
+              {unmaskMethodExplanation.label}
+            </p>
+            <p className="text-control">
+              {unmaskMethodExplanation.description}
+            </p>
+            <p className="text-control-light">
+              {unmaskMethodExplanation.alternativeReason}
+            </p>
+          </div>
+        </>
+      )}
 
       <CollapsiblePanel className="flex flex-col gap-1 border-t border-block-border px-2 py-1.5">
         {renderExpandedContent()}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 
 	"github.com/bytebase/bytebase/backend/common"
 	"github.com/bytebase/bytebase/backend/component/sheet"
@@ -70,16 +71,17 @@ var (
 	}
 )
 
+var templateTokenRe = regexp.MustCompile(`{{[^{}]+}}`)
+
 // ParseTemplateTokens parses the template and returns template tokens and their delimiters.
 // For example, if the template is "{{DB_NAME}}_hello_{{LOCATION}}", then the tokens will be ["{{DB_NAME}}", "{{LOCATION}}"],
 // and the delimiters will be ["_hello_"].
 // The caller will usually replace the tokens with a normal string, or a regexp. In the latter case, it will be a problem
 // if there are special regexp characters such as "$" in the delimiters. The caller should escape the delimiters in such cases.
 func ParseTemplateTokens(template string) ([]string, []string) {
-	r := regexp.MustCompile(`{{[^{}]+}}`)
-	tokens := r.FindAllString(template, -1)
+	tokens := templateTokenRe.FindAllString(template, -1)
 	if len(tokens) > 0 {
-		split := r.Split(template, -1)
+		split := templateTokenRe.Split(template, -1)
 		var delimiters []string
 		for _, s := range split {
 			if s != "" {
@@ -102,14 +104,9 @@ func SQLReviewCheck(
 	if !checkContext.NoAppendBuiltin {
 		// Append builtin rules only if the user hasn't overridden them in their config.
 		for _, r := range GetBuiltinRules(checkContext.DBType) {
-			overridden := false
-			for _, userRule := range ruleList {
-				if userRule.Type == r.Type && userRule.Engine == r.Engine {
-					overridden = true
-					break
-				}
-			}
-			if overridden {
+			if slices.ContainsFunc(ruleList, func(userRule *storepb.SQLReviewRule) bool {
+				return userRule.Type == r.Type && userRule.Engine == r.Engine
+			}) {
 				continue
 			}
 			ruleList = append(ruleList, r)
@@ -148,7 +145,7 @@ func SQLReviewCheck(
 	}
 
 	// Initialize the per-review memo so engine-specific helpers can amortize
-	// work across rules (e.g. omni re-parsing in advisor/tidb). The map header
+	// work across rules (e.g. memoized AST extraction in V1Engine). The map header
 	// propagates by value across rules; the underlying map is shared.
 	checkContext.memo = make(map[string]any)
 

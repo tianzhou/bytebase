@@ -81,6 +81,7 @@ import { useProjectByName } from "@/hooks/useProjectByName";
 import { useSessionPageSize } from "@/hooks/useSessionPageSize";
 import { seedSheetStatement } from "@/hooks/useSheetStatement";
 import {
+  expandSpecTargets,
   planCheckRunListForSpec,
   transformReleaseCheckResultsToPlanCheckRuns,
 } from "@/lib/plan/check";
@@ -115,12 +116,12 @@ import {
   getInstanceResource,
   hasProjectPermissionV2,
 } from "@/utils";
-import { sqlReviewV2Enabled } from "@/utils/featureGates";
 import { getStatementSize } from "@/utils/sheet";
 import { extractDatabaseGroupName } from "@/utils/v1/databaseGroup";
 import { sheetNameOfSpec } from "@/utils/v1/issue/plan";
 import { extractSheetUID, getSheetStatement } from "@/utils/v1/sheet";
 import { usePlanChangeReferenceData } from "../hooks/usePlanChangeReferenceData";
+import { useChecksInReview } from "../hooks/useSqlReviewV2";
 import { usePlanDetailStore } from "../shared/stores/usePlanDetailStore";
 import { usePlanDetailContext } from "../shell/PlanDetailContext";
 import { derivePlanChangeReference } from "../utils/changeReference";
@@ -207,6 +208,7 @@ export function PlanDetailChangesBranch({
   const page = usePlanDetailContext();
   const { patchState } = page;
   const currentUser = useCurrentUser();
+  const checksInReview = useChecksInReview();
   const unresolvedThreadsBySpec = usePlacedUnresolvedThreadCounts(
     page.issue?.name,
     page.plan.specs,
@@ -512,12 +514,17 @@ export function PlanDetailChangesBranch({
   ]);
 
   const selectedSpecIdForDraftChecks = selectedSpec?.id;
+  const draftCheckPageKey = page.pageKey;
   const handleDraftCheckResultsChange = useCallback(
     (
       content: Uint8Array | undefined,
       results: CheckReleaseResponse_CheckResult[] | undefined
     ) => {
-      if (!selectedSpecIdForDraftChecks) return;
+      if (
+        !selectedSpecIdForDraftChecks ||
+        pageKeyRef.current !== draftCheckPageKey
+      )
+        return;
       setDraftCheckResultsBySpecId((prev) => {
         const nextState = results ? { results, content } : undefined;
         const previousState = prev[selectedSpecIdForDraftChecks];
@@ -533,7 +540,7 @@ export function PlanDetailChangesBranch({
         };
       });
     },
-    [selectedSpecIdForDraftChecks]
+    [draftCheckPageKey, selectedSpecIdForDraftChecks]
   );
   const handleStatementPersisted = useCallback((specId: string) => {
     setStatementVersionBySpecId((prev) => ({
@@ -568,6 +575,25 @@ export function PlanDetailChangesBranch({
   const draftCheckRuns = useMemo(
     () => transformReleaseCheckResultsToPlanCheckRuns(draftCheckResults ?? []),
     [draftCheckResults]
+  );
+  // Check results name the databases a group matches, never the group.
+  const dbGroupsByName = useAppStore((s) => s.dbGroupsByName);
+  const specCheckRuns = useMemo(
+    () =>
+      selectedSpec
+        ? planCheckRunListForSpec(
+            page.planCheckRuns,
+            selectedSpec,
+            expandSpecTargets(selectedSpec, (target) =>
+              isValidDatabaseGroupName(target)
+                ? dbGroupsByName[target]?.matchedDatabases.map(
+                    (database) => database.name
+                  )
+                : undefined
+            )
+          )
+        : [],
+    [dbGroupsByName, page.planCheckRuns, selectedSpec]
   );
 
   if (!selectedSpec) {
@@ -695,11 +721,7 @@ export function PlanDetailChangesBranch({
             selectedSpec={selectedSpec}
           />
           <PlanDetailStatementSection
-            planCheckRuns={
-              page.isCreating
-                ? draftCheckRuns
-                : planCheckRunListForSpec(page.planCheckRuns, selectedSpec)
-            }
+            planCheckRuns={page.isCreating ? draftCheckRuns : specCheckRuns}
             spec={selectedSpec}
             statementVersion={statementVersionBySpecId[selectedSpec.id] ?? 0}
           />
@@ -707,6 +729,9 @@ export function PlanDetailChangesBranch({
             page.isCreating &&
             selectedSpec.config.case === "changeDatabaseConfig" && (
               <PlanDetailDraftChecks
+                checkedContent={
+                  draftCheckResults ? draftCheckState?.content : undefined
+                }
                 checkResults={draftCheckResults}
                 onCheckResultsChange={handleDraftCheckResultsChange}
                 selectedSpec={selectedSpec}
@@ -723,8 +748,9 @@ export function PlanDetailChangesBranch({
         </div>
       </div>
 
-      {/* Under SQL Review V2 the checks are reviewers in the Review section. */}
-      {!page.isCreating && !specHasRelease && !sqlReviewV2Enabled() && (
+      {/* The checks are reviewers in the Review section under SQL Review V2,
+          and beside the AI review on V1. */}
+      {!page.isCreating && !specHasRelease && !checksInReview && (
         <PlanDetailAggregateChecks />
       )}
 

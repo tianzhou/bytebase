@@ -1,11 +1,15 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { create } from "@bufbuild/protobuf";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   type Task,
   TaskRun_Status,
+  TaskRunLogEntry_Type,
+  TaskRunLogEntrySchema,
 } from "@/types/proto-es/v1/rollout_service_pb";
 import type { Sheet } from "@/types/proto-es/v1/sheet_service_pb";
+import { silentContextKey } from "@/api/context-key";
 import type { UseTaskRunLogDataResult } from "./useTaskRunLogData";
 import { useTaskRunLogData } from "./useTaskRunLogData";
 
@@ -19,11 +23,15 @@ const mocks = vi.hoisted(() => ({
   fetchSheet: vi.fn(),
   getSheetByName: vi.fn(),
   getTaskRunLog: vi.fn(),
+  getTaskRun: vi.fn(),
   rolloutsByName: {} as Record<string, unknown>,
 }));
 
 vi.mock("@/api", () => ({
-  rolloutServiceClientConnect: { getTaskRunLog: mocks.getTaskRunLog },
+  rolloutServiceClientConnect: {
+    getTaskRunLog: mocks.getTaskRunLog,
+    getTaskRun: mocks.getTaskRun,
+  },
 }));
 
 vi.mock("@/stores/app", () => {
@@ -44,8 +52,10 @@ vi.mock("@/utils", () => ({
   extractRolloutNameFromTaskRunName: (name: string) =>
     name.split("/stages/")[0],
   extractTaskNameFromTaskRunName: (name: string) => name.split("/taskRuns/")[0],
-  isReleaseBasedTask: () => false,
-  releaseNameOfTaskV1: () => "",
+  isReleaseBasedTask: (task: Task) =>
+    Boolean((task as unknown as { release?: string }).release),
+  releaseNameOfTaskV1: (task: Task) =>
+    (task as unknown as { release?: string }).release ?? "",
   sheetNameOfTaskV1: (task: Task) =>
     (task as unknown as { sheet: string }).sheet,
 }));
@@ -116,6 +126,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.rolloutsByName = {};
   mocks.getTaskRunLog.mockResolvedValue({ entries: [] });
+  mocks.getTaskRun.mockResolvedValue(undefined);
   mocks.getSheetByName.mockReturnValue(undefined);
   mocks.fetchSheet.mockResolvedValue(undefined);
   mocks.fetchRolloutByName.mockResolvedValue(makeRolloutWithTask());
@@ -292,27 +303,79 @@ describe("useTaskRunLogData caching", () => {
     }
   });
 
-  test("revalidates once when a cached running log remounts as done", async () => {
+  test.each([false, true])(
+    "revalidates a cached running log on a done remount (identical entries: %s)",
+    async (identical) => {
+      mocks.rolloutsByName = { [ROLLOUT_NAME]: makeRolloutWithTask() };
+      mocks.getSheetByName.mockReturnValue(makeSheet("select 1", 8));
+      const taskRunName = `${TASK_NAME}/taskRuns/run-to-done-${identical}`;
+      const entry = create(TaskRunLogEntrySchema, { replicaId: "running" });
+      mocks.getTaskRunLog.mockResolvedValueOnce({ entries: [entry] });
+
+      const running = renderHook(taskRunName, TaskRun_Status.RUNNING);
+      await running.flush();
+      running.unmount();
+
+      // First mount at DONE: cache was recorded at RUNNING → revalidate once.
+      mocks.getTaskRunLog.mockResolvedValueOnce({
+        entries: [
+          create(TaskRunLogEntrySchema, {
+            replicaId: identical ? "running" : "done",
+          }),
+        ],
+      });
+      const done = renderHook(taskRunName, TaskRun_Status.DONE);
+      const cachedEntries = done.result().entries;
+      expect(done.result().logSnapshot).toEqual({
+        taskRunName,
+        status: TaskRun_Status.RUNNING,
+      });
+      await done.flush();
+      expect(done.result().logSnapshot).toEqual({
+        taskRunName,
+        status: TaskRun_Status.DONE,
+      });
+      if (identical) {
+        expect(done.result().entries).toBe(cachedEntries);
+      } else {
+        expect(done.result().entries[0].replicaId).toBe("done");
+      }
+      expect(mocks.getTaskRunLog).toHaveBeenCalledTimes(2);
+      done.unmount();
+
+      // Subsequent DONE mounts hit the terminal cache.
+      const again = renderHook(taskRunName, TaskRun_Status.DONE);
+      await again.flush();
+      expect(mocks.getTaskRunLog).toHaveBeenCalledTimes(2);
+      again.unmount();
+    }
+  );
+
+  test("keeps running log provenance when terminal revalidation fails", async () => {
     mocks.rolloutsByName = { [ROLLOUT_NAME]: makeRolloutWithTask() };
     mocks.getSheetByName.mockReturnValue(makeSheet("select 1", 8));
-    const taskRunName = `${TASK_NAME}/taskRuns/run-to-done`;
-    mocks.getTaskRunLog.mockResolvedValue({ entries: [{ deployId: "a" }] });
-
+    const taskRunName = `${TASK_NAME}/taskRuns/failed-log-refresh`;
+    mocks.getTaskRunLog.mockResolvedValueOnce({
+      entries: [create(TaskRunLogEntrySchema, { replicaId: "running" })],
+    });
     const running = renderHook(taskRunName, TaskRun_Status.RUNNING);
     await running.flush();
+    const cachedEntries = running.result().entries;
     running.unmount();
 
-    // First mount at DONE: cache was recorded at RUNNING → revalidate once.
+    mocks.getTaskRunLog.mockRejectedValueOnce(new Error("Log unavailable"));
     const done = renderHook(taskRunName, TaskRun_Status.DONE);
     await done.flush();
-    expect(mocks.getTaskRunLog).toHaveBeenCalledTimes(2);
+    expect(done.result().logFetch).toEqual({
+      status: "error",
+      error: "Log unavailable",
+    });
+    expect(done.result().entries).toBe(cachedEntries);
+    expect(done.result().logSnapshot).toEqual({
+      taskRunName,
+      status: TaskRun_Status.RUNNING,
+    });
     done.unmount();
-
-    // Subsequent DONE mounts hit the terminal cache.
-    const again = renderHook(taskRunName, TaskRun_Status.DONE);
-    await again.flush();
-    expect(mocks.getTaskRunLog).toHaveBeenCalledTimes(2);
-    again.unmount();
   });
 
   test("a late log response from an unmounted instance cannot rewind the cache", async () => {
@@ -355,6 +418,10 @@ describe("useTaskRunLogData caching", () => {
     mocks.getTaskRunLog.mockReturnValue(new Promise(() => {}));
     const reopened = renderHook(taskRunName, TaskRun_Status.DONE);
     expect(reopened.result().entries).toHaveLength(2);
+    expect(reopened.result().logSnapshot).toEqual({
+      taskRunName,
+      status: TaskRun_Status.DONE,
+    });
     reopened.unmount();
   });
 
@@ -400,6 +467,10 @@ describe("useTaskRunLogData caching", () => {
           (entry) => (entry as unknown as { deployId: string }).deployId
         )
     ).toEqual(["new-1", "new-2"]);
+    expect(hook.result().logSnapshot).toEqual({
+      taskRunName: newRunName,
+      status: TaskRun_Status.DONE,
+    });
     hook.unmount();
   });
 
@@ -413,6 +484,68 @@ describe("useTaskRunLogData caching", () => {
     expect(hook.result().sheet).toBeDefined();
     expect(hook.result().sheetFetch.status).toBe("success");
     expect(hook.result().metadataFetch.status).toBe("success");
+    hook.unmount();
+  });
+});
+
+describe("useTaskRunLogData release sheets", () => {
+  test("a run that reached two files of a 500-file release fetches two sheets", async () => {
+    const releaseName = "projects/p/releases/r1";
+    mocks.rolloutsByName = {
+      [ROLLOUT_NAME]: {
+        stages: [{ tasks: [{ name: TASK_NAME, release: releaseName }] }],
+      },
+    };
+    const files = Array.from({ length: 500 }, (_, i) => {
+      const version = String(i + 1).padStart(4, "0");
+      return { version, path: `${version}.sql`, sheet: `projects/p/sheets/s${version}` };
+    });
+    mocks.fetchRelease.mockResolvedValue({ name: releaseName, files });
+    mocks.getTaskRunLog.mockResolvedValue({
+      entries: ["0499", "0500"].map((version, i) =>
+        create(TaskRunLogEntrySchema, {
+          type: TaskRunLogEntry_Type.RELEASE_FILE_EXECUTE,
+          logTime: { seconds: BigInt(i + 1), nanos: 0 },
+          releaseFileExecute: { version, filePath: `${version}.sql` },
+        })
+      ),
+    });
+    mocks.fetchSheet.mockImplementation(async (name: string) =>
+      makeSheet(name, name.length)
+    );
+
+    const hook = renderHook(`${TASK_NAME}/taskRuns/reached-two`, TaskRun_Status.FAILED);
+    await hook.flush();
+    await hook.flush();
+
+    expect(mocks.fetchSheet.mock.calls.map(([name]) => name).sort()).toEqual([
+      "projects/p/sheets/s0499",
+      "projects/p/sheets/s0500",
+    ]);
+    expect(hook.result().release?.files).toHaveLength(500);
+    hook.unmount();
+  });
+});
+
+describe("useTaskRunLogData run lookup", () => {
+  test("a caller with no status gets the run, fetched silently", async () => {
+    const name = `${TASK_NAME}/taskRuns/no-status`;
+    mocks.getTaskRun.mockResolvedValue({ name, status: TaskRun_Status.FAILED, detail: "boom" });
+    const hook = renderHook(name);
+    await hook.flush();
+    expect(mocks.getTaskRun).toHaveBeenCalledTimes(1);
+    const options = mocks.getTaskRun.mock.calls[0][1] as {
+      contextValues: { get: (key: unknown) => unknown };
+    };
+    expect(options.contextValues.get(silentContextKey)).toBe(true);
+    expect(hook.result().taskRun?.detail).toBe("boom");
+    hook.unmount();
+  });
+
+  test("a caller that passes the status triggers no run lookup", async () => {
+    const hook = renderHook(`${TASK_NAME}/taskRuns/with-status`, TaskRun_Status.DONE);
+    await hook.flush();
+    expect(mocks.getTaskRun).not.toHaveBeenCalled();
     hook.unmount();
   });
 });

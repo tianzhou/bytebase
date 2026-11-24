@@ -2,402 +2,124 @@ package pg
 
 import (
 	"context"
-	"fmt"
-	"io"
+	"errors"
 	"os"
-	"slices"
-	"strings"
 	"testing"
-	"time"
 
 	metadatapb "github.com/bytebase/omni/metadata"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 
-	"github.com/bytebase/bytebase/backend/common/yamltest"
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/store/model"
 )
 
-type candidatesTest struct {
-	Input string
-	Want  []base.Candidate
-}
-
-func TestCompletion(t *testing.T) {
-	tests := []candidatesTest{}
-
-	const (
-		record = false
-	)
-	var (
-		filepath = "test-data/test_completion.yaml"
-	)
-
-	a := require.New(t)
-	yamlFile, err := os.Open(filepath)
-	a.NoError(err)
-
-	byteValue, err := io.ReadAll(yamlFile)
-	a.NoError(yamlFile.Close())
-	a.NoError(err)
-	a.NoError(yaml.Unmarshal(byteValue, &tests))
-
-	for i, t := range tests {
-		text, caretOffset := catchCaret(t.Input)
-		result, err := base.Completion(context.Background(), storepb.Engine_POSTGRES, base.CompletionContext{
-			Scene:             base.SceneTypeAll,
-			DefaultDatabase:   "db",
-			Metadata:          getMetadataForTest,
-			ListDatabaseNames: listDatbaseNamesForTest,
-		}, text, 1, caretOffset)
-		a.NoError(err)
-		var filteredResult []base.Candidate
-		for _, r := range result {
-			switch r.Type {
-			case base.CandidateTypeKeyword, base.CandidateTypeFunction:
-				continue
-			default:
-				filteredResult = append(filteredResult, r)
-			}
-		}
-		slices.SortFunc(filteredResult, func(x, y base.Candidate) int {
-			if x.Type != y.Type {
-				if x.Type < y.Type {
-					return -1
-				}
-				return 1
-			}
-			if x.Text != y.Text {
-				if x.Text < y.Text {
-					return -1
-				}
-				return 1
-			}
-			if x.Definition < y.Definition {
-				return -1
-			} else if x.Definition > y.Definition {
-				return 1
-			}
-			return 0
-		})
-
-		if record {
-			tests[i].Want = filteredResult
-		} else {
-			a.Equal(t.Want, filteredResult, t.Input)
+func hasCandidate(cands []base.Candidate, typ base.CandidateType, text string) bool {
+	for _, c := range cands {
+		if c.Type == typ && c.Text == text {
+			return true
 		}
 	}
-
-	if record {
-		yamltest.Record(t, filepath, tests)
-	}
+	return false
 }
 
-func listDatbaseNamesForTest(_ context.Context, _ string) ([]string, error) {
-	return []string{"db"}, nil
+func TestCompletionDoesNotDependOnANTLR(t *testing.T) {
+	content, err := os.ReadFile("pg.go")
+	require.NoError(t, err)
+	source := string(content)
+	require.NotContains(t, source, "github.com/antlr4-go/antlr/v4")
+	require.NotContains(t, source, "github.com/bytebase/parser/postgresql")
+	require.NotContains(t, source, "CodeCompletionCore")
 }
 
-// Completion cost must be bounded by the caret's statement, not the whole
-// sheet: a broken statement anywhere after the caret must not make the
-// FROM-clause re-parse loop shrink through the entire trailing document
-// (BYT-9886).
-func TestCompletionWithBrokenTrailingStatementScalesLinearly(t *testing.T) {
-	a := require.New(t)
-
-	// The caret is unqualified, so column candidates can only come from the
-	// tables parseTableReferences extracts out of the FROM clause; an
-	// over-truncated (empty) fragment cannot pass this test.
-	var sheet strings.Builder
-	sheet.WriteString("SELECT  FROM t1 JOIN t2 a2 ON t1.c1 = a2.c1;\n")
-	sheet.WriteString("SELEC broken FROM oops;\n")
-	for i := range 2000 {
-		fmt.Fprintf(&sheet, "SELECT col_a, col_b, col_c FROM table_%04d WHERE col_a = %d AND col_b LIKE 'pattern%%' ORDER BY col_c LIMIT 100;\n", i, i)
-	}
-
-	started := time.Now()
-	result, err := base.Completion(context.Background(), storepb.Engine_POSTGRES, base.CompletionContext{
-		Scene:             base.SceneTypeAll,
-		DefaultDatabase:   "db",
-		Metadata:          getMetadataForTest,
-		ListDatabaseNames: listDatbaseNamesForTest,
-	}, sheet.String(), 1, 7 /* caret in the select list, right after "SELECT " */)
-	elapsed := time.Since(started)
-
-	a.NoError(err)
-	var texts []string
-	for _, candidate := range result {
-		if candidate.Type == base.CandidateTypeColumn {
-			texts = append(texts, candidate.Text)
-		}
-	}
-	a.Contains(texts, "c1")
-	a.Contains(texts, "c2")
-	a.Less(elapsed, 2*time.Second)
-}
-
-func getMetadataForTest(_ context.Context, _, databaseName string) (string, *model.DatabaseMetadata, error) {
-	if databaseName != "db" {
-		return "", nil, nil
-	}
-
-	return "db", model.NewDatabaseMetadata(&metadatapb.DatabaseSchemaMetadata{
-		Name: databaseName,
+func TestCompletion_Seam(t *testing.T) {
+	metadata := model.NewDatabaseMetadata(&metadatapb.DatabaseSchemaMetadata{
+		Name: "db",
 		Schemas: []*metadatapb.SchemaMetadata{
 			{
 				Name: "public",
 				Tables: []*metadatapb.TableMetadata{
 					{
-						Name: "t1",
+						Name: "orders",
 						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "c1",
-								Type: "int",
-							},
+							{Name: "id", Type: "integer"},
+							{Name: "amount", Type: "numeric"},
 						},
 					},
 					{
-						Name: "t2",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "c1",
-								Type: "int",
-							},
-							{
-								Name: "c2",
-								Type: "int",
-							},
-						},
+						Name:    "Order Items",
+						Columns: []*metadatapb.ColumnMetadata{{Name: "Item ID", Type: "bigint"}},
 					},
 				},
 				Views: []*metadatapb.ViewMetadata{
-					{
-						Name:       "v1",
-						Definition: `SELECT * FROM t1`,
-					},
-				},
-				ExternalTables: []*metadatapb.ExternalTableMetadata{
-					{
-						Name: "ft1",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "f1",
-								Type: "int",
-							},
-							{
-								Name: "f2",
-								Type: "varchar",
-							},
-						},
-					},
+					{Name: "active_orders", Columns: []*metadatapb.ColumnMetadata{{Name: "id", Type: "integer"}}},
 				},
 				MaterializedViews: []*metadatapb.MaterializedViewMetadata{
-					{
-						Name:       "mv1",
-						Definition: "SELECT c1, c2 FROM t2",
-					},
+					{Name: "orders_summary", Definition: "SELECT id FROM orders"},
 				},
-				Sequences: []*metadatapb.SequenceMetadata{
-					{
-						Name:      "seq1",
-						DataType:  "bigint",
-						Start:     "1",
-						Increment: "1",
-						MinValue:  "1",
-						MaxValue:  "9223372036854775807",
-					},
-					{
-						Name:      "user_id_seq",
-						DataType:  "bigint",
-						Start:     "1",
-						Increment: "1",
-						MinValue:  "1",
-						MaxValue:  "9223372036854775807",
-					},
-				},
+				Sequences: []*metadatapb.SequenceMetadata{{Name: "order_seq"}},
 			},
 			{
-				Name: "test",
+				Name: "analytics",
 				Tables: []*metadatapb.TableMetadata{
-					{
-						Name: "auto",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "id",
-								Type: "int",
-							},
-							{
-								Name: "name",
-								Type: "varchar",
-							},
-						},
-					},
-					{
-						Name: "users",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "user_id",
-								Type: "int",
-							},
-							{
-								Name: "username",
-								Type: "varchar",
-							},
-						},
-					},
-				},
-				Sequences: []*metadatapb.SequenceMetadata{
-					{
-						Name:      "order_id_seq",
-						DataType:  "bigint",
-						Start:     "1",
-						Increment: "1",
-						MinValue:  "1",
-						MaxValue:  "9223372036854775807",
-					},
+					{Name: "events", Columns: []*metadatapb.ColumnMetadata{{Name: "event_id", Type: "bigint"}}},
 				},
 			},
 		},
-	}, nil, nil, storepb.Engine_POSTGRES, true /* isObjectCaseSensitive */), nil
-}
+	}, nil, nil, storepb.Engine_POSTGRES, true)
 
-func TestCompletionQuotedIdentifiers(t *testing.T) {
-	tests := []candidatesTest{}
-
-	const (
-		record = false
-	)
-	var (
-		filepath = "test-data/test_completion_quoted_identifiers.yaml"
-	)
-
-	a := require.New(t)
-	yamlFile, err := os.Open(filepath)
-	a.NoError(err)
-
-	byteValue, err := io.ReadAll(yamlFile)
-	a.NoError(yamlFile.Close())
-	a.NoError(err)
-	a.NoError(yaml.Unmarshal(byteValue, &tests))
-
-	for i, t := range tests {
-		text, caretOffset := catchCaret(t.Input)
-		result, err := base.Completion(context.Background(), storepb.Engine_POSTGRES, base.CompletionContext{
-			Scene:             base.SceneTypeAll,
-			DefaultDatabase:   "db",
-			Metadata:          getQuotedIdentifierMetadataForTest,
-			ListDatabaseNames: listDatbaseNamesForTest,
-		}, text, 1, caretOffset)
-		a.NoError(err)
-		var filteredResult []base.Candidate
-		for _, r := range result {
-			switch r.Type {
-			case base.CandidateTypeKeyword, base.CandidateTypeFunction:
-				continue
-			default:
-				filteredResult = append(filteredResult, r)
-			}
-		}
-		slices.SortFunc(filteredResult, func(x, y base.Candidate) int {
-			if x.Type != y.Type {
-				if x.Type < y.Type {
-					return -1
-				}
-				return 1
-			}
-			if x.Text != y.Text {
-				if x.Text < y.Text {
-					return -1
-				}
-				return 1
-			}
-			if x.Definition < y.Definition {
-				return -1
-			} else if x.Definition > y.Definition {
-				return 1
-			}
-			return 0
-		})
-
-		if record {
-			tests[i].Want = filteredResult
-		} else {
-			a.Equal(t.Want, filteredResult, t.Input)
-		}
+	cCtx := base.CompletionContext{
+		Scene:           base.SceneTypeAll,
+		InstanceID:      "instance",
+		DefaultDatabase: "db",
+		DefaultSchema:   "public",
+		Metadata: func(context.Context, string, string) (string, *model.DatabaseMetadata, error) {
+			return "db", metadata, nil
+		},
 	}
 
-	if record {
-		yamltest.Record(t, filepath, tests)
+	// Registry dispatch covers POSTGRES, SNOWFLAKE, and COCKROACHDB.
+	for _, engine := range []storepb.Engine{
+		storepb.Engine_POSTGRES,
+		storepb.Engine_SNOWFLAKE,
+		storepb.Engine_COCKROACHDB,
+	} {
+		got, err := base.Completion(context.Background(), engine, cCtx, "SELECT * FROM ", 1, len("SELECT * FROM "))
+		require.NoError(t, err, "engine %v", engine)
+		require.True(t, hasCandidate(got, base.CandidateTypeTable, "orders"), "engine %v: got %v", engine, got)
+		require.True(t, hasCandidate(got, base.CandidateTypeTable, `"Order Items"`), "engine %v: got %v", engine, got)
+		require.True(t, hasCandidate(got, base.CandidateTypeSchema, "analytics"), "engine %v: got %v", engine, got)
+		require.True(t, hasCandidate(got, base.CandidateTypeView, "active_orders"), "engine %v: got %v", engine, got)
+		require.True(t, hasCandidate(got, base.CandidateTypeMaterializedView, "orders_summary"), "engine %v: got %v", engine, got)
+		require.True(t, hasCandidate(got, base.CandidateTypeSequence, "order_seq"), "engine %v: got %v", engine, got)
 	}
-}
 
-func getQuotedIdentifierMetadataForTest(_ context.Context, _, databaseName string) (string, *model.DatabaseMetadata, error) {
-	if databaseName != "db" {
-		return "", nil, nil
-	}
+	// DefaultSchema wiring prepends non-public schema to search_path.
+	analyticsCtx := cCtx
+	analyticsCtx.DefaultSchema = "analytics"
+	gotCols, err := base.Completion(context.Background(), storepb.Engine_POSTGRES, analyticsCtx, "SELECT  FROM events", 1, len("SELECT "))
+	require.NoError(t, err)
+	require.True(t, hasCandidate(gotCols, base.CandidateTypeColumn, "event_id"), "got %v", gotCols)
 
-	return "db", model.NewDatabaseMetadata(&metadatapb.DatabaseSchemaMetadata{
-		Name: databaseName,
-		Schemas: []*metadatapb.SchemaMetadata{
-			{
-				Name: "public",
-				Tables: []*metadatapb.TableMetadata{
-					{
-						Name: "t1",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "c1",
-								Type: "int",
-							},
-						},
-					},
-					{
-						Name: "order",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "id",
-								Type: "int",
-							},
-							{
-								Name: "amount",
-								Type: "numeric",
-							},
-						},
-					},
-					{
-						Name: "MyTable",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "Id",
-								Type: "int",
-							},
-							{
-								Name: "Value",
-								Type: "text",
-							},
-						},
-					},
-					{
-						Name: "my-table",
-						Columns: []*metadatapb.ColumnMetadata{
-							{
-								Name: "col1",
-								Type: "int",
-							},
-						},
-					},
-				},
+	// Nil or failing metadata callback degrades cleanly without object candidates.
+	for _, badCtx := range []base.CompletionContext{
+		{Scene: base.SceneTypeAll, DefaultDatabase: "db", DefaultSchema: "public"},
+		{
+			Scene:           base.SceneTypeAll,
+			DefaultDatabase: "db",
+			DefaultSchema:   "public",
+			Metadata: func(context.Context, string, string) (string, *model.DatabaseMetadata, error) {
+				return "", nil, errors.New("metadata unavailable")
 			},
 		},
-	}, nil, nil, storepb.Engine_POSTGRES, true /* isObjectCaseSensitive */), nil
-}
-
-func catchCaret(s string) (string, int) {
-	for i, c := range s {
-		if c == '|' {
-			return s[:i] + s[i+1:], i
+	} {
+		got, err := base.Completion(context.Background(), storepb.Engine_POSTGRES, badCtx, "SELECT 1 FROM ", 1, len("SELECT 1 FROM "))
+		require.NoError(t, err)
+		for _, c := range got {
+			require.NotContains(t, []base.CandidateType{
+				base.CandidateTypeSchema, base.CandidateTypeTable, base.CandidateTypeView,
+				base.CandidateTypeMaterializedView, base.CandidateTypeColumn, base.CandidateTypeSequence,
+			}, c.Type)
 		}
 	}
-	return s, -1
 }

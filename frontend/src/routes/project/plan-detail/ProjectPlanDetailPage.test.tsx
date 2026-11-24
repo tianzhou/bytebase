@@ -3,6 +3,7 @@ import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAIN_SCROLL_RESTORATION_ID } from "@/app/router/NavigationScrollRestoration";
+import type { AgentSqlFixTargetAdapter } from "@/modules/agent/logic/sqlFix";
 import { IssueStatus, State } from "@/types/proto-es/v1/common_pb";
 import type { PlanDetailPageState } from "./shell/hooks/types";
 
@@ -23,6 +24,13 @@ const mocks = vi.hoisted(() => ({
   routerReplace: vi.fn(),
   selectedSpecRender: vi.fn(),
   usePlanDetailPage: vi.fn(),
+  sqlFixTarget: undefined as AgentSqlFixTargetAdapter | undefined,
+}));
+
+vi.mock("@/modules/agent/logic/sqlFix", () => ({
+  getAgentSqlFixIdentity: () => '["workspaces/example","users/me@example.com"]',
+  notifyAgentSqlFixTargetChanged: () => {},
+  registerAgentSqlFixTarget: (adapter: AgentSqlFixTargetAdapter) => { mocks.sqlFixTarget = adapter; return () => { mocks.sqlFixTarget = undefined; }; },
 }));
 
 vi.stubGlobal("localStorage", mocks.localStorage);
@@ -71,6 +79,12 @@ vi.mock("@/lib/utils", () => ({
     classes.filter(Boolean).join(" "),
 }));
 
+vi.mock("./components/release/ReleaseFileViewer", () => ({
+  ReleaseFileViewerProvider: ({ children }: { children: ReactNode }) => children,
+  ReleaseFileViewerDock: ({ children }: { children: ReactNode }) => children,
+  VIEWER_DOCK_MIN_WIDTH: 1280,
+  useOpenReleaseFile: () => undefined,
+}));
 vi.mock("./components/deploy/DeployBranch", () => ({
   DeployBranch: () => <div data-testid="deploy-branch">deploy branch</div>,
 }));
@@ -127,7 +141,7 @@ vi.mock("./utils/phaseSummary", () => ({
   buildChangesSummary: () => "",
   buildDeploySummary: () => "",
   buildReviewSummary: () => "",
-  buildReviewSummaryV2: () => "review summary v2",
+  buildReviewSummaryV2: () => ["review summary v2"],
 }));
 
 vi.mock("./hooks/usePlanReviewState", () => ({
@@ -204,6 +218,15 @@ const changesMountIdText = () =>
   container.querySelector('[data-testid="changes-mount-id"]')?.textContent;
 
 describe("ProjectPlanDetailPage", () => {
+  it("keeps the SQL-fix target available when saved Changes is collapsed", async () => {
+    const page = buildPage();
+    page.isCreating = false;
+    page.activePhases = new Set(["review"]);
+    mocks.usePlanDetailPage.mockReturnValue(page);
+    await act(async () => { root.render(<ProjectPlanDetailPage planId="42" projectId="foo" />); });
+    expect(changesMountIdText()).toBeUndefined();
+    expect(mocks.sqlFixTarget).toBeDefined();
+  });
   it("only expands phases while creating a plan", async () => {
     const page = buildPage();
     mocks.usePlanDetailPage.mockReturnValue(page);
@@ -619,6 +642,33 @@ describe("ProjectPlanDetailPage", () => {
     expect(container.textContent).not.toContain("common.not-started");
   });
 
+  it("without SQL Review V2 a draft opens Review too, for its AI review and comments", async () => {
+    const page = buildPage();
+    page.isCreating = false;
+    page.planId = "1";
+    page.plan.name = "projects/foo/plans/1";
+    page.plan.issue = "projects/foo/issues/1";
+    page.activePhases = new Set(["changes", "review"]);
+    page.issue = {
+      name: "projects/foo/issues/1",
+      draft: true,
+      status: IssueStatus.OPEN,
+    } as PlanDetailPageState["issue"];
+    mocks.usePlanDetailPage.mockReturnValue(page);
+    mocks.reviewState = undefined;
+
+    await act(async () => {
+      root.render(
+        <ProjectPlanDetailPage planId="1" projectId="foo" specId="spec-1" />
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector("[data-testid='plan-review-section']")).not.toBeNull();
+    expect(container.textContent).not.toContain("plan.phase.review-description");
+    expect(container.querySelector("[data-testid='deploy-waiting']")).toBeNull();
+  });
+
   it("under SQL Review V2 a draft opens Review and Deploy lists what it waits on", async () => {
     const page = buildPage();
     page.isCreating = false;
@@ -635,7 +685,7 @@ describe("ProjectPlanDetailPage", () => {
     mocks.reviewState = {
       rows: [
         {
-          reviewer: "rule",
+          reviewer: "review",
           conclusion: "open",
           findings: { open: 2, resolved: 0, openP0: 0 },
           holdsRollout: true,

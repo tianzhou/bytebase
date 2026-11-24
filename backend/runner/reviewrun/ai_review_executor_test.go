@@ -1,6 +1,7 @@
 package reviewrun
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"regexp"
@@ -34,19 +35,20 @@ const fixtureDatabases = 5
 // letting it hang.
 const testWaitLimit = 30 * time.Second
 
-func TestCISampleBoundsOnlyTheAIReview(t *testing.T) {
+func TestCISampleBoundsBothReviewers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	stores, issues := setupReviewFixture(ctx, t, 1)
 	model := &findingModel{}
 	executor := &AIReviewExecutor{
+		license:  licenseStub{},
 		store:    stores,
 		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
 		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
 	}
 	reviewedDatabases := func() []string {
 		t.Helper()
-		comments, err := executor.RunOnce(ctx, "p", issues[0])
+		comments, err := executor.reviewWith(ctx, "p", issues[0], nil)
 		require.NoError(t, err)
 		require.Len(t, comments, 1, "the same finding on every database is one comment")
 		return comments[0].Payload.ReviewMetadata.Targets
@@ -61,16 +63,19 @@ func TestCISampleBoundsOnlyTheAIReview(t *testing.T) {
 	var ruleTargets int
 	ruleExecutor := &RuleExecutor{store: stores, reviewFuncs: map[storepb.Engine]review.ReviewFunc{
 		storepb.Engine_POSTGRES: func(_ context.Context, _ string, _ review.Options, targets []review.Target) (*review.Result, error) {
-			ruleTargets += len(targets)
+			ruleTargets = len(targets)
 			return &review.Result{}, nil
 		},
 	}}
-	_, err := ruleExecutor.RunOnce(ctx, "p", issues[0])
+	_, err := ruleExecutor.review(ctx, "p", issues[0])
 	require.NoError(t, err)
-	require.Equal(t, fixtureDatabases, ruleTargets, "the rule review evaluates every database whatever the sample")
+	require.Equal(t, 2, ruleTargets, "the rule review covers the sample too")
 
 	setCISamplingSize(ctx, t, stores, 0)
 	require.Len(t, reviewedDatabases(), fixtureDatabases)
+	_, err = ruleExecutor.review(ctx, "p", issues[0])
+	require.NoError(t, err)
+	require.Equal(t, fixtureDatabases, ruleTargets)
 }
 
 func TestAIReviewRunsShareTheServerLimit(t *testing.T) {
@@ -84,6 +89,7 @@ func TestAIReviewRunsShareTheServerLimit(t *testing.T) {
 	model := &blockingModel{entered: make(chan struct{}, total), release: make(chan struct{})}
 	slots := &observedSlots{Weighted: semaphore.NewWeighted(limit), waiting: make(chan struct{}, total)}
 	executor := &AIReviewExecutor{
+		license:  licenseStub{},
 		store:    stores,
 		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
 		slots:    slots,
@@ -92,7 +98,7 @@ func TestAIReviewRunsShareTheServerLimit(t *testing.T) {
 	runErrs := make(chan error, len(issues))
 	for _, issueUID := range issues {
 		go func() {
-			_, err := executor.RunOnce(ctx, "p", issueUID)
+			_, err := executor.reviewWith(ctx, "p", issueUID, nil)
 			runErrs <- err
 		}()
 	}
@@ -129,15 +135,16 @@ func TestAIReviewKeepsTheThreadOfAProblemReportedAgain(t *testing.T) {
 	stores, issues := setupReviewFixture(ctx, t, 1)
 	model := &findingModel{}
 	executor := &AIReviewExecutor{
+		license:  licenseStub{},
 		store:    stores,
 		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
 		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
 	}
 	run := func() []*store.IssueCommentMessage {
 		t.Helper()
-		results, err := executor.RunOnce(ctx, "p", issues[0])
+		results, err := executor.reviewWith(ctx, "p", issues[0], nil)
 		require.NoError(t, err)
-		_, err = stores.CreateReviewRun(ctx, "p", issues[0], store.ReviewRunTypeAI)
+		_, err = stores.CreateReviewRun(ctx, "p", issues[0])
 		require.NoError(t, err)
 		claimed, err := stores.ClaimAvailableReviewRuns(ctx, "replica-1")
 		require.NoError(t, err)
@@ -290,23 +297,45 @@ type findingModel struct {
 	summaries atomic.Int32
 	// onSummary runs when the summary call arrives.
 	onSummary func()
+	// severity and rule are the finding's, P2 and "r" when empty.
+	severity string
+	rule     string
+	// onOperation puts the merge's one group with the standard finding the
+	// merge shows, and same says that every thread it shows keeps its comment.
+	onOperation atomic.Bool
+	same        atomic.Bool
 }
+
+// mergeFindingID and mergeThreadID find the ids of a merge prompt's findings
+// and threads.
+var (
+	mergeFindingID = regexp.MustCompile(`(?m)^\{"id":(\d+),.*$`)
+	mergeThreadID  = regexp.MustCompile(`(?m)^\{"thread":(\d+),`)
+)
 
 func (m *findingModel) Chat(_ context.Context, request *v1pb.AIChatRequest) (*v1pb.AIChatResponse, error) {
 	m.calls.Add(1)
-	content := `{"findings": [{"title": "Backfill note", "severity": "P2", "line": 1, "rule": "r", "evidence": "e", "fix": "f"}]}`
+	content := fmt.Sprintf(`{"findings": [{"title": "Backfill note", "severity": %q, "line": 1, "rule": %q, "evidence": "e", "fix": "f"}]}`, cmp.Or(m.severity, "P2"), cmp.Or(m.rule, "r"))
 	// A review offers the schema tools, and the merge and the summary offer
 	// none. A merge numbers the findings, and a summary names the databases
 	// by id.
 	if len(request.GetToolDefinitions()) == 0 {
 		user := request.GetMessages()[1].GetContent()
 		var ids []string
-		if count := strings.Count(user, `{"id":`); count > 0 {
+		if findings := mergeFindingID.FindAllStringSubmatch(user, -1); len(findings) > 0 {
 			m.merges.Add(1)
-			for i := range count {
-				ids = append(ids, strconv.Itoa(i+1))
+			for _, finding := range findings {
+				if !strings.Contains(finding[0], `"standard":true`) || m.onOperation.Load() {
+					ids = append(ids, finding[1])
+				}
 			}
-			content = fmt.Sprintf(`{"groups": [[%s]]}`, strings.Join(ids, ", "))
+			var threads []string
+			if m.same.Load() {
+				for _, thread := range mergeThreadID.FindAllStringSubmatch(user, -1) {
+					threads = append(threads, thread[1])
+				}
+			}
+			content = fmt.Sprintf(`{"groups": [[%s]], "same": [%s]}`, strings.Join(ids, ", "), strings.Join(threads, ", "))
 		} else {
 			m.summaries.Add(1)
 			if m.onSummary != nil {
@@ -323,6 +352,62 @@ func (m *findingModel) Chat(_ context.Context, request *v1pb.AIChatRequest) (*v1
 	return &v1pb.AIChatResponse{Content: &content}, nil
 }
 
+func TestAIReviewStatesTheStandardRules(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	stores, issues := setupReviewFixture(ctx, t, 1)
+	setCISamplingSize(ctx, t, stores, 1)
+	// The fixture's policy turns SYNTAX alone on, on PostgreSQL.
+	for _, tc := range []struct {
+		name             string
+		ruleReviewCovers func(storepb.Engine) bool
+		check            func(t *testing.T, system string)
+	}{
+		{
+			name:             "the standard review runs",
+			ruleReviewCovers: ReviewsEngine,
+			check: func(t *testing.T, system string) {
+				require.Contains(t, system, "- SYNTAX (left to the standard review, P0): ")
+				require.Contains(t, system, "- REQUIRE_WHERE (off): ")
+			},
+		},
+		{
+			// The plan checks' SQL review runs there instead, whatever the
+			// review rule policy says.
+			name: "SQL Review V2 is off",
+			check: func(t *testing.T, system string) {
+				require.NotContains(t, strings.ToLower(system), "standard rule")
+				require.NotContains(t, system, "SYNTAX")
+			},
+		},
+	} {
+		model := &systemPromptModel{}
+		executor := &AIReviewExecutor{
+			license:          licenseStub{},
+			store:            stores,
+			newModel:         func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
+			slots:            semaphore.NewWeighted(aiReviewServerConcurrency),
+			ruleReviewCovers: tc.ruleReviewCovers,
+		}
+		comments, err := executor.reviewWith(ctx, "p", issues[0], nil)
+		require.NoError(t, err, tc.name)
+		require.Empty(t, comments, tc.name)
+		tc.check(t, model.system)
+	}
+}
+
+// systemPromptModel keeps the system prompt of the review it answers, and
+// reports no finding.
+type systemPromptModel struct {
+	system string
+}
+
+func (m *systemPromptModel) Chat(_ context.Context, request *v1pb.AIChatRequest) (*v1pb.AIChatResponse, error) {
+	m.system = request.GetMessages()[0].GetContent()
+	content := `{"findings": [], "notes": []}`
+	return &v1pb.AIChatResponse{Content: &content}, nil
+}
+
 func TestAIReviewStopsWhenSwitchedOffBeforeItPosts(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -332,29 +417,49 @@ func TestAIReviewStopsWhenSwitchedOffBeforeItPosts(t *testing.T) {
 		_, switchOffErr = stores.UpsertSetting(ctx, &store.SettingMessage{Name: storepb.SettingName_AI, Workspace: "ws", Value: &storepb.AISetting{Enabled: true}})
 	}}
 	executor := &AIReviewExecutor{
+		license:  licenseStub{},
 		store:    stores,
 		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
 		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
 	}
-	comments, err := executor.RunOnce(ctx, "p", issues[0])
+	comments, err := executor.reviewWith(ctx, "p", issues[0], nil)
 	require.NoError(t, switchOffErr)
 	require.Equal(t, int32(1), model.summaries.Load())
 	require.ErrorContains(t, err, "AI SQL review is not enabled", "a switch-off during the summary stops the run before it posts")
 	require.Empty(t, comments)
 }
 
-func TestAIReviewExecutorSortsItsResults(t *testing.T) {
+func TestAIReviewNeedsTheEnterprisePlan(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	stores, issues := setupReviewFixture(ctx, t, 1)
+	model := &findingModel{}
+	executor := &AIReviewExecutor{
+		store:    stores,
+		license:  withoutEnterprise,
+		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
+		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
+	}
+	comments, err := executor.reviewWith(ctx, "p", issues[0], nil)
+	require.NoError(t, err, "a plan without the AI review is the review switched off")
+	require.Empty(t, comments)
+	require.Zero(t, model.calls.Load())
+	require.ErrorContains(t, executor.checkAISetting(ctx, "ws"), "ENTERPRISE", "a run in flight stops at its next model call")
+}
+
+func TestReviewExecutorSortsTheAIReviewResults(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	stores, issues := setupReviewFixture(ctx, t, 1)
 	// One database: no merge and no summary, so each finding is a result.
 	setCISamplingSize(ctx, t, stores, 1)
 	executor := &AIReviewExecutor{
+		license:  licenseStub{},
 		store:    stores,
 		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return advisoryFirstModel{} },
 		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
 	}
-	comments, err := executor.RunOnce(ctx, "p", issues[0])
+	comments, err := NewReviewExecutor(stores, licenseStub{}, nil, executor).RunOnce(ctx, "p", issues[0])
 	require.NoError(t, err)
 	var priorities []storepb.IssueCommentPayload_ReviewMetadata_Priority
 	for _, comment := range comments {
@@ -364,6 +469,69 @@ func TestAIReviewExecutorSortsItsResults(t *testing.T) {
 		storepb.IssueCommentPayload_ReviewMetadata_P0,
 		storepb.IssueCommentPayload_ReviewMetadata_P2,
 	}, priorities)
+}
+
+func TestAIReviewPostsTheMostImportantProblems(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	stores, issues := setupReviewFixture(ctx, t, 1)
+	setCISamplingSize(ctx, t, stores, 2)
+	model := &overLimitModel{}
+	executor := &AIReviewExecutor{
+		license:  licenseStub{},
+		store:    stores,
+		newModel: func(*storepb.AISetting, ...aireview.ModelOption) aireview.Model { return model },
+		slots:    semaphore.NewWeighted(aiReviewServerConcurrency),
+	}
+	comments, err := NewReviewExecutor(stores, licenseStub{}, nil, executor).RunOnce(ctx, "p", issues[0])
+	require.NoError(t, err)
+	require.Len(t, comments, maxAIReviewProblems)
+	require.Equal(t, storepb.IssueCommentPayload_ReviewMetadata_P0, comments[0].Payload.ReviewMetadata.Priority, "the problem reported last posts, since it is P0")
+	require.Len(t, comments[0].Payload.ReviewMetadata.Targets, 2, "a problem on two databases counts once")
+	require.Equal(t, int32(maxAIReviewProblems), model.summaries.Load(), "a held problem is not summarized")
+}
+
+// overLimitModel reports one problem more than a run posts, the last one P0,
+// merges each problem's findings across the databases, and counts the
+// summaries.
+type overLimitModel struct {
+	summaries atomic.Int32
+}
+
+func (m *overLimitModel) Chat(_ context.Context, request *v1pb.AIChatRequest) (*v1pb.AIChatResponse, error) {
+	if len(request.GetToolDefinitions()) > 0 {
+		findings := make([]string, 0, maxAIReviewProblems+1)
+		for i := range maxAIReviewProblems + 1 {
+			severity := "P2"
+			if i == maxAIReviewProblems {
+				severity = "P0"
+			}
+			findings = append(findings, fmt.Sprintf(`{"title": "Problem %d", "severity": %q, "line": 1, "rule": "r", "evidence": "e", "fix": "f"}`, i, severity))
+		}
+		content := `{"findings": [` + strings.Join(findings, ", ") + `]}`
+		return &v1pb.AIChatResponse{Content: &content}, nil
+	}
+	user := request.GetMessages()[1].GetContent()
+	var content string
+	if count := strings.Count(user, `{"id":`); count > 0 {
+		// The merge numbers the first database's findings before the second's.
+		n := count / 2
+		groups := make([]string, 0, n)
+		for i := 1; i <= n; i++ {
+			groups = append(groups, fmt.Sprintf("[%d, %d]", i, i+n))
+		}
+		content = `{"groups": [` + strings.Join(groups, ", ") + `]}`
+	} else {
+		m.summaries.Add(1)
+		var ids []string
+		for _, match := range summaryDatabaseID.FindAllStringSubmatch(user, -1) {
+			if id := strconv.Quote(match[1]); !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+		content = fmt.Sprintf(`{"title": "t", "evidence": "e", "groups": [{"databases": [%s], "facts": ""}], "fix": "f"}`, strings.Join(ids, ", "))
+	}
+	return &v1pb.AIChatResponse{Content: &content}, nil
 }
 
 // advisoryFirstModel reports a P2 finding before a P0 one on the same line.
@@ -485,16 +653,19 @@ func TestAIReviewExecutorChecksTheSettingAgain(t *testing.T) {
 		})
 		require.NoError(t, err)
 	}
-	executor := NewAIReviewExecutor(stores)
+	executor := NewAIReviewExecutor(stores, licenseStub{}, ReviewsEngine)
 
+	// Switched off, the run ends with no finding before it reaches the
+	// target, which does not exist in this fixture.
 	setAISetting(&storepb.AISetting{Enabled: true})
-	_, err = executor.RunOnce(ctx, "p", issue.UID)
-	require.ErrorContains(t, err, "AI SQL review is not enabled")
+	results, err := executor.reviewWith(ctx, "p", issue.UID, nil)
+	require.NoError(t, err)
+	require.Empty(t, results)
 
 	// With the switch on the executor goes on to the target, which does not
 	// exist in this fixture.
 	setAISetting(&storepb.AISetting{Enabled: true, SqlReviewEnabled: true})
-	_, err = executor.RunOnce(ctx, "p", issue.UID)
+	_, err = executor.reviewWith(ctx, "p", issue.UID, nil)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "is not enabled")
 
@@ -504,6 +675,7 @@ func TestAIReviewExecutorChecksTheSettingAgain(t *testing.T) {
 	cached, err := stores.GetAISetting(ctx, "ws")
 	require.NoError(t, err)
 	require.True(t, cached.SqlReviewEnabled)
-	_, err = executor.RunOnce(ctx, "p", issue.UID)
-	require.ErrorContains(t, err, "AI SQL review is not enabled")
+	results, err = executor.reviewWith(ctx, "p", issue.UID, nil)
+	require.NoError(t, err, "the run read the switch-off past the cache")
+	require.Empty(t, results)
 }

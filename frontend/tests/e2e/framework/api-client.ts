@@ -319,6 +319,14 @@ export class BytebaseApiClient {
     );
   }
 
+  async getDatabase(name: string) {
+    return this.request<{ name: string; labels?: Record<string, string> }>("GET", `/v1/${name}`);
+  }
+
+  async updateDatabaseLabels(name: string, labels: Record<string, string>) {
+    return this.request<unknown>("PATCH", `/v1/${name}?updateMask=labels`, { name, labels });
+  }
+
   async updateDatabaseEnvironment(
     databaseFullName: string,
     environment: string,
@@ -693,8 +701,24 @@ export class BytebaseApiClient {
     return this.request<{ name: string }>("POST", `/v1/${planName}/rollout`, {});
   }
 
-  async getRollout(planName: string): Promise<{ stages?: { name: string; tasks?: { name: string }[] }[] }> {
+  async getRollout(planName: string): Promise<{ stages?: { name: string; tasks?: { name: string; target: string }[] }[] }> {
     return this.request("GET", `/v1/${planName}/rollout`);
+  }
+
+  async listTaskRuns(task: string): Promise<{ name: string; status: string; detail?: string }[]> {
+    const response = await this.request<{
+      taskRuns?: { name: string; status: string; detail?: string }[];
+    }>("GET", `/v1/${task}/taskRuns?pageSize=100`);
+    return response.taskRuns ?? [];
+  }
+
+  async getTaskRunLog(run: string): Promise<{
+    entries?: {
+      type: string;
+      commandExecute?: { response?: { error?: string } };
+    }[];
+  }> {
+    return this.request("GET", `/v1/${run}/log`);
   }
 
   async batchRunTasks(stage: string, tasks: string[]): Promise<void> {
@@ -707,6 +731,25 @@ export class BytebaseApiClient {
 
   async deleteRelease(releaseName: string): Promise<void> {
     await this.request("DELETE", `/v1/${releaseName}`);
+  }
+
+  // The database's live revision of a version, if any.
+  async findRevision(database: string, version: string): Promise<{ name: string } | undefined> {
+    let pageToken = "";
+    do {
+      const res = await this.request<{
+        revisions?: { name: string; version: string }[];
+        nextPageToken?: string;
+      }>("GET", `/v1/${database}/revisions?pageSize=100&pageToken=${encodeURIComponent(pageToken)}`);
+      const found = res.revisions?.find((r) => r.version === version);
+      if (found) return found;
+      pageToken = res.nextPageToken ?? "";
+    } while (pageToken);
+    return undefined;
+  }
+
+  async deleteRevision(revisionName: string): Promise<void> {
+    await this.request("DELETE", `/v1/${revisionName}`);
   }
 
   async deleteProject(project: string): Promise<void> {

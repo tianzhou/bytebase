@@ -3,28 +3,17 @@ package pg
 import (
 	"context"
 
-	metadatapb "github.com/bytebase/omni/metadata"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/bytebase/omni/pg/catalog"
 
 	storepb "github.com/bytebase/bytebase/backend/generated-go/store"
 	"github.com/bytebase/bytebase/backend/plugin/advisor/code"
 	"github.com/bytebase/bytebase/backend/plugin/parser/base"
 	"github.com/bytebase/bytebase/backend/plugin/schema"
+	"github.com/bytebase/bytebase/backend/plugin/schema/internal/omnicatalog"
 	"github.com/bytebase/bytebase/backend/store/model"
 )
-
-const (
-	PublicSchemaName = "public"
-)
-
-func init() {
-	schema.RegisterWalkThroughWithContext(storepb.Engine_POSTGRES, WalkThroughWithContext)
-}
-
-// WalkThrough walks through the PostgreSQL DDL and builds catalog metadata.
-func WalkThrough(d *model.DatabaseMetadata, ast []base.AST) *storepb.Advice {
-	return WalkThroughWithContext(context.Background(), schema.WalkThroughContext{}, d, ast)
-}
 
 // WalkThroughWithContext performs DDL simulation using the omni catalog.
 //  1. catalog.LoadMetadata(metadata) → load existing schema into catalog
@@ -45,13 +34,7 @@ func WalkThroughWithContext(ctx context.Context, wtCtx schema.WalkThroughContext
 		catBefore.SetSearchPath(searchPath)
 	}
 	if _, err := catBefore.LoadMetadata(ctx, d.GetProto(), catalog.LoadMetadataOptions{Full: true}); err != nil {
-		return &storepb.Advice{
-			Status:        storepb.Advice_ERROR,
-			Code:          code.DDLSimulationFailed.Int32(),
-			Title:         "Failed to load schema",
-			Content:       err.Error(),
-			StartPosition: &storepb.Position{Line: 0},
-		}
+		return omnicatalog.DDLSimulationAdvice("Failed to load schema", err)
 	}
 
 	catAfter := catBefore.Clone()
@@ -59,13 +42,7 @@ func WalkThroughWithContext(ctx context.Context, wtCtx schema.WalkThroughContext
 	// Step 2: Execute user SQL on catAfter.
 	results, execErr := catAfter.Exec(wtCtx.RawSQL, &catalog.ExecOptions{ContinueOnError: true})
 	if execErr != nil {
-		return &storepb.Advice{
-			Status:        storepb.Advice_ERROR,
-			Code:          code.DDLSimulationFailed.Int32(),
-			Title:         "DDL simulation failed",
-			Content:       execErr.Error(),
-			StartPosition: &storepb.Position{Line: 0},
-		}
+		return omnicatalog.DDLSimulationAdvice("DDL simulation failed", execErr)
 	}
 
 	// Step 3: Report the first exec error.
@@ -87,9 +64,9 @@ func WalkThroughWithContext(ctx context.Context, wtCtx schema.WalkThroughContext
 
 	// Step 4: Diff before/after catalogs and apply to original metadata.
 	diff := catalog.Diff(catBefore, catAfter)
-	if diff != nil && !diff.IsEmpty() {
-		newProto := applyDiffToMetadata(d.GetProto(), catBefore, catAfter, diff)
-		newMetadata := model.NewDatabaseMetadata(newProto, nil, d.GetConfig(), storepb.Engine_POSTGRES, true)
+	newProto := catalog.ApplyDiffToMetadata(d.GetProto(), catBefore, catAfter, diff)
+	if !proto.Equal(d.GetProto(), newProto) {
+		newMetadata := model.NewDatabaseMetadata(newProto, nil, d.GetConfig(), storepb.Engine_POSTGRES, d.GetIsObjectCaseSensitive())
 		d.ReplaceFrom(newMetadata)
 	}
 
@@ -156,7 +133,10 @@ func mapSQLSTATEToCode(err error) code.Code {
 }
 
 func getConfiguredSearchPath(d *model.DatabaseMetadata) []string {
-	configured := d.GetConfiguredSearchPath()
+	return formatSearchPath(d.GetConfiguredSearchPath())
+}
+
+func formatSearchPath(configured []model.PGSearchPathItem) []string {
 	if len(configured) == 0 {
 		return nil
 	}
@@ -173,200 +153,4 @@ func getConfiguredSearchPath(d *model.DatabaseMetadata) []string {
 		searchPath = append(searchPath, item.Schema)
 	}
 	return searchPath
-}
-
-// relationToTableProto converts an omni Relation to a metadatapb.TableMetadata.
-func relationToTableProto(c *catalog.Catalog, rel *catalog.Relation) *metadatapb.TableMetadata {
-	table := &metadatapb.TableMetadata{
-		Name: rel.Name,
-	}
-
-	// Columns.
-	for _, col := range rel.Columns {
-		colMeta := &metadatapb.ColumnMetadata{
-			Name:     col.Name,
-			Position: int32(col.AttNum),
-			Type:     c.FormatType(col.TypeOID, col.TypeMod),
-			Nullable: !col.NotNull,
-			Default:  col.Default,
-		}
-		if col.Generated == 's' {
-			colMeta.Generation = &metadatapb.GenerationMetadata{
-				Type:       metadatapb.GenerationMetadata_TYPE_STORED,
-				Expression: col.GenerationExpr,
-			}
-		}
-		if col.Identity != 0 {
-			colMeta.IsIdentity = true
-			switch col.Identity {
-			case 'a':
-				colMeta.IdentityGeneration = metadatapb.ColumnMetadata_ALWAYS
-			case 'd':
-				colMeta.IdentityGeneration = metadatapb.ColumnMetadata_BY_DEFAULT
-			default:
-			}
-		}
-		table.Columns = append(table.Columns, colMeta)
-	}
-
-	// Indexes.
-	for _, idx := range c.IndexesOf(rel.OID) {
-		idxMeta := &metadatapb.IndexMetadata{
-			Name:    idx.Name,
-			Type:    idx.AccessMethod,
-			Unique:  idx.IsUnique,
-			Primary: idx.IsPrimary,
-		}
-
-		// Build expressions list.
-		exprIdx := 0
-		for i, attnum := range idx.Columns {
-			if attnum == 0 {
-				// Expression column.
-				if exprIdx < len(idx.Exprs) {
-					idxMeta.Expressions = append(idxMeta.Expressions, idx.Exprs[exprIdx])
-					exprIdx++
-				}
-			} else {
-				// Regular column — find name.
-				colName := ""
-				for _, col := range rel.Columns {
-					if col.AttNum == attnum {
-						colName = col.Name
-						break
-					}
-				}
-				idxMeta.Expressions = append(idxMeta.Expressions, colName)
-			}
-
-			// Descending flag.
-			if i < len(idx.IndOption) {
-				idxMeta.Descending = append(idxMeta.Descending, idx.IndOption[i]&1 != 0)
-			}
-		}
-
-		// IsConstraint: index backs a constraint if ConstraintOID != 0.
-		if idx.ConstraintOID != 0 {
-			idxMeta.IsConstraint = true
-		}
-
-		table.Indexes = append(table.Indexes, idxMeta)
-	}
-
-	// Foreign keys and check constraints from constraints.
-	for _, con := range c.ConstraintsOf(rel.OID) {
-		switch con.Type {
-		case 'f': // FK
-			fk := &metadatapb.ForeignKeyMetadata{
-				Name: con.Name,
-			}
-			// Columns.
-			for _, attnum := range con.Columns {
-				for _, col := range rel.Columns {
-					if col.AttNum == attnum {
-						fk.Columns = append(fk.Columns, col.Name)
-						break
-					}
-				}
-			}
-			// Referenced table.
-			fRel := c.GetRelationByOID(con.FRelOID)
-			if fRel != nil {
-				if fRel.Schema != nil {
-					fk.ReferencedSchema = fRel.Schema.Name
-				}
-				fk.ReferencedTable = fRel.Name
-				for _, attnum := range con.FColumns {
-					for _, col := range fRel.Columns {
-						if col.AttNum == attnum {
-							fk.ReferencedColumns = append(fk.ReferencedColumns, col.Name)
-							break
-						}
-					}
-				}
-			}
-			// Actions.
-			fk.OnUpdate = wtFKActionToString(con.FKUpdAction)
-			fk.OnDelete = wtFKActionToString(con.FKDelAction)
-			fk.MatchType = wtFKMatchToString(con.FKMatchType)
-			table.ForeignKeys = append(table.ForeignKeys, fk)
-		case 'c': // CHECK
-			table.CheckConstraints = append(table.CheckConstraints, &metadatapb.CheckConstraintMetadata{
-				Name:       con.Name,
-				Expression: con.CheckExpr,
-			})
-		case 'x': // EXCLUDE
-			table.ExcludeConstraints = append(table.ExcludeConstraints, &metadatapb.ExcludeConstraintMetadata{
-				Name:       con.Name,
-				Expression: con.CheckExpr,
-			})
-		default:
-		}
-	}
-
-	return table
-}
-
-// relationToViewProto converts an omni Relation (view) to a metadatapb.ViewMetadata.
-func relationToViewProto(c *catalog.Catalog, rel *catalog.Relation) *metadatapb.ViewMetadata {
-	view := &metadatapb.ViewMetadata{
-		Name: rel.Name,
-	}
-	if rel.Schema != nil {
-		if def, err := c.GetViewDefinition(rel.Schema.Name, rel.Name); err == nil {
-			view.Definition = def
-		}
-	}
-	return view
-}
-
-// relationToMatViewProto converts an omni Relation (materialized view) to a metadatapb.MaterializedViewMetadata.
-func relationToMatViewProto(c *catalog.Catalog, rel *catalog.Relation) *metadatapb.MaterializedViewMetadata {
-	mv := &metadatapb.MaterializedViewMetadata{
-		Name: rel.Name,
-	}
-	if rel.Schema != nil {
-		if def, err := c.GetMatViewDefinition(rel.Schema.Name, rel.Name); err == nil {
-			mv.Definition = def
-		}
-	}
-
-	// Materialized view indexes.
-	for _, idx := range c.IndexesOf(rel.OID) {
-		idxMeta := &metadatapb.IndexMetadata{
-			Name:    idx.Name,
-			Type:    idx.AccessMethod,
-			Unique:  idx.IsUnique,
-			Primary: idx.IsPrimary,
-		}
-		exprIdx := 0
-		for i, attnum := range idx.Columns {
-			if attnum == 0 {
-				if exprIdx < len(idx.Exprs) {
-					idxMeta.Expressions = append(idxMeta.Expressions, idx.Exprs[exprIdx])
-					exprIdx++
-				}
-			} else {
-				for _, col := range rel.Columns {
-					if col.AttNum == attnum {
-						idxMeta.Expressions = append(idxMeta.Expressions, col.Name)
-						break
-					}
-				}
-			}
-
-			// Descending flag.
-			if i < len(idx.IndOption) {
-				idxMeta.Descending = append(idxMeta.Descending, idx.IndOption[i]&1 != 0)
-			}
-		}
-
-		if idx.ConstraintOID != 0 {
-			idxMeta.IsConstraint = true
-		}
-
-		mv.Indexes = append(mv.Indexes, idxMeta)
-	}
-
-	return mv
 }
